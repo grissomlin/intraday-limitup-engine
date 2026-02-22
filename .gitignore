@@ -1,1 +1,8 @@
 .env
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Cache
+data/cache/
