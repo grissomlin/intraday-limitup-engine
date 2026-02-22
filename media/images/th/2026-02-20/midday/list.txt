@@ -1,7 +1,0 @@
-overview_sectors_bigmove10_p1.png
-overview_sectors_bigmove10_p2.png
-th_Finance___Securities_p1.png
-th_Home___Office_Products_p1.png
-th_Media___Publishing_p1.png
-th_Transportation___Logistics_p1.png
-th_Unclassified_p1.png
