@@ -24,21 +24,63 @@ jobs:
         market: [cn, tw, jp, kr, th, us, ca, uk, au]
 
     env:
-      # ✅ 你 repo 內 render_images_* 都會讀這個
       GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
-
-      # ✅ 你 youtube_pipeline_safe.py 的 resolve_token_path() 會讀這個
       YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
-
-      # ✅ 你 youtube_pipeline_safe.py 的 resolve_playlist_map() 會讀這個
       YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
-
-      # 可選：避免 matplotlib 找不到顯示環境
       MPLBACKEND: Agg
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          lfs: true
+
+      # 🔎 🔎 🔎 DEBUG STEP 🔎 🔎 🔎
+      - name: Debug repo structure
+        run: |
+          set -euxo pipefail
+
+          echo "==== Git info ===="
+          echo "Branch:"
+          git branch --show-current || true
+          echo "Commit:"
+          git rev-parse HEAD
+          git log -1 --oneline || true
+
+          echo ""
+          echo "==== Top-level directory ===="
+          ls -la
+
+          echo ""
+          echo "==== scripts directory ===="
+          ls -la scripts || true
+
+          echo ""
+          echo "==== render_images_* directories ===="
+          ls -la scripts | grep render_images || true
+
+          echo ""
+          echo "==== Check each market cli existence ===="
+          for m in cn tw jp kr th us ca uk au; do
+            echo "---- $m ----"
+            ls -la scripts/render_images_$m || echo "NO DIR"
+            if [ -f scripts/render_images_$m/cli.py ]; then
+              echo "cli.py EXISTS"
+            else
+              echo "cli.py MISSING"
+            fi
+          done
+
+          echo ""
+          echo "==== Find all cli.py in repo ===="
+          find . -type f -name "cli.py" | sort || true
+
+          echo ""
+          echo "==== Find all render_images_* folders ===="
+          find scripts -maxdepth 2 -type d -name "render_images_*" | sort || true
+      # 🔎 🔎 🔎 END DEBUG 🔎 🔎 🔎
 
       - name: Setup Python
         uses: actions/setup-python@v5
