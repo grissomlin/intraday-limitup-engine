@@ -7,23 +7,28 @@ import os
 import json
 import argparse
 import subprocess
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+try:
+    from zoneinfo import ZoneInfo  # py>=3.9
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
 
 
 # =============================================================================
 # Env helpers
 # =============================================================================
 def is_github_actions() -> bool:
-    return os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+    return os.getenv("GITHUB_ACTIONS", "").strip().lower() == "true"
 
 
 def parse_bool_env(name: str, default: bool) -> bool:
     v = os.getenv(name)
     if v is None:
         return default
-    v = str(v).strip().lower()
+    v = v.strip().lower()
     if v in ("1", "true", "yes", "y", "on"):
         return True
     if v in ("0", "false", "no", "n", "off"):
@@ -31,92 +36,38 @@ def parse_bool_env(name: str, default: bool) -> bool:
     return default
 
 
-def parse_int_env(name: str, default: int) -> int:
-    v = os.getenv(name)
-    if v is None:
-        return default
-    try:
-        return int(str(v).strip())
-    except Exception:
-        return default
-
-
-def parse_float_env(name: str, default: float) -> float:
-    v = os.getenv(name)
-    if v is None:
-        return default
-    try:
-        return float(str(v).strip())
-    except Exception:
-        return default
-
-
-def today_ymd() -> str:
-    tz_tw = timezone(timedelta(hours=8))
-    return datetime.now(tz_tw).strftime("%Y-%m-%d")
-
-
-# =============================================================================
-# Time helpers (UTC + fixed offset)
-# - Supports fractional offsets like +5.5 (India)
-# =============================================================================
-DEFAULT_TZ_OFFSETS = {
-    # Open movers / global
-    "us": -5,     # default Eastern; DST can be overridden by env
-    "ca": -5,     # TSX/TSXV (Toronto) uses Eastern
-    "uk": 0,      # London
-    "au": +10,    # ASX (Sydney) AEST/AEDT; DST can be overridden by env
-
-    # Limit markets
-    "tw": +8,
-    "cn": +8,
-    "jp": +9,
-    "kr": +9,
-
-    # New markets
-    "in": +5.5,   # India IST = UTC+5:30
-    "th": +7,     # Thailand ICT = UTC+7
+# -----------------------------------------------------------------------------
+# Market timezone (for ymd/asof correctness across regions)
+# -----------------------------------------------------------------------------
+MARKET_TZ: Dict[str, str] = {
+    "tw": "Asia/Taipei",
+    "cn": "Asia/Shanghai",
+    "jp": "Asia/Tokyo",
+    "kr": "Asia/Seoul",
+    "th": "Asia/Bangkok",
+    "us": "America/New_York",
+    "ca": "America/Toronto",
+    "uk": "Europe/London",
+    "au": "Australia/Sydney",
+    "in": "Asia/Kolkata",
 }
 
 
-def _tz_offset_hours(market: str) -> float:
-    market = (market or "").strip().lower()
-    env_name = f"INTRADAY_TZ_OFFSET_{market.upper()}"
-    return parse_float_env(env_name, float(DEFAULT_TZ_OFFSETS.get(market, 0.0)))
+def today_ymd_market(market: str) -> str:
+    """
+    Compute YYYY-MM-DD in market local timezone (when zoneinfo available).
+    Fallback to system local time if zoneinfo missing.
+    """
+    m = (market or "").strip().lower()
+    tzname = MARKET_TZ.get(m, "Asia/Taipei")
 
+    if ZoneInfo is None:
+        return datetime.now().strftime("%Y-%m-%d")
 
-def _tz_offset_str(hours: float) -> str:
-    # hours may be fractional (e.g. 5.5)
-    sign = "+" if hours >= 0 else "-"
-    ah = abs(float(hours))
-    hh = int(ah)
-    mm = int(round((ah - hh) * 60))
-    # normalize rounding edge case (e.g. 9.999 -> 10:00)
-    if mm >= 60:
-        hh += 1
-        mm -= 60
-    return f"{sign}{hh:02d}:{mm:02d}"
-
-
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def build_time_meta(market: str, *, finished_utc: datetime) -> Dict[str, Any]:
-    off_h = _tz_offset_hours(market)
-    tz = timezone(timedelta(hours=off_h))
-    market_dt = finished_utc.astimezone(tz)
-
-    off_str = _tz_offset_str(off_h)
-    return {
-        "finished_at_utc": finished_utc.isoformat(timespec="seconds"),
-        "market_tz": f"UTC{off_str}",
-        # keep both (hours can be float)
-        "market_utc_offset_hours": float(off_h),
-        "market_utc_offset": off_str,
-        "market_finished_at": market_dt.strftime("%Y-%m-%d %H:%M"),
-        "market_finished_hm": market_dt.strftime("%H:%M"),
-    }
+    try:
+        return datetime.now(ZoneInfo(tzname)).strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
 
 
 # =============================================================================
@@ -141,14 +92,20 @@ def write_marker(marker_path: Path, payload_path: Path, meta: dict, payload: dic
         "payload_path": str(payload_path),
         "written_at": datetime.now().isoformat(timespec="seconds"),
     }
-    payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    marker_path.write_text(json.dumps(marker, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    marker_path.write_text(
+        json.dumps(marker, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 # =============================================================================
-# Stock list updater (TW daily)
+# Stock list updater (daily) - TW only
 # =============================================================================
-def maybe_update_tw_stock_list(base_dir: Path) -> None:
+def maybe_update_stock_list_tw(base_dir: Path) -> None:
     auto_update = parse_bool_env("TW_AUTO_UPDATE_STOCKLIST", True)
     if not auto_update:
         return
@@ -163,7 +120,11 @@ def maybe_update_tw_stock_list(base_dir: Path) -> None:
 
     try:
         print(f"🔄 Updating tw_stock_list.json via {script_path.name} ...")
-        subprocess.run(["python", str(script_path)], check=True, timeout=timeout_s)
+        subprocess.run(
+            ["python", str(script_path)],
+            check=True,
+            timeout=timeout_s,
+        )
         print("✅ Stock list updated.")
     except subprocess.TimeoutExpired:
         print(f"⚠️ Stock list update timeout after {timeout_s}s (continue).")
@@ -171,34 +132,87 @@ def maybe_update_tw_stock_list(base_dir: Path) -> None:
         print(f"⚠️ Stock list update failed (continue): {e}")
 
 
+# -----------------------------------------------------------------------------
+# Backward-compat alias for markets/runners.py
+# (it imports: from main import parse_bool_env, maybe_update_tw_stock_list)
+# -----------------------------------------------------------------------------
+def maybe_update_tw_stock_list(base_dir: Path) -> None:
+    return maybe_update_stock_list_tw(base_dir)
+
+
 # =============================================================================
 # Main
 # =============================================================================
-def main():
-    from markets.guard import guard_enabled_default
-    from markets.runners import RUNNERS
+def main() -> int:
+    # Import runner registry (lazy import to avoid heavy deps at module import)
+    from markets.runners import RUNNERS  # type: ignore
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--market", default="tw", choices=list(RUNNERS.keys()))
-    ap.add_argument("--slot", default="midday")
-    ap.add_argument("--asof", default="11:00")
-    ap.add_argument("--no-cache", action="store_true")
-    ap.add_argument("--force", action="store_true")
-    ap.add_argument("--raw-only", action="store_true")
-    ap.add_argument("--allow-nontrading", action="store_true")
-    ap.add_argument("--start", default=None)
-    ap.add_argument("--end", default=None)
-    ap.add_argument("--no-refresh-list", action="store_true")
+
+    ap.add_argument(
+        "--slot",
+        choices=["open", "midday", "close"],
+        default="midday",
+        help="open=開盤快照；midday=盤中快照；close=收盤快照",
+    )
+    ap.add_argument(
+        "--asof",
+        default="11:00",
+        help="只作為顯示/記錄用途，例如 11:00、13:45",
+    )
+
+    # ✅ allow external override ymd (useful for CI/testing)
+    ap.add_argument(
+        "--ymd",
+        default="",
+        help="交易日 YYYY-MM-DD（留空則用市場時區的今天）",
+    )
+
+    ap.add_argument("--no-cache", action="store_true", help="強制停用快取（測試用）")
+    ap.add_argument("--force", action="store_true", help="忽略快取，強制重跑（測試用）")
+
+    ap.add_argument(
+        "--market",
+        default="tw",
+        choices=sorted(RUNNERS.keys()),
+        help=f"市場：{', '.join(sorted(RUNNERS.keys()))}",
+    )
+
+    # Debug：只輸出 raw snapshot
+    ap.add_argument("--raw-only", action="store_true", help="只跑 downloader，不跑 aggregator")
+
+    # Runners may use these (open movers markets)
+    ap.add_argument("--start", default=None, help="sync 起始日 (YYYY-MM-DD，可選)")
+    ap.add_argument("--end", default=None, help="sync 結束日 (YYYY-MM-DD，可選)")
+    ap.add_argument("--no-refresh-list", action="store_true", help="sync 時不要刷新股票清單（可選）")
+
+    # Trading guard control
+    ap.add_argument(
+        "--allow-nontrading",
+        action="store_true",
+        help="允許非交易日/非交易時段也產出（不 raise）",
+    )
+
     args = ap.parse_args()
 
+    # ------------------------------------------------------------------
+    # Cache policy
+    # ------------------------------------------------------------------
     default_cache = False if is_github_actions() else True
     enable_cache = parse_bool_env("INTRADAY_ENABLE_CACHE", default_cache)
     if args.no_cache:
         enable_cache = False
 
-    ymd = today_ymd()
+    # ymd
+    ymd = (args.ymd or "").strip()
+    if not ymd:
+        ymd = today_ymd_market(args.market)
+
     base_dir = Path(__file__).resolve().parent
     paths = cache_paths(base_dir, args.market, args.slot, ymd)
+
+    # market-specific test_mode（沿用你原本 TW env，其他市場也能用）
+    test_mode = parse_bool_env("TW_TEST_MODE", False)
 
     meta: Dict[str, Any] = {
         "market": args.market,
@@ -208,44 +222,65 @@ def main():
         "enable_cache": enable_cache,
         "github_actions": is_github_actions(),
         "raw_only": bool(args.raw_only),
-        "allow_nontrading": bool(args.allow_nontrading),
-        "guard_enabled_default": bool(guard_enabled_default()),
+        "test_mode": test_mode,
     }
 
+    # ------------------------------------------------------------------
+    # 1) Cache skip
+    # ------------------------------------------------------------------
     if enable_cache and (not args.force) and should_skip_by_cache(paths["marker"]):
         print(f"⏭️  Skip (cache hit): {paths['marker']}")
-        return
+        print("    用 --force 強制重跑，或 --no-cache 停用快取")
+        return 0
 
+    # ------------------------------------------------------------------
+    # 1.5) Update stock list (daily) - TW only
+    # ------------------------------------------------------------------
+    if args.market == "tw":
+        maybe_update_stock_list_tw(base_dir)
+
+    # ------------------------------------------------------------------
+    # 2) Run via runner registry
+    # ------------------------------------------------------------------
     runner = RUNNERS.get(args.market)
-    if not runner:
-        raise RuntimeError(f"Unknown market: {args.market}")
+    if runner is None:
+        raise ValueError(f"Unsupported market: {args.market}")
 
-    started_utc = _now_utc()
+    print(f"🚀 Run market runner: {args.market} | {meta}")
     payload = runner(args, base_dir, ymd, meta)
-    finished_utc = _now_utc()
 
-    payload.setdefault("market", args.market)
-    payload.setdefault("ymd", ymd)
-    payload.setdefault("slot", args.slot)
-    payload.setdefault("asof", args.asof)
-    payload.setdefault("generated_at", datetime.now().isoformat(timespec="seconds"))
+    # ------------------------------------------------------------------
+    # 3) Always write payload file (run_shorts depends on it)
+    # ------------------------------------------------------------------
+    paths["payload"].write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"✅ Wrote payload: {paths['payload']}")
 
-    payload.setdefault("meta", {})
-    payload["meta"].setdefault("time", {})
-    payload["meta"]["time"].update(build_time_meta(args.market, finished_utc=finished_utc))
-    payload["meta"]["time"]["started_at_utc"] = started_utc.isoformat(timespec="seconds")
-    payload["meta"]["time"]["duration_seconds"] = int(max(0.0, (finished_utc - started_utc).total_seconds()))
-
+    # ------------------------------------------------------------------
+    # 3.1) Write marker only when cache enabled
+    # ------------------------------------------------------------------
     if enable_cache:
-        write_marker(paths["marker"], paths["payload"], meta, payload)
-        print(f"✅ Cached: {paths['payload']}")
+        marker = {
+            "meta": meta,
+            "payload_path": str(paths["payload"]),
+            "written_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        paths["marker"].write_text(
+            json.dumps(marker, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"✅ Wrote marker: {paths['marker']}")
     else:
-        print("✅ Done (cache disabled)")
+        print("✅ Done (cache disabled; marker not written)")
         try:
             print(f"   stats: {json.dumps(payload.get('stats', {}), ensure_ascii=False)}")
         except Exception:
             pass
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
