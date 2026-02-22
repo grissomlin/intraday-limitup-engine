@@ -96,7 +96,6 @@ jobs:
             --market ${{ matrix.market }} \
             --slot ${{ inputs.slot }} \
             --full \
-            --allow-nontrading \
             --drive \
             --drive-parent-id "${GDRIVE_ROOT_FOLDER_ID}" \
             --drive-order after_youtube \
