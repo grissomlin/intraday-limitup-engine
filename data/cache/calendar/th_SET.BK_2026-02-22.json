@@ -1,0 +1,11 @@
+{
+  "asof_ymd": "2026-02-22",
+  "latest_ymd": "2026-02-20",
+  "start_ymd": "2026-01-12",
+  "end_ymd": "2026-02-20",
+  "end_excl_ymd": "2026-02-21",
+  "mode": "trading_days",
+  "error": null,
+  "calendar_ticker": "^SET.BK",
+  "cache_path": "data\\cache\\calendar\\th_SET.BK_2026-02-22.json"
+}

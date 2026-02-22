@@ -1,0 +1,980 @@
+{
+  "FERA": {
+    "cik": "0002025401",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:28Z"
+  },
+  "NHIC": {
+    "cik": "0002043699",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:29Z"
+  },
+  "AACB": {
+    "cik": "0002034334",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:30Z"
+  },
+  "AAM": {
+    "cik": "0002012964",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:31Z"
+  },
+  "AAUC": {
+    "cik": "0001993344",
+    "sic": null,
+    "sicDescription": null,
+    "fetched_at": "2026-01-27T14:04:32Z"
+  },
+  "ACOG": {
+    "cik": "0001655923",
+    "sic": "2836",
+    "sicDescription": "Biological Products, (No Diagnostic Substances)",
+    "fetched_at": "2026-01-27T14:04:33Z"
+  },
+  "AEXA": {
+    "cik": "0002079173",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:34Z"
+  },
+  "AFJK": {
+    "cik": "0001979005",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:35Z"
+  },
+  "ALCO": {
+    "cik": "0000003545",
+    "sic": "0100",
+    "sicDescription": "Agricultural Production-Crops",
+    "fetched_at": "2026-01-27T14:04:36Z"
+  },
+  "ALDF": {
+    "cik": "0002031561",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:37Z"
+  },
+  "ALF": {
+    "cik": "0002010930",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:38Z"
+  },
+  "ALIS": {
+    "cik": "0002026767",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:38Z"
+  },
+  "ALPS": {
+    "cik": "0002025774",
+    "sic": "8000",
+    "sicDescription": "Services-Health Services",
+    "fetched_at": "2026-01-27T14:04:39Z"
+  },
+  "ALUB": {
+    "cik": "0002041493",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:41Z"
+  },
+  "ANSC": {
+    "cik": "0001854149",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:41Z"
+  },
+  "APAC": {
+    "cik": "0002043630",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:45Z"
+  },
+  "APAD": {
+    "cik": "0001956439",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:47Z"
+  },
+  "ARMN": {
+    "cik": "0001964504",
+    "sic": "1040",
+    "sicDescription": "Gold and Silver Ores",
+    "fetched_at": "2026-01-27T14:04:48Z"
+  },
+  "ATII": {
+    "cik": "0002028516",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:49Z"
+  },
+  "AUGO": {
+    "cik": "0001468642",
+    "sic": "1000",
+    "sicDescription": "Metal Mining",
+    "fetched_at": "2026-01-27T14:04:52Z"
+  },
+  "BACQ": {
+    "cik": "0002028707",
+    "sic": "7373",
+    "sicDescription": "Services-Computer Integrated Systems Design",
+    "fetched_at": "2026-01-27T14:04:53Z"
+  },
+  "BAYA": {
+    "cik": "0001969475",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:56Z"
+  },
+  "BCSS": {
+    "cik": "0002064355",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:57Z"
+  },
+  "BEAG": {
+    "cik": "0001852207",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:04:58Z"
+  },
+  "BELFA": {
+    "cik": "0000729580",
+    "sic": "3677",
+    "sicDescription": "Electronic Coils, Transformers & Other Inductors",
+    "fetched_at": "2026-01-27T14:04:59Z"
+  },
+  "BELFB": {
+    "cik": "0000729580",
+    "sic": "3677",
+    "sicDescription": "Electronic Coils, Transformers & Other Inductors",
+    "fetched_at": "2026-01-27T14:05:01Z"
+  },
+  "BGIN": {
+    "cik": "0001945565",
+    "sic": "6199",
+    "sicDescription": "Finance Services",
+    "fetched_at": "2026-01-27T14:05:02Z"
+  },
+  "BGMS": {
+    "cik": "0001130166",
+    "sic": "2834",
+    "sicDescription": "Pharmaceutical Preparations",
+    "fetched_at": "2026-01-27T14:05:03Z"
+  },
+  "BGSI": {
+    "cik": "0002091467",
+    "sic": "7500",
+    "sicDescription": "Services-Automotive Repair, Services & Parking",
+    "fetched_at": "2026-01-27T14:05:04Z"
+  },
+  "BHST": {
+    "cik": "0001723464",
+    "sic": "2834",
+    "sicDescription": "Pharmaceutical Preparations",
+    "fetched_at": "2026-01-27T14:05:05Z"
+  },
+  "BIXI": {
+    "cik": "0002082542",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:07Z"
+  },
+  "BLUW": {
+    "cik": "0002050501",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:08Z"
+  },
+  "BPAC": {
+    "cik": "0002064177",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:09Z"
+  },
+  "BTQ": {
+    "cik": "0001821866",
+    "sic": "7370",
+    "sicDescription": "Services-Computer Programming, Data Processing, Etc.",
+    "fetched_at": "2026-01-27T14:05:11Z"
+  },
+  "BVC": {
+    "cik": "0001785680",
+    "sic": "6282",
+    "sicDescription": "Investment Advice",
+    "fetched_at": "2026-01-27T14:05:12Z"
+  },
+  "CAEP": {
+    "cik": "0002034268",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:13Z"
+  },
+  "CAMP": {
+    "cik": "0001736730",
+    "sic": "2834",
+    "sicDescription": "Pharmaceutical Preparations",
+    "fetched_at": "2026-01-27T14:05:14Z"
+  },
+  "CAPN": {
+    "cik": "0002024203",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:15Z"
+  },
+  "CBC": {
+    "cik": "0002065601",
+    "sic": "6022",
+    "sicDescription": "State Commercial Banks",
+    "fetched_at": "2026-01-27T14:05:16Z"
+  },
+  "CCII": {
+    "cik": "0002064683",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:17Z"
+  },
+  "CEPV": {
+    "cik": "0002034266",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:18Z"
+  },
+  "CHAC": {
+    "cik": "0002054174",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:20Z"
+  },
+  "CHAR": {
+    "cik": "0002024459",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:21Z"
+  },
+  "CHEC": {
+    "cik": "0002047177",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:21Z"
+  },
+  "CHPG": {
+    "cik": "0002024460",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:22Z"
+  },
+  "CNL": {
+    "cik": "0001953575",
+    "sic": "1040",
+    "sicDescription": "Gold and Silver Ores",
+    "fetched_at": "2026-01-27T14:05:23Z"
+  },
+  "COLA": {
+    "cik": "0002028201",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:24Z"
+  },
+  "COPL": {
+    "cik": "0002045473",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:25Z"
+  },
+  "CRAC": {
+    "cik": "0002070887",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:28Z"
+  },
+  "DEC": {
+    "cik": "0001922446",
+    "sic": "1311",
+    "sicDescription": "Crude Petroleum & Natural Gas",
+    "fetched_at": "2026-01-27T14:05:30Z"
+  },
+  "DMAA": {
+    "cik": "0002028614",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:31Z"
+  },
+  "DRDB": {
+    "cik": "0002032528",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:32Z"
+  },
+  "DTSQ": {
+    "cik": "0002017950",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:33Z"
+  },
+  "DVS": {
+    "cik": "0001542028",
+    "sic": "1040",
+    "sicDescription": "Gold and Silver Ores",
+    "fetched_at": "2026-01-27T14:05:36Z"
+  },
+  "DXYZ": {
+    "cik": "0001843974",
+    "sic": null,
+    "sicDescription": null,
+    "fetched_at": "2026-01-27T14:05:37Z"
+  },
+  "ELVA": {
+    "cik": "0001844450",
+    "sic": "3690",
+    "sicDescription": "Miscellaneous Electrical Machinery, Equipment & Supplies",
+    "fetched_at": "2026-01-27T14:05:39Z"
+  },
+  "EMAT": {
+    "cik": "0001866226",
+    "sic": "3690",
+    "sicDescription": "Miscellaneous Electrical Machinery, Equipment & Supplies",
+    "fetched_at": "2026-01-27T14:05:40Z"
+  },
+  "EMPD": {
+    "cik": "0001829794",
+    "sic": "3711",
+    "sicDescription": "Motor Vehicles & Passenger Car Bodies",
+    "fetched_at": "2026-01-27T14:05:41Z"
+  },
+  "ETHM": {
+    "cik": "0002028699",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:42Z"
+  },
+  "EURK": {
+    "cik": "0002000410",
+    "sic": "7373",
+    "sicDescription": "Services-Computer Integrated Systems Design",
+    "fetched_at": "2026-01-27T14:05:43Z"
+  },
+  "FACT": {
+    "cik": "0002028935",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:44Z"
+  },
+  "FGMC": {
+    "cik": "0001906364",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:45Z"
+  },
+  "FIGX": {
+    "cik": "0002059033",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:46Z"
+  },
+  "FSHP": {
+    "cik": "0001850059",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:46Z"
+  },
+  "FVN": {
+    "cik": "0002010653",
+    "sic": "7373",
+    "sicDescription": "Services-Computer Integrated Systems Design",
+    "fetched_at": "2026-01-27T14:05:48Z"
+  },
+  "GEF": {
+    "cik": "0000043920",
+    "sic": "3412",
+    "sicDescription": "Metal Shipping Barrels, Drums, Kegs & Pails",
+    "fetched_at": "2026-01-27T14:05:49Z"
+  },
+  "GEV": {
+    "cik": "0001996810",
+    "sic": "3600",
+    "sicDescription": "Electronic & Other Electrical Equipment (No Computer Equip)",
+    "fetched_at": "2026-01-27T14:05:50Z"
+  },
+  "GIW": {
+    "cik": "0002080019",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:51Z"
+  },
+  "GPAC": {
+    "cik": "0002085408",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:54Z"
+  },
+  "GPAT": {
+    "cik": "0001834526",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:56Z"
+  },
+  "GRAF": {
+    "cik": "0001897463",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:57Z"
+  },
+  "GSHR": {
+    "cik": "0002044635",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:05:58Z"
+  },
+  "GSRF": {
+    "cik": "0002072404",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:03Z"
+  },
+  "GTEN": {
+    "cik": "0001986817",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:04Z"
+  },
+  "HAVA": {
+    "cik": "0002042460",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:05Z"
+  },
+  "HG": {
+    "cik": "0001593275",
+    "sic": "6331",
+    "sicDescription": "Fire, Marine & Casualty Insurance",
+    "fetched_at": "2026-01-27T14:06:06Z"
+  },
+  "HLXC": {
+    "cik": "0002099656",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:07Z"
+  },
+  "HVII": {
+    "cik": "0001846416",
+    "sic": "4911",
+    "sicDescription": "Electric Services",
+    "fetched_at": "2026-01-27T14:06:08Z"
+  },
+  "HVMC": {
+    "cik": "0002070602",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:09Z"
+  },
+  "HYAC": {
+    "cik": "0001970509",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:12Z"
+  },
+  "IMSR": {
+    "cik": "0002019804",
+    "sic": "3443",
+    "sicDescription": "Fabricated Plate Work (Boiler Shops)",
+    "fetched_at": "2026-01-27T14:06:14Z"
+  },
+  "INAC": {
+    "cik": "0002063816",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:15Z"
+  },
+  "ISOU": {
+    "cik": "0001997377",
+    "sic": "1090",
+    "sicDescription": "Miscellaneous Metal Ores",
+    "fetched_at": "2026-01-27T14:06:16Z"
+  },
+  "ITHA": {
+    "cik": "0002080985",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:17Z"
+  },
+  "JACS": {
+    "cik": "0002039058",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:18Z"
+  },
+  "JBDI": {
+    "cik": "0001964314",
+    "sic": "3412",
+    "sicDescription": "Metal Shipping Barrels, Drums, Kegs & Pails",
+    "fetched_at": "2026-01-27T14:06:19Z"
+  },
+  "JENA": {
+    "cik": "0002060337",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:21Z"
+  },
+  "KBDC": {
+    "cik": "0001747172",
+    "sic": null,
+    "sicDescription": null,
+    "fetched_at": "2026-01-27T14:06:22Z"
+  },
+  "KCHV": {
+    "cik": "0002053799",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:23Z"
+  },
+  "KFII": {
+    "cik": "0002029976",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:25Z"
+  },
+  "KOYN": {
+    "cik": "0002068454",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:26Z"
+  },
+  "KRSP": {
+    "cik": "0002074872",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:27Z"
+  },
+  "KSPI": {
+    "cik": "0001985487",
+    "sic": "7389",
+    "sicDescription": "Services-Business Services, NEC",
+    "fetched_at": "2026-01-27T14:06:28Z"
+  },
+  "KVAC": {
+    "cik": "0001889983",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:29Z"
+  },
+  "LAFA": {
+    "cik": "0002079106",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:30Z"
+  },
+  "LEGT": {
+    "cik": "0002002038",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:31Z"
+  },
+  "LIMN": {
+    "cik": "0001971387",
+    "sic": "2836",
+    "sicDescription": "Biological Products, (No Diagnostic Substances)",
+    "fetched_at": "2026-01-27T14:06:32Z"
+  },
+  "LKSP": {
+    "cik": "0002043508",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:33Z"
+  },
+  "LOKV": {
+    "cik": "0002048951",
+    "sic": "5900",
+    "sicDescription": "Retail-Miscellaneous Retail",
+    "fetched_at": "2026-01-27T14:06:36Z"
+  },
+  "LPAA": {
+    "cik": "0002015502",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:38Z"
+  },
+  "LPBB": {
+    "cik": "0002023676",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:39Z"
+  },
+  "LSH": {
+    "cik": "0001996192",
+    "sic": "4731",
+    "sicDescription": "Arrangement of  Transportation of  Freight & Cargo",
+    "fetched_at": "2026-01-27T14:06:40Z"
+  },
+  "MACI": {
+    "cik": "0002016221",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:41Z"
+  },
+  "MBAV": {
+    "cik": "0002016072",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:42Z"
+  },
+  "MBVI": {
+    "cik": "0002073928",
+    "sic": null,
+    "sicDescription": null,
+    "fetched_at": "2026-01-27T14:06:43Z"
+  },
+  "MDCX": {
+    "cik": "0001997296",
+    "sic": "2834",
+    "sicDescription": "Pharmaceutical Preparations",
+    "fetched_at": "2026-01-27T14:06:44Z"
+  },
+  "MKLY": {
+    "cik": "0002067592",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:46Z"
+  },
+  "MSGY": {
+    "cik": "0002020228",
+    "sic": "1700",
+    "sicDescription": "Construction - Special Trade Contractors",
+    "fetched_at": "2026-01-27T14:06:47Z"
+  },
+  "NCDL": {
+    "cik": "0001737924",
+    "sic": null,
+    "sicDescription": null,
+    "fetched_at": "2026-01-27T14:06:48Z"
+  },
+  "NEXM": {
+    "cik": "0000795800",
+    "sic": "1000",
+    "sicDescription": "Metal Mining",
+    "fetched_at": "2026-01-27T14:06:49Z"
+  },
+  "NGEN": {
+    "cik": "0001751912",
+    "sic": "2834",
+    "sicDescription": "Pharmaceutical Preparations",
+    "fetched_at": "2026-01-27T14:06:50Z"
+  },
+  "NOEM": {
+    "cik": "0001956648",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:51Z"
+  },
+  "NPAC": {
+    "cik": "0002048948",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:52Z"
+  },
+  "NTWO": {
+    "cik": "0002028027",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:53Z"
+  },
+  "ONCH": {
+    "cik": "0002054272",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:55Z"
+  },
+  "ORBS": {
+    "cik": "0001892492",
+    "sic": "6153",
+    "sicDescription": "Short-Term Business Credit Institutions",
+    "fetched_at": "2026-01-27T14:06:56Z"
+  },
+  "ORIQ": {
+    "cik": "0002044523",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:06:58Z"
+  },
+  "OTF": {
+    "cik": "0001747777",
+    "sic": null,
+    "sicDescription": null,
+    "fetched_at": "2026-01-27T14:06:59Z"
+  },
+  "PACH": {
+    "cik": "0002040381",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:00Z"
+  },
+  "PAII": {
+    "cik": "0002069238",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:01Z"
+  },
+  "PCSC": {
+    "cik": "0002017526",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:02Z"
+  },
+  "PDCC": {
+    "cik": "0001998043",
+    "sic": null,
+    "sicDescription": null,
+    "fetched_at": "2026-01-27T14:07:03Z"
+  },
+  "PLMK": {
+    "cik": "0002030482",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:04Z"
+  },
+  "POLE": {
+    "cik": "0002025341",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:07Z"
+  },
+  "PSBD": {
+    "cik": "0001794776",
+    "sic": null,
+    "sicDescription": null,
+    "fetched_at": "2026-01-27T14:07:08Z"
+  },
+  "QUMS": {
+    "cik": "0002070900",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:08Z"
+  },
+  "RAAQ": {
+    "cik": "0002052161",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:09Z"
+  },
+  "RAC": {
+    "cik": "0002047497",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:13Z"
+  },
+  "RANG": {
+    "cik": "0002035644",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:15Z"
+  },
+  "RDAC": {
+    "cik": "0002018145",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:16Z"
+  },
+  "REED": {
+    "cik": "0001140215",
+    "sic": "2086",
+    "sicDescription": "Bottled & Canned Soft Drinks & Carbonated Waters",
+    "fetched_at": "2026-01-27T14:07:18Z"
+  },
+  "RFAI": {
+    "cik": "0002012807",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:20Z"
+  },
+  "RIBB": {
+    "cik": "0002035016",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:21Z"
+  },
+  "RNGT": {
+    "cik": "0002078653",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:22Z"
+  },
+  "SBXD": {
+    "cik": "0002015947",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:23Z"
+  },
+  "SBXE": {
+    "cik": "0002081909",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:24Z"
+  },
+  "SCII": {
+    "cik": "0002076739",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:25Z"
+  },
+  "SCZM": {
+    "cik": "0001548536",
+    "sic": "1040",
+    "sicDescription": "Gold and Silver Ores",
+    "fetched_at": "2026-01-27T14:07:26Z"
+  },
+  "SLSR": {
+    "cik": "0002019103",
+    "sic": "1040",
+    "sicDescription": "Gold and Silver Ores",
+    "fetched_at": "2026-01-27T14:07:27Z"
+  },
+  "SOCA": {
+    "cik": "0002065948",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:28Z"
+  },
+  "SPEG": {
+    "cik": "0002028735",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:29Z"
+  },
+  "SPKL": {
+    "cik": "0001884046",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:30Z"
+  },
+  "SPMC": {
+    "cik": "0001930147",
+    "sic": null,
+    "sicDescription": null,
+    "fetched_at": "2026-01-27T14:07:31Z"
+  },
+  "SSEA": {
+    "cik": "0002059165",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:33Z"
+  },
+  "SSM": {
+    "cik": "0001840416",
+    "sic": "3674",
+    "sicDescription": "Semiconductors & Related Devices",
+    "fetched_at": "2026-01-27T14:07:34Z"
+  },
+  "STKE": {
+    "cik": "0001846839",
+    "sic": "6199",
+    "sicDescription": "Finance Services",
+    "fetched_at": "2026-01-27T14:07:35Z"
+  },
+  "SUPX": {
+    "cik": "0001897087",
+    "sic": "8742",
+    "sicDescription": "Services-Management Consulting Services",
+    "fetched_at": "2026-01-27T14:07:36Z"
+  },
+  "SVCC": {
+    "cik": "0002033593",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:37Z"
+  },
+  "TACH": {
+    "cik": "0002009183",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:38Z"
+  },
+  "TDAC": {
+    "cik": "0001926599",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:39Z"
+  },
+  "TII": {
+    "cik": "0001791703",
+    "sic": "1040",
+    "sicDescription": "Gold and Silver Ores",
+    "fetched_at": "2026-01-27T14:07:40Z"
+  },
+  "TLIH": {
+    "cik": "0001982012",
+    "sic": "5080",
+    "sicDescription": "Wholesale-Machinery, Equipment & Supplies",
+    "fetched_at": "2026-01-27T14:07:41Z"
+  },
+  "TLNC": {
+    "cik": "0002073340",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:42Z"
+  },
+  "TVA": {
+    "cik": "0002033991",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:45Z"
+  },
+  "TVAI": {
+    "cik": "0001872228",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:46Z"
+  },
+  "VACH": {
+    "cik": "0002006815",
+    "sic": "2836",
+    "sicDescription": "Biological Products, (No Diagnostic Substances)",
+    "fetched_at": "2026-01-27T14:07:47Z"
+  },
+  "VCIC": {
+    "cik": "0002025396",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:48Z"
+  },
+  "VFF": {
+    "cik": "0001584549",
+    "sic": "0100",
+    "sicDescription": "Agricultural Production-Crops",
+    "fetched_at": "2026-01-27T14:07:49Z"
+  },
+  "WENN": {
+    "cik": "0002057043",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:50Z"
+  },
+  "WSBK": {
+    "cik": "0002047235",
+    "sic": "6036",
+    "sicDescription": "Savings Institutions, Not Federally Chartered",
+    "fetched_at": "2026-01-27T14:07:53Z"
+  },
+  "WSTN": {
+    "cik": "0002076192",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:55Z"
+  },
+  "YCY": {
+    "cik": "0002075336",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:56Z"
+  },
+  "YHNA": {
+    "cik": "0002020987",
+    "sic": "6770",
+    "sicDescription": "Blank Checks",
+    "fetched_at": "2026-01-27T14:07:58Z"
+  }
+}

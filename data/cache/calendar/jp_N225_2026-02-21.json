@@ -1,0 +1,11 @@
+{
+  "asof_ymd": "2026-02-21",
+  "latest_ymd": "2026-02-20",
+  "start_ymd": "2026-01-08",
+  "end_ymd": "2026-02-20",
+  "end_excl_ymd": "2026-02-21",
+  "mode": "trading_days",
+  "error": null,
+  "calendar_ticker": "^N225",
+  "cache_path": "data\\cache\\calendar\\jp_N225_2026-02-21.json"
+}

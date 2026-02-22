@@ -1,0 +1,11 @@
+{
+  "asof_ymd": "2026-02-05",
+  "latest_ymd": "2026-02-05",
+  "start_ymd": "2025-11-07",
+  "end_ymd": "2026-02-05",
+  "end_excl_ymd": "2026-02-06",
+  "mode": "cal_days",
+  "error": "calendar_empty",
+  "calendar_ticker": "^N225",
+  "cache_path": "data\\cache\\calendar\\jp_N225_2026-02-05.json"
+}

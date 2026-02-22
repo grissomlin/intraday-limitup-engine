@@ -1,0 +1,2 @@
+plotly>=5.0
+kaleido==0.1.0post1

@@ -1,0 +1,15 @@
+file 'overview_sectors_bigmove10_p1.png'
+duration 2.000000
+file 'overview_sectors_bigmove10_p2.png'
+duration 2.000000
+file 'th_Finance___Securities_p1.png'
+duration 2.000000
+file 'th_Home___Office_Products_p1.png'
+duration 2.000000
+file 'th_Media___Publishing_p1.png'
+duration 2.000000
+file 'th_Transportation___Logistics_p1.png'
+duration 2.000000
+file 'th_Unclassified_p1.png'
+duration 2.000000
+file 'th_Unclassified_p1.png'

@@ -1,0 +1,15 @@
+{
+  "meta": {
+    "market": "cn",
+    "slot": "midday",
+    "asof": "17:16",
+    "ymd": "2026-02-22",
+    "enable_cache": true,
+    "github_actions": false,
+    "raw_only": false,
+    "allow_nontrading": false,
+    "guard_enabled_default": false
+  },
+  "payload_path": "C:\\code\\intraday-limitup-engine\\data\\cache\\cn\\2026-02-22\\midday.payload.json",
+  "written_at": "2026-02-22T17:21:56"
+}

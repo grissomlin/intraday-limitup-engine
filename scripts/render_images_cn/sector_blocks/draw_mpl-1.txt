@@ -1,0 +1,707 @@
+# scripts/render_images_cn/sector_blocks/draw_mpl.py
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Dict, List, Tuple, Optional
+
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+
+from .layout import LayoutSpec, calc_rows_layout
+
+# =============================================================================
+# i18n (optional)
+# =============================================================================
+try:
+    from scripts.render_images_common.i18n import t as _i18n_t  # type: ignore
+except Exception:
+    _i18n_t = None  # type: ignore
+
+
+def _t(lang: str, key: str, default: str, **kwargs) -> str:
+    if _i18n_t is None:
+        try:
+            return default.format(**kwargs)
+        except Exception:
+            return default
+    try:
+        v = _i18n_t(lang, key, default=default, **kwargs)  # type: ignore
+        return str(v)
+    except Exception:
+        try:
+            return default.format(**kwargs)
+        except Exception:
+            return default
+
+
+# =============================================================================
+# Font
+# =============================================================================
+def setup_chinese_font() -> str | None:
+    try:
+        font_candidates = [
+            "Microsoft JhengHei",
+            "Microsoft YaHei",
+            "PingFang TC",
+            "PingFang SC",
+            "Noto Sans CJK TC",
+            "Noto Sans CJK SC",
+            "Noto Sans CJK JP",
+            "SimHei",
+            "WenQuanYi Zen Hei",
+            "Noto Sans",
+            "Arial Unicode MS",
+        ]
+        available = {f.name for f in fm.fontManager.ttflist}
+        for f in font_candidates:
+            if f in available:
+                plt.rcParams["font.sans-serif"] = [f]
+                plt.rcParams["axes.unicode_minus"] = False
+                return f
+    except Exception:
+        pass
+    return None
+
+
+# =============================================================================
+# Cutoff parsing / time helpers (for CLI)
+# =============================================================================
+def parse_cutoff(cutoff: str) -> Tuple[str, str]:
+    """
+    cutoff could be:
+      - "close" / "open"
+      - "intraday:11:30" / "intraday:1330"
+      - "2026-02-01 close"
+    returns: (session_zh, hhmm)
+    """
+    s = str(cutoff or "").strip()
+    if not s:
+        return ("", "")
+
+    # backward: "YYYY-MM-DD close"
+    parts = s.split()
+    if len(parts) >= 2 and parts[0][:4].isdigit():
+        s = " ".join(parts[1:]).strip()
+
+    s2 = s.replace("_", " ").replace("-", " ").strip().lower()
+
+    if "close" in s2:
+        return ("收盘", "")
+    if "open" in s2:
+        return ("开盘", "")
+
+    if "intraday" in s2:
+        hhmm = ""
+        if ":" in s2:
+            toks = s2.split()
+            for t in reversed(toks):
+                if ":" in t:
+                    last = t.split(":")
+                    if len(last) >= 3:
+                        hhmm = f"{last[-2]}:{last[-1]}"
+                    elif len(last) == 2:
+                        hhmm = f"{last[0]}:{last[1]}"
+                    break
+        else:
+            toks = s2.split()
+            if len(toks) >= 2:
+                hhmm = toks[-1]
+        hhmm = hhmm.strip()
+        if hhmm and hhmm.isdigit() and len(hhmm) == 4:
+            hhmm = hhmm[:2] + ":" + hhmm[2:]
+        return ("盘中", hhmm)
+
+    return (s, "")
+
+
+def _safe_str(x: Any) -> str:
+    try:
+        return str(x) if x is not None else ""
+    except Exception:
+        return ""
+
+
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def _safe_int(x: Any, default: int = 0) -> int:
+    try:
+        return int(x)
+    except Exception:
+        return default
+
+
+def _parse_hhmm_from_iso(ts: str) -> str:
+    """
+    Parse "2026-02-01T13:20:00+08:00" -> "13:20"
+    Parse "2026-02-01 13:20:00" -> "13:20"
+    """
+    if not ts:
+        return ""
+    s = str(ts).strip()
+    if "T" in s:
+        s = s.split("T", 1)[1]
+    if "+" in s:
+        s = s.split("+", 1)[0]
+    if "Z" in s:
+        s = s.replace("Z", "")
+    s = s.strip()
+    if " " in s:
+        s = s.split(" ", 1)[0]
+    parts = s.split(":")
+    if len(parts) >= 2:
+        return f"{parts[0]:0>2}:{parts[1]:0>2}"
+    return ""
+
+
+def get_market_time_info(payload: Dict[str, Any]) -> Tuple[str, str, str, str]:
+    """
+    Return (market_label, ymd, session_zh, hhmm)
+    Used by CLI.
+    """
+    market_label = _safe_str(payload.get("market_label") or payload.get("market") or "CN").upper()
+    ymd = _safe_str(payload.get("ymd_effective") or payload.get("ymd") or "")
+    cutoff = _safe_str(payload.get("cutoff") or payload.get("asof") or payload.get("slot") or "")
+    session, hhmm_from_cutoff = parse_cutoff(cutoff)
+
+    updated_at = _safe_str(payload.get("updated_at") or payload.get("updatedAt") or "")
+    hhmm_from_updated = _parse_hhmm_from_iso(updated_at)
+
+    hhmm = hhmm_from_updated or hhmm_from_cutoff or ""
+    return market_label, ymd, session, hhmm
+
+
+# =============================================================================
+# Data helpers
+# =============================================================================
+def get_ret_color(ret: float, theme: str) -> str:
+    if theme == "dark":
+        return "#ff6b6b" if ret >= 0 else "#4dabf7"
+    return "#d9480f" if ret >= 0 else "#1864ab"
+
+
+def _is_st_row(row: Dict[str, Any]) -> bool:
+    name = _safe_str(row.get("name") or "")
+    tag = _safe_str(row.get("market_tag") or "")
+    if "ST" in name.upper():
+        return True
+    if tag.upper() == "ST":
+        return True
+    return False
+
+
+def _board_from_row(row: Dict[str, Any]) -> str:
+    """
+    Normalize to ONE char: 主 / 创 / 科 / 北 / 特
+    """
+    tag = _safe_str(row.get("market_tag") or row.get("board_tag") or "")
+    tag_up = tag.upper()
+
+    if _is_st_row(row) or tag_up == "ST":
+        return "特"
+
+    if tag in ("创业", "创业板", "创"):
+        return "创"
+    if tag in ("科创", "科创板", "科"):
+        return "科"
+    if tag in ("北交", "北交所", "北"):
+        return "北"
+
+    return "主"
+
+
+def _limit_pct_from_row(row: Dict[str, Any]) -> float:
+    v = row.get("limit_rate")
+    if v is None:
+        return 0.0
+    try:
+        return float(v) * 100.0
+    except Exception:
+        return 0.0
+
+
+def _board_colors(board: str, theme: str) -> Tuple[str, str]:
+    # returns (bg, fg)
+    b = str(board or "")
+    if theme == "dark":
+        if b == "创":
+            return ("#1c7ed6", "#ffffff")
+        if b == "科":
+            return ("#6741d9", "#ffffff")
+        if b == "北":
+            return ("#0b7285", "#ffffff")
+        if b == "特":
+            return ("#f08c00", "#111111")
+        return ("#495057", "#ffffff")  # 主
+    else:
+        if b == "创":
+            return ("#a5d8ff", "#0b7285")
+        if b == "科":
+            return ("#d0bfff", "#3b2f80")
+        if b == "北":
+            return ("#c5f6fa", "#0b7285")
+        if b == "特":
+            return ("#ffe066", "#7c2d12")
+        return ("#dee2e6", "#343a40")  # 主
+
+
+def _limit_colors(limit_pct: float, theme: str) -> Tuple[str, str]:
+    if theme == "dark":
+        if limit_pct >= 20:
+            return ("#ff922b", "#111111")
+        if limit_pct >= 10:
+            return ("#74c0fc", "#111111")
+        return ("#adb5bd", "#111111")
+    else:
+        if limit_pct >= 20:
+            return ("#ffd8a8", "#7c2d12")
+        if limit_pct >= 10:
+            return ("#d0ebff", "#0b7285")
+        return ("#f1f3f5", "#343a40")
+
+
+# =============================================================================
+# Draw
+# =============================================================================
+def draw_block_table(
+    out_path: Path,
+    *,
+    layout: LayoutSpec,
+    sector: str,
+    cutoff: str,
+    locked_cnt: int,
+    touch_cnt: int,
+    theme_cnt: int,
+    limitup_rows: List[Dict[str, Any]],
+    peer_rows: List[Dict[str, Any]],
+    page_idx: int,
+    page_total: int,
+    width: int,
+    height: int,
+    rows_per_page: int,
+    theme: str = "light",
+    time_note: str = "",
+    has_more_peers: bool = False,
+    hit_shown: Optional[int] = None,
+    hit_total: Optional[int] = None,
+    touch_shown: Optional[int] = None,
+    touch_total: Optional[int] = None,
+    sector_shown_total: Optional[int] = None,
+    sector_all_total: Optional[int] = None,
+    lang: str = "zh_hans",
+    market: str = "CN",
+):
+    """
+    CN 版重點：
+    - 產業名（header）一定顯示
+    - time_note（header 第二行）一定顯示
+    - 計數不再佔 header 一行，改塞到上框標題：涨停/触及 2/2｜0/0
+    - pills（主/创/科/北/特 + 涨停上限%）跟在公司名後面
+    """
+    setup_chinese_font()
+
+    theme = (theme or "light").lower().strip()
+    is_dark = theme == "dark"
+
+    if is_dark:
+        bg = "#0b0d10"
+        fg = "#f1f3f5"
+        sub = "#adb5bd"
+        line = "#343a40"
+        box = "#14171c"
+        fg_white = "#ffffff"
+        badge_bg_limitup = "#fa5252"
+        badge_bg_touch = "#1c7ed6"
+    else:
+        bg = "#ffffff"
+        fg = "#111111"
+        sub = "#555555"
+        line = "#d0d7de"
+        box = "#f6f8fa"
+        fg_white = "#111111"
+        badge_bg_limitup = "#ff6b6b"
+        badge_bg_touch = "#74c0fc"
+
+    fig = plt.figure(figsize=(width / 100, height / 100), dpi=100)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_axis_off()
+    fig.patch.set_facecolor(bg)
+    ax.set_facecolor(bg)
+
+    def _ensure_renderer():
+        try:
+            fig.canvas.draw()
+        except Exception:
+            pass
+
+    def _text_width_px(s: str, x: float, y: float, fontsize: int, weight: str = "normal") -> float:
+        t_obj = ax.text(x, y, s, fontsize=fontsize, weight=weight, alpha=0.0)
+        _ensure_renderer()
+        bb = t_obj.get_window_extent(renderer=fig.canvas.get_renderer())
+        t_obj.remove()
+        return float(bb.width)
+
+    def _px_to_data_dx(px: float, y_data: float) -> float:
+        p0 = ax.transData.transform((0.0, y_data))
+        p1 = (p0[0] + px, p0[1])
+        inv = ax.transData.inverted()
+        return float(inv.transform(p1)[0] - inv.transform(p0)[0])
+
+    # -------------------------------------------------------------------------
+    # Layout compat
+    # -------------------------------------------------------------------------
+    top_y0 = getattr(layout, "top_box_y0", None) or 0.84
+    top_y1 = getattr(layout, "top_box_y1", None) or 0.52
+    bot_y0 = getattr(layout, "bot_box_y0", None)
+    bot_y1 = getattr(layout, "bot_box_y1", None)
+    if bot_y0 is None:
+        bot_y0 = getattr(layout, "bottom_box_y0", 0.48)
+    if bot_y1 is None:
+        bot_y1 = getattr(layout, "bottom_box_y1", 0.08)
+
+    # x positions (fallbacks)
+    x_name = float(getattr(layout, "x_name", getattr(layout, "x_symbol", 0.10)))
+    x_right = float(getattr(layout, "x_tag", getattr(layout, "x_right", 0.94)))
+
+    # fonts (CN header needs smaller, otherwise clipped)
+    title_fs = int(getattr(layout, "title_fs", 42))
+    subtitle_fs = int(getattr(layout, "subtitle_fs", 24))
+    page_fs = int(getattr(layout, "page_fs", 22))
+
+    box_title_fs = int(getattr(layout, "box_title_fs", 34))
+    row_fs_1 = int(getattr(layout, "row_fs_1", 30))
+    row_fs_2 = int(getattr(layout, "row_fs_2", 24))
+    ret_fs = int(getattr(layout, "ret_fs", 30))
+    tag_fs = int(getattr(layout, "tag_fs", 28))
+    pill_fs = int(getattr(layout, "pill_fs", 22))
+
+    footer_y2 = float(getattr(layout, "footer_y2", 0.02))
+    footer_fs_2 = int(getattr(layout, "footer_fs_2", 18))
+
+    two_line = bool(getattr(layout, "two_line", True))
+
+    # -------------------------------------------------------------------------
+    # Header (2 lines only: sector + time_note)
+    #   Put them in the space above top_y0, so no need to shrink boxes.
+    # -------------------------------------------------------------------------
+    header_top = 0.985
+    header_bottom = min(0.965, top_y0 + 0.01)  # ensure above top box
+    # If top_y0 is high, header_bottom becomes high too; keep 2-line compact.
+    y_title = header_top
+    y_time = max(header_bottom, header_top - 0.035)
+
+    ax.text(
+        0.5,
+        y_title,
+        str(sector).strip(),
+        ha="center",
+        va="top",
+        fontsize=title_fs,
+        color=fg,
+        weight="bold",
+    )
+
+    if str(time_note or "").strip():
+        ax.text(
+            0.5,
+            y_time,
+            str(time_note).strip(),
+            ha="center",
+            va="top",
+            fontsize=subtitle_fs,
+            color=sub,
+            weight="bold",
+            alpha=0.92,
+        )
+
+    if page_total > 1:
+        ax.text(
+            0.97,
+            y_title,
+            f"{page_idx}/{page_total}",
+            ha="right",
+            va="top",
+            fontsize=page_fs,
+            color=sub,
+            weight="bold",
+            alpha=0.90,
+        )
+
+    # footer
+    ax.text(
+        0.05,
+        footer_y2,
+        _t(lang, "footer_disclaimer", "资料来源：Yahoo Finance（通过 yfinance 抓取）｜仅供资讯参考，非投资建议"),
+        ha="left",
+        va="bottom",
+        fontsize=footer_fs_2,
+        color=sub,
+        alpha=0.85,
+    )
+
+    # -------------------------------------------------------------------------
+    # Boxes
+    # -------------------------------------------------------------------------
+    ax.add_patch(
+        plt.Rectangle(
+            (0.05, top_y1),
+            0.90,
+            (top_y0 - top_y1),
+            facecolor=box,
+            edgecolor=line,
+            linewidth=2,
+            alpha=0.98,
+        )
+    )
+    ax.add_patch(
+        plt.Rectangle(
+            (0.05, bot_y1),
+            0.90,
+            (bot_y0 - bot_y1),
+            facecolor=box,
+            edgecolor=line,
+            linewidth=2,
+            alpha=0.98,
+        )
+    )
+
+    top_span = (top_y0 - top_y1)
+    bot_span = (bot_y0 - bot_y1)
+    top_title_y = top_y0 - top_span * 0.035
+    bot_title_y = bot_y0 - bot_span * 0.035
+
+    # Put counts into TOP box title (saves a header line)
+    # Format: 涨停 / 触及  2/2｜0/0
+    if hit_shown is not None and hit_total is not None and touch_shown is not None and touch_total is not None:
+        top_title_text = _t(
+            lang,
+            "box_title_top_with_counts",
+            "涨停 / 触及  {hs}/{ht}｜{ts}/{tt}",
+            hs=int(hit_shown),
+            ht=int(hit_total),
+            ts=int(touch_shown),
+            tt=int(touch_total),
+        )
+    else:
+        # fallback to old args
+        top_title_text = _t(lang, "box_title_top", "涨停 / 触及")
+
+    ax.text(
+        0.08,
+        top_title_y,
+        top_title_text,
+        ha="left",
+        va="center",
+        fontsize=box_title_fs,
+        color=fg,
+        weight="bold",
+    )
+
+    ax.text(
+        0.08,
+        bot_title_y,
+        _t(lang, "box_title_bottom", "同行业今日未涨停"),
+        ha="left",
+        va="center",
+        fontsize=box_title_fs,
+        color=fg,
+        weight="bold",
+        alpha=0.95,
+    )
+
+    MAX_ROWS_PER_BOX = max(1, int(rows_per_page or 6))
+    y_start_top, row_h_top = calc_rows_layout(top_y0, top_y1, MAX_ROWS_PER_BOX, two_line=two_line)
+    y_start_bot, row_h_bot = calc_rows_layout(bot_y0, bot_y1, MAX_ROWS_PER_BOX, two_line=two_line)
+
+    # -------------------------------------------------------------------------
+    # spacing / right padding (avoid clipping)
+    # -------------------------------------------------------------------------
+    PILL_GAP_PX = 10.0
+    SAFE_GAP_TO_RIGHT_PX = 14.0
+    RIGHT_PAD_PX = 16.0
+
+    def draw_empty_hint(y0: float, y1: float, text: str):
+        ax.text(
+            0.5,
+            (y0 + y1) / 2,
+            text,
+            ha="center",
+            va="center",
+            fontsize=max(footer_fs_2 + 8, 28),
+            color=sub,
+            alpha=0.85,
+            weight="bold",
+        )
+
+    def _draw_pill(x: float, y: float, text: str, fontsize: int, fg_color: str, bg_color: str) -> float:
+        if not text:
+            return x
+        ax.text(
+            x,
+            y,
+            text,
+            ha="left",
+            va="center",
+            fontsize=fontsize,
+            color=fg_color,
+            weight="bold",
+            bbox=dict(boxstyle="round,pad=0.25", facecolor=bg_color, edgecolor="none", alpha=0.95),
+        )
+        w_px = _text_width_px(text, x, y, fontsize=fontsize, weight="bold") + 18.0
+        return x + _px_to_data_dx(w_px, y)
+
+    def _draw_board_limit_pills_after_name(line1: str, y: float, row: Dict[str, Any], x_right_limit: float) -> None:
+        # start from end of company name
+        w1_px = _text_width_px(line1, x_name, y, fontsize=row_fs_1, weight="bold")
+        x = x_name + _px_to_data_dx(w1_px + PILL_GAP_PX, y)
+        if x >= x_right_limit:
+            return
+
+        board = _board_from_row(row)
+        board_bg, board_fg = _board_colors(board, theme)
+
+        limit_pct = _limit_pct_from_row(row)
+        lim_bg, lim_fg = _limit_colors(limit_pct, theme)
+
+        x = _draw_pill(x, y, board, pill_fs, board_fg, board_bg)
+        x = x + _px_to_data_dx(PILL_GAP_PX, y)
+
+        if limit_pct > 0 and x < x_right_limit:
+            label = f"涨停上限{int(round(limit_pct))}%"
+            _draw_pill(x, y, label, pill_fs, lim_fg, lim_bg)
+
+    def draw_rows(rows: List[Dict[str, Any]], y_start: float, row_h: float, kind: str):
+        if not rows:
+            if kind == "limitup":
+                draw_empty_hint(top_y0, top_y1, _t(lang, "empty_limitup", "（本页无涨停/触及资料）"))
+            else:
+                draw_empty_hint(bot_y0, bot_y1, _t(lang, "empty_peer", "（本页无资料）"))
+            return
+
+        n = min(len(rows), MAX_ROWS_PER_BOX)
+        _ensure_renderer()
+
+        for i in range(n):
+            y = y_start - i * row_h
+            r = rows[i]
+
+            line1 = _safe_str(r.get("line1") or "")
+            line2 = _safe_str(r.get("line2") or "")
+
+            if two_line:
+                y1 = y + row_h * 0.16
+                y2 = y - row_h * 0.22
+            else:
+                y1 = y
+                y2 = y
+
+            # left main line
+            ax.text(
+                x_name,
+                y1,
+                line1,
+                ha="left",
+                va="center",
+                fontsize=row_fs_1,
+                color=fg,
+                weight="bold",
+            )
+
+            # pills after company name, avoid right area (badge/ret)
+            x_right_limit = x_right - _px_to_data_dx(RIGHT_PAD_PX + SAFE_GAP_TO_RIGHT_PX, y1)
+            _draw_board_limit_pills_after_name(line1, y1, r, x_right_limit=x_right_limit)
+
+            # second line
+            if two_line and line2:
+                ax.text(
+                    x_name,
+                    y2,
+                    line2,
+                    ha="left",
+                    va="center",
+                    fontsize=row_fs_2,
+                    color=sub,
+                    weight="bold",
+                    alpha=0.95,
+                )
+
+            if kind == "limitup":
+                badge_text = _safe_str(r.get("badge_text") or "")
+                if badge_text:
+                    streak = _safe_int(r.get("streak", 0), 0)
+                    is_touched = badge_text in ("触及", "觸及")
+
+                    if is_touched:
+                        tag_text = _t(lang, "term_touched", "触及")
+                        badge_face = badge_bg_touch
+                    else:
+                        tag_text = f"{badge_text}{streak}连" if streak > 1 else badge_text
+                        badge_face = badge_bg_limitup
+
+                    x_badge = x_right - _px_to_data_dx(RIGHT_PAD_PX, y1)
+                    ax.text(
+                        x_badge,
+                        y1,
+                        tag_text,
+                        ha="right",
+                        va="center",
+                        fontsize=tag_fs,
+                        color=fg_white if is_dark else fg,
+                        weight="bold",
+                        bbox=dict(
+                            boxstyle="round,pad=0.35",
+                            facecolor=badge_face,
+                            edgecolor="none",
+                            alpha=0.95,
+                        ),
+                    )
+            else:
+                ret = _safe_float(r.get("ret") or 0.0, 0.0)
+                ret_text = _safe_str(r.get("ret_text") or "") or f"{ret:+.2f}%"
+                x_ret = x_right - _px_to_data_dx(RIGHT_PAD_PX, y1)
+                ax.text(
+                    x_ret,
+                    y1,
+                    ret_text,
+                    ha="right",
+                    va="center",
+                    fontsize=ret_fs,
+                    color=get_ret_color(ret, theme),
+                    weight="bold",
+                )
+
+            if i < n - 1:
+                ax.plot(
+                    [0.06, 0.94],
+                    [y - row_h * 0.50, y - row_h * 0.50],
+                    color=line,
+                    linewidth=1,
+                    alpha=0.5,
+                )
+
+        if kind == "peer" and has_more_peers:
+            hint_y = (y_start - (n - 1) * row_h) - row_h * 0.75
+            ax.text(
+                0.5,
+                hint_y,
+                _t(lang, "more_hint", "（还有更多资料未显示）"),
+                ha="center",
+                va="top",
+                fontsize=max(footer_fs_2 + 6, 26),
+                color=sub,
+                alpha=0.85,
+                weight="bold",
+            )
+
+    draw_rows(limitup_rows, y_start_top, row_h_top, kind="limitup")
+    draw_rows(peer_rows, y_start_bot, row_h_bot, kind="peer")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=100)
+    plt.close(fig)
+    return out_path

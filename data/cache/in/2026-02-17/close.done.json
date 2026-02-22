@@ -1,0 +1,15 @@
+{
+  "meta": {
+    "market": "in",
+    "slot": "close",
+    "asof": "close",
+    "ymd": "2026-02-17",
+    "enable_cache": true,
+    "github_actions": false,
+    "raw_only": false,
+    "allow_nontrading": false,
+    "guard_enabled_default": false
+  },
+  "payload_path": "C:\\code\\intraday-limitup-engine\\data\\cache\\in\\2026-02-17\\close.payload.json",
+  "written_at": "2026-02-17T16:39:08"
+}

@@ -1,0 +1,7 @@
+# secrets never commit
+secrets/
+outputs/
+*.token.json
+youtube_token*.json
+gdrive_token*.json
+client_secret*.json

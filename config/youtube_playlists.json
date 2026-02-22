@@ -1,0 +1,38 @@
+{
+  "TW": {
+    "name": "TW｜台股異動 Shorts",
+    "playlist_id": "PLJ_3D3qUemyQRmiDYb5NV0BuWXanNZ-wX"
+  },
+  "CN": {
+    "name": "CN｜A股异动 Shorts",
+    "playlist_id": "PLJ_3D3qUemyRZoUR0DNzN-PqeYc01LXUK"
+  },
+  "US": {
+    "name": "US｜U.S. Market Movers Shorts",
+    "playlist_id": "PLJ_3D3qUemyRDyy1Nb1Ot6ZryR2yIeFKE"
+  },
+  "CA": {
+    "name": "CA｜Canada Market Movers Shorts",
+    "playlist_id": "PLJ_3D3qUemySg4GDUNrK-w-9W0zgDm9e1"
+  },
+  "UK": {
+    "name": "UK｜UK Market Movers Shorts",
+    "playlist_id": "PLJ_3D3qUemyQc78Cub0ZKzbQ3KglZ4FLD"
+  },
+  "AU": {
+    "name": "AU｜Australia Market Movers Shorts",
+    "playlist_id": "PLJ_3D3qUemyQ6i4F7VurHt8mSA9tX4bQF"
+  },
+  "JP": {
+    "name": "JP｜日本市場異動 Shorts",
+    "playlist_id": "PLJ_3D3qUemyRRsaisPmYCRotphyxNrB6S"
+  },
+  "KR": {
+    "name": "KR｜한국 주식시장 급등락 Shorts",
+    "playlist_id": "PLJ_3D3qUemyQJOz9su543uWRzJrrmoASZ"
+  },
+  "TH": {
+    "name": "TH｜ตลาดหุ้นไทย ความเคลื่อนไหว Shorts",
+    "playlist_id": "PLJ_3D3qUemyScKdKdOvbkij502ED9BfKN"
+  }
+}
