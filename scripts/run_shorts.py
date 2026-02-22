@@ -506,13 +506,6 @@ def main() -> int:
     ap.add_argument("--theme", default="dark", help="render_images theme")
     ap.add_argument("--layout", default="", help="render_images layout (optional)")
 
-    # ✅ NEW: allow-nontrading passthrough to main.py guard
-    ap.add_argument(
-        "--allow-nontrading",
-        action="store_true",
-        help="Allow running on non-trading days (passthrough to main.py).",
-    )
-
     # video options
     ap.add_argument("--seconds", type=float, default=2.0)
     ap.add_argument("--fps", type=int, default=30)
@@ -627,9 +620,6 @@ def main() -> int:
         cmd = [py, "main.py", "--market", market_lower, "--slot", slot]
         if asof and slot != "close":
             cmd += ["--asof", asof]
-        # ✅ passthrough
-        if args.allow_nontrading:
-            cmd += ["--allow-nontrading"]
         _run(cmd, cwd=REPO_ROOT)
 
     # payload mismatch fallback
@@ -654,9 +644,6 @@ def main() -> int:
                 cmd = [py, "main.py", "--market", market_lower, "--slot", slot]
                 if asof and slot != "close":
                     cmd += ["--asof", asof]
-                # ✅ passthrough
-                if args.allow_nontrading:
-                    cmd += ["--allow-nontrading"]
                 _run(cmd, cwd=REPO_ROOT)
 
             if not payload.exists():
