@@ -1,0 +1,41 @@
+# Core
+numpy>=2.0
+pandas>=2.0
+requests>=2.0
+tqdm>=4.0
+python-dateutil>=2.8
+
+# Plot / image / video
+matplotlib>=3.8
+pillow>=10.0
+moviepy>=2.0
+imageio>=2.0
+imageio-ffmpeg>=0.4
+
+# Plotly export (fix kaleido issue)
+plotly>=5.22.0
+kaleido>=0.2.1
+
+# Google APIs (Drive / YouTube)
+google-api-python-client>=2.0
+google-auth>=2.0
+google-auth-httplib2>=0.2
+google-auth-oauthlib>=1.2
+httplib2>=0.22
+cachetools>=5.0
+uritemplate>=4.0
+
+# HTML parsing (if your pipelines scrape)
+beautifulsoup4>=4.12
+lxml>=4.9
+html5lib>=1.1
+
+# Optional: if you really use these in data download
+yfinance>=0.2.0
+akshare>=1.0
+
+# Optional: spreadsheet outputs
+openpyxl>=3.1
+xlrd>=2.0
+# Thailand data source
+thaifin>=1.1.0
