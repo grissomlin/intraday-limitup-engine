@@ -114,6 +114,9 @@ jobs:
       # optional: keep run_shorts debug tree default-on; you can still disable per run via args/env
       RUN_SHORTS_DEBUG_TREE: "1"
 
+      # (optional) enable font debug for TW sector pages when you need it
+      # SECTOR_DEBUG_FONTS: "1"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -132,7 +135,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      # ✅ A) Workflow 加裝字型 + 清 cache + rebuild（最重要）
+      # ✅ Install system deps + clear font caches (important)
       - name: Install system deps (ffmpeg + fonts)
         shell: bash
         run: |
@@ -154,19 +157,6 @@ jobs:
           echo "=== fc-list (noto/cjk sample) ==="
           fc-list | grep -i -E "noto|cjk" | head -n 80 || true
 
-      - name: Rebuild matplotlib font manager (debug)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          python - <<'PY'
-          from matplotlib import font_manager as fm
-          fm._load_fontmanager(try_read_cache=False)
-          names = sorted({f.name for f in fm.fontManager.ttflist})
-          hit = [n for n in names if ("noto" in n.lower()) or ("cjk" in n.lower())]
-          print("matplotlib fonts =", len(names))
-          print("Noto/CJK sample =", hit[:80])
-          PY
-
       - name: Install python deps
         shell: bash
         run: |
@@ -182,6 +172,20 @@ jobs:
             echo "[CI] No requirements file found!"
             exit 1
           fi
+
+      # ✅ must be AFTER python deps (matplotlib must exist)
+      - name: Rebuild matplotlib font manager (debug)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          from matplotlib import font_manager as fm
+          fm._load_fontmanager(try_read_cache=False)
+          names = sorted({f.name for f in fm.fontManager.ttflist})
+          hit = [n for n in names if ("noto" in n.lower()) or ("cjk" in n.lower())]
+          print("matplotlib fonts =", len(names))
+          print("Noto/CJK sample =", hit[:80])
+          PY
 
       - name: Debug repo tree (optional)
         shell: bash
