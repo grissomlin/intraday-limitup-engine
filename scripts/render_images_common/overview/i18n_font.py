@@ -37,7 +37,7 @@ def has_kana(text: str) -> bool:
     Hiragana + Katakana
     - Hiragana: 3040-309F
     - Katakana: 30A0-30FF
-    - Katakana Phonetic Extensions: 31F0-31FF (optional, but safe)
+    - Katakana Phonetic Extensions: 31F0-31FF
     """
     if not text:
         return False
@@ -87,7 +87,7 @@ def has_cjk(text: str) -> bool:
 # =============================================================================
 # Market normalization
 # =============================================================================
-def normalize_market(m: str) -> str:
+def normalize_market(m: str | None) -> str:
     m = (m or "").strip().upper()
     alias = {
         "TWN": "TW",
@@ -158,6 +158,20 @@ def _get_font_profile() -> str:
     return "DEFAULT"
 
 
+def _debug_print_fonts(market: str, profile: str, font_list: List[str]) -> None:
+    if not _env_on("OVERVIEW_DEBUG_FONTS"):
+        return
+    try:
+        print("[OVERVIEW_FONT_DEBUG]")
+        print("  market =", market)
+        print("  profile =", profile)
+        print("  selected_font_list =", font_list)
+        print("  rcParams.font.family =", plt.rcParams.get("font.family"))
+        print("  rcParams.font.sans-serif =", plt.rcParams.get("font.sans-serif"))
+    except Exception:
+        pass
+
+
 # =============================================================================
 # Font setup
 # =============================================================================
@@ -192,14 +206,17 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
                         need_kr = True
                         break
 
-        primary_cn = ["Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "SimHei", "WenQuanYi Zen Hei"]
-        primary_tw = ["Noto Sans TC", "Noto Sans HK", "Microsoft JhengHei", "PingFang TC"]
-        primary_jp = ["Noto Sans JP", "Noto Sans CJK JP", "Yu Gothic", "Meiryo"]
-        primary_kr = ["Noto Sans KR", "Noto Sans CJK KR", "Malgun Gothic"]
+        # NOTE: On Ubuntu CI:
+        # - fonts-noto-cjk provides "Noto Sans CJK *"
+        # - fonts-noto-core/ui-core provides Thai families
+        primary_cn = ["Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", "SimHei", "WenQuanYi Zen Hei"]
+        primary_tw = ["Noto Sans CJK TC", "Noto Sans TC", "Noto Sans HK", "Microsoft JhengHei", "PingFang TC"]
+        primary_jp = ["Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "Meiryo"]
+        primary_kr = ["Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic"]
 
-        # ✅ IMPORTANT FIX:
+        # ✅ IMPORTANT:
         # Put "Noto Sans Thai" FIRST because it usually includes Latin glyphs.
-        # Looped Thai is stylistic and often misses Latin -> keep later.
+        # Looped Thai is stylistic and sometimes misses Latin -> keep later.
         primary_th = [
             "Noto Sans Thai",
             "Noto Sans Thai UI",
@@ -252,16 +269,7 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         plt.rcParams["font.sans-serif"] = font_list
         plt.rcParams["axes.unicode_minus"] = False
 
-        if _env_on("OVERVIEW_DEBUG_FONTS"):
-            try:
-                print("[OVERVIEW_FONT_DEBUG]")
-                print("  market =", market)
-                print("  profile =", profile)
-                print("  selected_font_list =", font_list)
-                print("  rcParams.font.family =", plt.rcParams.get("font.family"))
-                print("  rcParams.font.sans-serif =", plt.rcParams.get("font.sans-serif"))
-            except Exception:
-                pass
+        _debug_print_fonts(market, profile, font_list)
 
         return font_list[0]
     except Exception:
@@ -272,10 +280,18 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
 # Language resolution
 # =============================================================================
 def _get_payload_lang(payload: Dict[str, Any]) -> str:
+    """
+    Accept a few legacy tags to stay compatible with old payloads.
+    """
     try:
         v = (payload.get("lang") or (payload.get("meta") or {}).get("lang") or "")
         v = str(v).strip().lower()
-        if v in {"en", "zh-tw", "zh-cn", "ja", "ko", "th"}:
+        if v in {"en", "zh-tw", "zh-cn", "ja", "ko", "th", "zh_hant", "zh_hans"}:
+            # normalize underscores
+            if v == "zh_hant":
+                return "zh-tw"
+            if v == "zh_hans":
+                return "zh-cn"
             return v
     except Exception:
         pass
@@ -317,8 +333,10 @@ def _get_market_lang(market: str) -> str:
         return "zh-cn"
     if market == "TH":
         return "th"
+    if market == "TW":
+        return "zh-tw"
 
-    EN_MARKETS = {"US", "CA", "AU", "UK", "EU", "IN", "SG", "MY", "PH", "ID", "VN"}
+    EN_MARKETS = {"US", "CA", "AU", "UK", "EU", "IN", "SG", "MY", "PH", "ID", "VN", "HK"}
     if market in EN_MARKETS:
         return "en"
 
