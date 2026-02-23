@@ -7,38 +7,128 @@ on:
         description: "slot (midday/close/open)"
         required: true
         default: "midday"
+        type: choice
+        options:
+          - open
+          - midday
+          - close
+
       images_ymd:
-        description: "images ymd (latest or YYYY-MM-DD)"
+        description: "images ymd (latest | payload | requested | YYYY-MM-DD)"
         required: true
         default: "latest"
+        type: string
+
+      markets:
+        description: "markets to run: all | au | au,us,tw (comma-separated, case-insensitive)"
+        required: false
+        default: "all"
+        type: string
 
 jobs:
+  prepare:
+    name: Prepare matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      markets_normalized: ${{ steps.set-matrix.outputs.markets_normalized }}
+    steps:
+      - name: Build matrix from input
+        id: set-matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Canonical list (your original)
+          ALL="cn tw jp kr th us ca uk au"
+
+          raw="${{ inputs.markets }}"
+          raw="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
+
+          if [ -z "$raw" ] || [ "$raw" = "all" ] || [ "$raw" = "*" ]; then
+            selected="$ALL"
+          else
+            # split by comma
+            IFS=',' read -r -a arr <<< "$raw"
+            selected=""
+            for m in "${arr[@]}"; do
+              [ -z "$m" ] && continue
+              # validate against ALL
+              if echo " $ALL " | grep -q " $m "; then
+                if ! echo " $selected " | grep -q " $m "; then
+                  selected="$selected $m"
+                fi
+              else
+                echo "::error::Invalid market '$m'. Allowed: $ALL or 'all'"
+                exit 1
+              fi
+            done
+
+            # if user typed only invalid/empty entries
+            selected="$(echo "$selected" | xargs || true)"
+            if [ -z "$selected" ]; then
+              echo "::error::No valid markets selected. Allowed: $ALL or 'all'"
+              exit 1
+            fi
+          fi
+
+          # build JSON: {"market":["cn","tw",...]}
+          json='{"market":['
+          first=1
+          for m in $selected; do
+            if [ $first -eq 1 ]; then
+              first=0
+            else
+              json="$json,"
+            fi
+            json="$json\"$m\""
+          done
+          json="$json']}"
+
+          echo "Selected markets: $selected"
+          echo "Matrix JSON: $json"
+
+          echo "markets_normalized=$selected" >> "$GITHUB_OUTPUT"
+          echo "matrix=$json" >> "$GITHUB_OUTPUT"
+
   run:
     name: run_shorts ${{ matrix.market }}
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
     strategy:
       fail-fast: false
-      matrix:
-        market: [cn, tw, jp, kr, th, us, ca, uk, au]
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
 
     env:
-      # ✅ 你 repo 內 render_images_* 都會讀這個
+      # ✅ render_images_* reads this
       GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
 
-      # ✅ youtube_pipeline_safe.py 的 resolve_token_path() 會讀這個
+      # ✅ youtube_pipeline_safe.py reads this
       YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
 
-      # ✅ youtube_pipeline_safe.py 的 resolve_playlist_map() 會讀這個
+      # ✅ youtube_pipeline_safe.py reads this
       YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
 
-      # ✅ 避免 matplotlib 需要顯示環境
+      # ✅ avoid matplotlib GUI
       MPLBACKEND: Agg
+
+      # optional: keep run_shorts debug tree default-on; you can still disable per run via args/env
+      RUN_SHORTS_DEBUG_TREE: "1"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Echo inputs / selection
+        shell: bash
+        run: |
+          echo "slot=${{ inputs.slot }}"
+          echo "images_ymd=${{ inputs.images_ymd }}"
+          echo "markets_input=${{ inputs.markets }}"
+          echo "markets_selected=${{ needs.prepare.outputs.markets_normalized }}"
+          echo "matrix.market=${{ matrix.market }}"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -64,30 +154,18 @@ jobs:
             exit 1
           fi
 
-      - name: Debug repo tree
+      - name: Debug repo tree (optional)
         run: |
           echo "PWD=$(pwd)"
-          echo "=== repo root ==="
-          ls -la
-
-          echo "=== scripts tree (cli.py) ==="
-          find scripts -maxdepth 3 -type f -name "cli.py" -print
-
-          echo "=== render_images dirs ==="
-          find scripts -maxdepth 2 -type d -name "render_images_*" -print
-
           echo "=== show scripts directory top-level ==="
           ls -la scripts || true
-
-          echo "=== show specific market cli paths ==="
-          for m in cn tw jp kr th us ca uk au; do
-            p="scripts/render_images_${m}/cli.py"
-            if [ -f "$p" ]; then
-              echo "[OK] $p exists"
-            else
-              echo "[MISS] $p NOT FOUND"
-            fi
-          done
+          echo "=== show specific market cli path ==="
+          p="scripts/render_images_${{ matrix.market }}/cli.py"
+          if [ -f "$p" ]; then
+            echo "[OK] $p exists"
+          else
+            echo "[MISS] $p NOT FOUND"
+          fi
 
       - name: Run shorts
         run: |
