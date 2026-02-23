@@ -3,30 +3,41 @@ name: Run Shorts (auto: open+3h, once/day)
 on:
   schedule:
     # GitHub Actions cron uses UTC.
-    # We run frequently and decide which markets should run based on market local time (handles DST).
     - cron: "*/10 * * * *"   # every 10 minutes
+
   workflow_dispatch:
     inputs:
       slot:
-        description: "slot (midday/close/open)"
+        description: "slot (open/midday/close)"
         required: true
         default: "midday"
+        type: choice
+        options:
+          - open
+          - midday
+          - close
+
       images_ymd:
-        description: "images ymd (latest or YYYY-MM-DD)"
+        description: "images ymd (latest | payload | requested | YYYY-MM-DD)"
         required: true
         default: "latest"
+        type: string
+
+      markets:
+        description: "markets to run: auto | all | au | au,us,tw (comma-separated, case-insensitive)"
+        required: false
+        default: "auto"
+        type: string
 
 jobs:
   plan:
-    name: plan markets to run (open+3h)
+    name: plan markets (auto=open+3h) or manual selection
     runs-on: ubuntu-latest
     outputs:
-      matrix_json: ${{ steps.plan.outputs.matrix_json }}
       should_run: ${{ steps.plan.outputs.should_run }}
+      matrix_json: ${{ steps.plan.outputs.matrix_json }}
       slot: ${{ steps.plan.outputs.slot }}
       images_ymd: ${{ steps.plan.outputs.images_ymd }}
-      # For concurrency (unique per market per day)
-      market_date_map_json: ${{ steps.plan.outputs.market_date_map_json }}
     steps:
       - name: Decide markets for this tick
         id: plan
@@ -34,17 +45,30 @@ jobs:
         run: |
           set -euo pipefail
 
-          # If manual dispatch, honor inputs; otherwise default for scheduled run.
-          SLOT="${{ github.event_name == 'workflow_dispatch' && inputs.slot || 'midday' }}"
-          IMAGES_YMD="${{ github.event_name == 'workflow_dispatch' && inputs.images_ymd || 'latest' }}"
-
-          python - << 'PY' > plan_out.json
+          python - << 'PY'
           import json
+          import os
           from datetime import datetime, time, timedelta, timezone
           try:
             from zoneinfo import ZoneInfo
           except Exception as e:
             raise SystemExit(f"zoneinfo not available: {e}")
+
+          # -----------------------------
+          # Inputs (works for schedule + workflow_dispatch)
+          # GitHub sets INPUT_* env vars for workflow_dispatch.
+          # -----------------------------
+          event_name = os.getenv("GITHUB_EVENT_NAME", "")
+          in_slot = (os.getenv("INPUT_SLOT", "") or "").strip().lower()
+          in_images_ymd = (os.getenv("INPUT_IMAGES_YMD", "") or "").strip()
+          in_markets = (os.getenv("INPUT_MARKETS", "") or "").strip().lower().replace(" ", "")
+
+          slot = in_slot if (event_name == "workflow_dispatch" and in_slot) else "midday"
+          images_ymd = in_images_ymd if (event_name == "workflow_dispatch" and in_images_ymd) else "latest"
+          markets_mode = in_markets if (event_name == "workflow_dispatch" and in_markets) else "auto"
+
+          # Canonical list (keep aligned with repo)
+          ALL = ["cn","tw","jp","kr","th","us","ca","uk","au"]
 
           # --- Market timezone mapping (IANA) ---
           MARKET_TZ = {
@@ -60,7 +84,6 @@ jobs:
           }
 
           # --- Market open times (LOCAL market time) ---
-          # Define "open" as first session open.
           OPEN_LOCAL = {
             "cn": time(9, 30),
             "tw": time(9, 0),
@@ -68,69 +91,92 @@ jobs:
             "kr": time(9, 0),
             "th": time(9, 30),
             "uk": time(8, 0),
-            "au": time(9, 59),
+            "au": time(10, 0),
             "us": time(9, 30),
             "ca": time(9, 30),
           }
 
-          # schedule is every 10 minutes; keep a small window.
-          TOLERANCE_MIN = 6
+          # cron is every 10 min, allow some jitter
+          TOLERANCE_MIN = 9
 
           now_utc = datetime.now(timezone.utc)
 
+          def mk_matrix(markets):
+            # include market_date per entry to make concurrency safe (no map lookup in expressions)
+            include = []
+            for m in markets:
+              tz = ZoneInfo(MARKET_TZ[m])
+              local_now = now_utc.astimezone(tz)
+              include.append({"market": m, "market_date": local_now.date().isoformat()})
+            return {"include": include}
+
           chosen = []
-          # market -> market_local_date string (YYYY-MM-DD)
-          market_date_map = {}
 
-          for m, tzname in MARKET_TZ.items():
-            tz = ZoneInfo(tzname)
-            local_now = now_utc.astimezone(tz)
+          if event_name == "workflow_dispatch":
+            # manual modes:
+            # - markets=auto : use the time-based picker
+            # - markets=all  : run all markets
+            # - markets=au,us: run selected list
+            if markets_mode in ("", "auto"):
+              pass  # fall through to auto picker
+            elif markets_mode in ("all", "*"):
+              chosen = ALL[:]
+            else:
+              parts = [p for p in markets_mode.split(",") if p]
+              invalid = [p for p in parts if p not in ALL]
+              if invalid:
+                raise SystemExit(f"Invalid market(s): {invalid}. Allowed: {ALL} or all/auto")
+              # de-dup preserve order
+              seen = set()
+              for p in parts:
+                if p not in seen:
+                  chosen.append(p)
+                  seen.add(p)
 
-            # weekend skip here (holidays handled by your pipeline when allow-nontrading is NOT used)
-            if local_now.weekday() >= 5:
-              continue
+          if not chosen:
+            # auto picker: open + 3h
+            for m in ALL:
+              tz = ZoneInfo(MARKET_TZ[m])
+              local_now = now_utc.astimezone(tz)
 
-            open_t = OPEN_LOCAL[m]
-            open_dt = datetime.combine(local_now.date(), open_t, tzinfo=tz)
-            target_dt = open_dt + timedelta(hours=3)
+              # weekend skip (holidays handled by your pipeline)
+              if local_now.weekday() >= 5:
+                continue
 
-            delta_min = abs((local_now - target_dt).total_seconds()) / 60.0
-            if delta_min <= TOLERANCE_MIN:
-              chosen.append(m)
-              market_date_map[m] = local_now.date().isoformat()
+              open_t = OPEN_LOCAL[m]
+              open_dt = datetime.combine(local_now.date(), open_t, tzinfo=tz)
+              target_dt = open_dt + timedelta(hours=3)
+
+              delta_min = abs((local_now - target_dt).total_seconds()) / 60.0
+              if delta_min <= TOLERANCE_MIN:
+                chosen.append(m)
+
+          matrix = mk_matrix(chosen)
 
           out = {
-            "matrix": {"market": chosen},
-            "market_date_map": market_date_map,
+            "event_name": event_name,
+            "slot": slot,
+            "images_ymd": images_ymd,
+            "markets_mode": markets_mode,
+            "chosen": chosen,
+            "matrix": matrix,
           }
-          print(json.dumps(out))
-          PY
 
-          MATRIX_JSON="$(python - << 'PY'
-          import json
-          d=json.load(open("plan_out.json","r",encoding="utf-8"))
-          print(json.dumps(d["matrix"]))
-          PY
-          )"
+          print("PLAN_OUT=" + json.dumps(out, ensure_ascii=False))
+          # Emit minimal outputs as JSON (must be single-line)
+          print("MATRIX_JSON=" + json.dumps(matrix))
+          print("SHOULD_RUN=" + ("true" if len(chosen) > 0 else "false"))
+          print("SLOT=" + slot)
+          print("IMAGES_YMD=" + images_ymd)
+          PY | tee plan.log
 
-          MARKET_DATE_MAP_JSON="$(python - << 'PY'
-          import json
-          d=json.load(open("plan_out.json","r",encoding="utf-8"))
-          print(json.dumps(d["market_date_map"]))
-          PY
-          )"
-
-          echo "Chosen markets matrix: ${MATRIX_JSON}"
-          echo "Market local dates map: ${MARKET_DATE_MAP_JSON}"
-
-          if echo "${MATRIX_JSON}" | grep -q '"market":\s*\[\s*\]'; then
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          fi
+          MATRIX_JSON="$(grep '^MATRIX_JSON=' plan.log | head -n1 | sed 's/^MATRIX_JSON=//')"
+          SHOULD_RUN="$(grep '^SHOULD_RUN=' plan.log | head -n1 | sed 's/^SHOULD_RUN=//')"
+          SLOT="$(grep '^SLOT=' plan.log | head -n1 | sed 's/^SLOT=//')"
+          IMAGES_YMD="$(grep '^IMAGES_YMD=' plan.log | head -n1 | sed 's/^IMAGES_YMD=//')"
 
           echo "matrix_json=${MATRIX_JSON}" >> "$GITHUB_OUTPUT"
-          echo "market_date_map_json=${MARKET_DATE_MAP_JSON}" >> "$GITHUB_OUTPUT"
+          echo "should_run=${SHOULD_RUN}" >> "$GITHUB_OUTPUT"
           echo "slot=${SLOT}" >> "$GITHUB_OUTPUT"
           echo "images_ymd=${IMAGES_YMD}" >> "$GITHUB_OUTPUT"
 
@@ -145,32 +191,40 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix_json) }}
 
-    # ✅ de-dup: same market, same market-local date, only keep one run
-    # If the workflow triggers twice in the window, concurrency prevents duplicate runs for that market/day.
+    # ✅ de-dup: same market, same market-local date, keep only one run
     concurrency:
-      group: run_shorts_open3h_${{ matrix.market }}_${{ fromJSON(needs.plan.outputs.market_date_map_json)[matrix.market] }}
+      group: run_shorts_open3h_${{ matrix.market }}_${{ matrix.market_date }}
       cancel-in-progress: true
 
     env:
-      # -----------------------------
-      # Google Drive (Uploader reads these)
-      # -----------------------------
+      # Google Drive
       GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
       GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
       GDRIVE_CLIENT_SECRET_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_B64 }}
       GDRIVE_ALLOW_INTERACTIVE: "0"
 
-      # -----------------------------
       # YouTube
-      # -----------------------------
       YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
       YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
 
+      # matplotlib
       MPLBACKEND: Agg
+
+      # optional debug
+      RUN_SHORTS_DEBUG_TREE: "1"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Echo plan
+        shell: bash
+        run: |
+          echo "slot=${{ needs.plan.outputs.slot }}"
+          echo "images_ymd=${{ needs.plan.outputs.images_ymd }}"
+          echo "market=${{ matrix.market }}"
+          echo "market_date=${{ matrix.market_date }}"
+          echo "event=${{ github.event_name }}"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -196,7 +250,7 @@ jobs:
             exit 1
           fi
 
-      - name: Run shorts (auto open+3h, once/day)
+      - name: Run shorts
         run: |
           set -euxo pipefail
           python scripts/run_shorts.py \
@@ -214,7 +268,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: artifacts_${{ matrix.market }}
+          name: artifacts_${{ matrix.market }}_${{ matrix.market_date }}
           path: |
             outputs/**
             media/videos/**
