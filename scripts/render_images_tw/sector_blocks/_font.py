@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import os
-import sys
-import shutil
-from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional
 
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
@@ -17,125 +14,68 @@ def _env_on(name: str) -> bool:
     return v in {"1", "true", "yes", "y", "on"}
 
 
-# one-time guard
-_FONT_REFRESH_DONE = False
-
-
-def _maybe_refresh_mpl_fonts() -> None:
-    """
-    CI-safe refresh:
-    - Clear matplotlib font cache
-    - Force rebuild font manager
-
-    This DOES NOT install fonts. It only makes newly-installed system fonts
-    (installed by workflow) visible to matplotlib in the same job.
-    """
-    global _FONT_REFRESH_DONE
-    if _FONT_REFRESH_DONE:
-        return
-    _FONT_REFRESH_DONE = True
-
-    # Only do this on Linux CI by default (avoid slow local runs)
-    is_ci = _env_on("CI") or bool(os.getenv("GITHUB_ACTIONS"))
-    is_linux = sys.platform.startswith("linux")
-
-    if not (is_ci and is_linux):
-        # still allow forcing on any platform
-        if not _env_on("TW_SECTOR_FORCE_REFRESH_FONTS"):
-            return
-
-    # optional: allow disabling even on CI
-    if _env_on("TW_SECTOR_DISABLE_REFRESH_FONTS"):
-        return
-
-    # Clear cache dir
-    try:
-        cache_dir = Path.home() / ".cache" / "matplotlib"
-        if cache_dir.exists():
-            shutil.rmtree(cache_dir, ignore_errors=True)
-    except Exception:
-        pass
-
-    # Force rebuild font manager (ignore cached fontlist)
-    try:
-        fm._load_fontmanager(try_read_cache=False)  # type: ignore[attr-defined]
-    except Exception:
-        # fallback: touching fontManager triggers lazy rebuild in some versions
-        try:
-            _ = fm.fontManager.ttflist
-        except Exception:
-            pass
-
-
 def setup_cjk_font() -> Optional[str]:
     """
-    TW: CJK safe font selection (CI-friendly).
+    TW sector pages: CJK-safe font selection (CI-friendly).
 
-    Notes:
-    - This function does NOT install fonts.
-    - It can refresh matplotlib font cache so CI can see fonts installed earlier
-      in the same workflow.
+    Why sector pages got tofu:
+      - CI often has 'Noto Sans CJK JP' but NOT 'Noto Sans CJK TC'
+      - Old candidates list didn't include JP fallback, so it fell back to DejaVu Sans.
+
+    This function:
+      - builds a fallback font list (not single font)
+      - includes Noto Sans CJK JP/SC/HK/TC variants
+      - sets rcParams["font.sans-serif"] to that list
+      - returns the first chosen font name (or None)
     """
-    _maybe_refresh_mpl_fonts()
-
-    font_candidates: List[str] = [
-        # Best on Linux CI (fonts-noto-cjk)
-        "Noto Sans CJK TC",
-        "Noto Sans CJK SC",
-        "Noto Sans CJK JP",
-        "Noto Sans CJK KR",
-
-        # Some distros expose these names
-        "Noto Sans TC",
-        "Noto Sans SC",
-        "Noto Sans JP",
-        "Noto Sans KR",
-
-        # Windows/macOS
-        "Microsoft JhengHei",
-        "PingFang TC",
-        "Arial Unicode MS",
-
-        # Last resort (may tofu for CJK)
-        "Noto Sans",
-        "DejaVu Sans",
-    ]
-
     try:
         available = {f.name for f in fm.fontManager.ttflist}
 
-        chosen: Optional[str] = None
-        for f in font_candidates:
-            if f in available:
-                chosen = f
-                break
+        # CI (ubuntu) commonly exposes these names depending on fontconfig build
+        candidates: List[str] = [
+            # Preferred for TW
+            "Noto Sans CJK TC",
+            "Noto Sans TC",
+            "Noto Sans HK",
+            # CI-safe fallbacks (very common when fonts-noto-cjk is installed)
+            "Noto Sans CJK JP",
+            "Noto Sans JP",
+            "Noto Sans CJK SC",
+            "Noto Sans SC",
+            # Windows/macOS fallbacks (harmless on CI)
+            "Microsoft JhengHei",
+            "PingFang TC",
+            "Arial Unicode MS",
+            # generic fallbacks
+            "Noto Sans",
+            "DejaVu Sans",
+        ]
 
-        if not chosen:
-            if _env_on("TW_SECTOR_DEBUG_FONTS"):
-                sample = sorted([n for n in available if ("noto" in n.lower()) or ("cjk" in n.lower())])[:150]
-                print("[TW_SECTOR_FONT_DEBUG] no candidate matched.")
-                print("[TW_SECTOR_FONT_DEBUG] sample(notocjk) =", sample)
+        font_list: List[str] = []
+        for name in candidates:
+            if name in available and name not in font_list:
+                font_list.append(name)
+
+        # If still empty, don't touch rcParams (matplotlib will use default)
+        if not font_list:
+            if _env_on("SECTOR_DEBUG_FONTS"):
+                print("[SECTOR_FONT_DEBUG] no candidate fonts available; keep default rcParams")
+                print("  available(sample) =", sorted(list(available))[:50])
             return None
 
-        chain = [chosen] + [x for x in font_candidates if x != chosen and x in available]
-        if not chain:
-            chain = [chosen]
-
         plt.rcParams["font.family"] = "sans-serif"
-        plt.rcParams["font.sans-serif"] = chain
+        plt.rcParams["font.sans-serif"] = font_list
         plt.rcParams["axes.unicode_minus"] = False
 
-        if _env_on("TW_SECTOR_DEBUG_FONTS"):
-            print("[TW_SECTOR_FONT_DEBUG] chosen =", chosen)
-            print("[TW_SECTOR_FONT_DEBUG] chain  =", chain)
+        if _env_on("SECTOR_DEBUG_FONTS"):
             try:
-                path = fm.findfont(fm.FontProperties(family=chosen), fallback_to_default=True)
-                print("[TW_SECTOR_FONT_DEBUG] findfont(chosen) =", path)
-            except Exception as e:
-                print("[TW_SECTOR_FONT_DEBUG] findfont failed:", type(e).__name__, e)
+                print("[SECTOR_FONT_DEBUG]")
+                print("  selected_font_list =", font_list)
+                print("  rcParams.font.family =", plt.rcParams.get("font.family"))
+                print("  rcParams.font.sans-serif =", plt.rcParams.get("font.sans-serif"))
+            except Exception:
+                pass
 
-        return chosen
-    except Exception as e:
-        if _env_on("TW_SECTOR_DEBUG_FONTS"):
-            print(f"[TW_SECTOR_FONT_DEBUG] failed: {type(e).__name__}: {e}")
+        return font_list[0]
+    except Exception:
         return None
