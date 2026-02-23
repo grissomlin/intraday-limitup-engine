@@ -122,11 +122,13 @@ jobs:
             fonts-dejavu-core \
             fonts-dejavu-extra
 
-          # ✅ THE KEY: full Noto CJK + core + emoji
+          # ✅ Noto stacks
           sudo apt-get install -y \
             fonts-noto-cjk \
-            fonts-noto-core \
-            fonts-noto-color-emoji
+            fonts-noto-core || true
+
+          # emoji (some runners may not have it)
+          sudo apt-get install -y fonts-noto-color-emoji || true
 
           # Optional but often helpful on runner images
           sudo apt-get install -y \
@@ -140,10 +142,10 @@ jobs:
           # Rebuild fontconfig cache
           sudo fc-cache -f -v
 
-          # Quick sanity listing (shows whether TC/KR/SC actually exist)
-          echo "---- fc-list Noto Sans CJK ----"
-          fc-list | grep -i "Noto Sans CJK" || true
-          echo "------------------------------"
+          # Quick sanity listing (shows whether TC/KR/SC exist and how they are NAMED)
+          echo "---- fc-list (CJK/TC/SC/KR candidates) ----"
+          fc-list | grep -iE "noto sans (cjk|tc|sc|kr)|noto serif (cjk|tc|sc|kr)|noto sans (tc|sc|kr)" || true
+          echo "------------------------------------------"
 
           # Clear matplotlib cache (global)
           rm -rf ~/.cache/matplotlib ~/.config/matplotlib || true
@@ -167,7 +169,7 @@ jobs:
           fi
 
       # ============================================================
-      # FORCE MATPLOTLIB FONT REBUILD + VERIFY
+      # FORCE MATPLOTLIB FONT REBUILD + VERIFY (matplotlib view)
       # ============================================================
       - name: Rebuild matplotlib font manager (verify)
         shell: bash
@@ -192,16 +194,19 @@ jobs:
           want = [
               "Noto Sans",
               "DejaVu Sans",
-              "Noto Sans CJK TC",
-              "Noto Sans CJK SC",
               "Noto Sans CJK JP",
               "Noto Sans CJK KR",
+              "Noto Sans CJK SC",
+              "Noto Sans CJK TC",
+              "Noto Sans KR",
+              "Noto Sans SC",
+              "Noto Sans TC",
+              "Noto Serif CJK JP",
+              "Noto Color Emoji",
               "Noto Sans Thai",
               "Noto Sans Thai UI",
               "Noto Looped Thai",
               "Noto Looped Thai UI",
-              "Noto Serif CJK JP",
-              "Noto Color Emoji",
           ]
 
           print("\n[FONT CHECK]")
@@ -215,7 +220,23 @@ jobs:
           print("\nThai sample:", [n for n in names if "thai" in n.lower()][:30])
           print("CJK sample :", [n for n in names if "cjk" in n.lower()][:30])
           print("Noto sample:", [n for n in names if "noto" in n.lower()][:30])
+
+          print("\nCJK/KR/TC/SC candidates:",
+                [n for n in names if ("noto" in n.lower() and ("cjk" in n.lower() or n.lower().endswith((" kr"," sc"," tc"))))][:50]
+          )
           PY
+
+      # ============================================================
+      # FORCE SYSTEM FONT VIEW (fc-list view)
+      #   - This is the most reliable check: tells you if fonts exist
+      #     and what EXACT family names fontconfig exposes.
+      # ============================================================
+      - name: Verify fontconfig families (fc-list)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "[fc-list grep]"
+          fc-list | grep -iE "noto sans (cjk|tc|sc|kr)|noto serif (cjk|tc|sc|kr)|noto sans (tc|sc|kr)" || true
 
       # ============================================================
       # ENSURE OUTPUT DIRS
