@@ -18,7 +18,6 @@ __all__ = [
     "has_han",
     "has_thai",
     "has_cjk",
-    # NEW
     "fontprops_for_text",
 ]
 
@@ -241,19 +240,12 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         zh_primary = primary_cn if market == "CN" else primary_tw
         profile = _get_font_profile()
 
-        # ---------------------------------------------------------------------
-        # Font order strategy
-        # ---------------------------------------------------------------------
         if profile == "TH" and market in {"US", "CA", "AU", "UK"}:
-            # TH "feel" for EN markets, but DO NOT break Latin measurement.
-            # So: Latin first -> Thai early -> then CJK/KR/JP
             order = latin_first + primary_th + zh_primary + primary_kr + primary_jp + fallback
         else:
             if need_th:
-                # TH (or content has Thai): Latin first -> Thai -> others
                 order = latin_first + primary_th + zh_primary + primary_kr + primary_jp + fallback
             elif need_kr:
-                # KR content: Latin first -> KR -> others
                 order = latin_first + primary_kr + zh_primary + primary_jp + primary_th + fallback
             else:
                 if market == "JP":
@@ -283,82 +275,59 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
 
 
 # =============================================================================
-# NEW: Per-text FontProperties chooser (Thai-safe without breaking Latin glyphs)
+# NEW: Per-text FontProperties chooser (supports weight=)
 # =============================================================================
-def _available_set() -> set[str]:
+def _pick_first_available(candidates: List[str]) -> Optional[str]:
     try:
-        return {f.name for f in fm.fontManager.ttflist}
+        available = {f.name for f in fm.fontManager.ttflist}
     except Exception:
-        return set()
+        return None
+    for n in candidates:
+        if n in available:
+            return n
+    return None
 
 
-def _pick_font_list(order: List[str]) -> List[str]:
-    available = _available_set()
-    out: List[str] = []
-    for n in order:
-        if n in available and n not in out:
-            out.append(n)
-    return out
-
-
-# Font stacks (tuned for CI reality)
-_LATIN_STACK: List[str] = [
-    "Noto Sans",
-    "DejaVu Sans",
-    "Arial Unicode MS",
-]
-
-_THAI_STACK: List[str] = [
-    # Thai first (for Thai glyphs)
-    "Noto Sans Thai",
-    "Noto Sans Thai UI",
-    "Noto Looped Thai",
-    "Noto Looped Thai UI",
-    "Tahoma",
-    "Leelawadee UI",
-    "TH Sarabun New",
-    "Angsana New",
-    # then Latin fallback (for digits/punct if Thai font build is incomplete)
-    "Noto Sans",
-    "DejaVu Sans",
-    "Arial Unicode MS",
-    # optional CJK fallback (harmless if absent)
-    "Noto Sans CJK JP",
-    "Noto Sans CJK TC",
-    "Noto Sans CJK SC",
-]
-
-
-def fontprops_for_text(text: str, *, market: str = "", payload: Optional[Dict[str, Any]] = None) -> FontProperties:
+def fontprops_for_text(
+    text: str,
+    *,
+    market: str = "",
+    payload: Optional[Dict[str, Any]] = None,
+    weight: Optional[str] = None,
+) -> FontProperties:
     """
-    Return FontProperties that matches the script of `text`.
+    Return FontProperties that is SAFE for bbox measurement + rendering.
 
-    Why:
-    - rcParams['font.sans-serif'] is a *fallback list*, but Matplotlib often uses the FIRST font
-      for measurement/bbox. That can cause Thai tofu if the first font lacks Thai glyphs.
-    - This helper lets you render Thai text with Thai-first fonts, while keeping English text Latin-first,
-      avoiding both:
-        - Thai glyph missing from font(s) Noto Sans
-        - Glyph 85 (U) missing from font(s) Noto Sans Thai (Thai-only subset on CI)
+    Rule (critical for CI):
+    - Always use a Latin-capable base font (Noto Sans / DejaVu Sans) as the *primary* family
+      so digits/EN/punct never trigger "Glyph ... missing from Noto Sans Thai".
+    - Thai/CJK/KR/JP glyphs are handled by rcParams['font.sans-serif'] fallback list,
+      which we set via setup_cjk_font().
+
+    This is the most stable approach on Ubuntu GitHub Actions.
     """
-    # normalize market if caller passes it
-    m = market
-    if (not m) and payload:
-        try:
-            m = str(payload.get("market", "") or "")
-        except Exception:
-            m = ""
-    _ = normalize_market(m)
+    # ensure rcParams fallback list is configured (idempotent)
+    try:
+        setup_cjk_font(payload or {"market": market})
+    except Exception:
+        pass
 
-    if has_thai(text or ""):
-        fam = _pick_font_list(_THAI_STACK)
-    else:
-        # Latin first, but still allow Thai later fallback (mixed strings)
-        fam = _pick_font_list(_LATIN_STACK + _THAI_STACK)
+    # pick a base family that exists
+    base = _pick_first_available(["Noto Sans", "DejaVu Sans", "Arial Unicode MS"]) or "sans-serif"
 
-    if not fam:
-        return FontProperties()  # fallback to matplotlib default
-    return FontProperties(family=fam)
+    w = (weight or "").strip().lower() or None
+    if w is None:
+        return FontProperties(family=base)
+
+    # normalize common weight aliases
+    if w in {"regular", "normal"}:
+        w = "regular"
+    elif w in {"medium"}:
+        w = "medium"
+    elif w in {"bold", "heavy", "black"}:
+        w = "bold"
+
+    return FontProperties(family=base, weight=w)
 
 
 # =============================================================================
