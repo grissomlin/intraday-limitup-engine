@@ -1,4 +1,3 @@
-# .github/workflows/run_shorts_matrix.yml
 name: Run Shorts (matrix)
 
 on:
