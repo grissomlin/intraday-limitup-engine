@@ -135,13 +135,20 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install system deps
+      - name: Install system deps (ffmpeg + CJK fonts)
+        shell: bash
         run: |
+          set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg fonts-noto-cjk fonts-noto-cjk-extra
+          fc-cache -f -v
+          echo "=== font check (Noto CJK) ==="
+          fc-list | grep -i "noto.*cjk" | head -n 30 || true
 
       - name: Install python deps
+        shell: bash
         run: |
+          set -euxo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements-ci.txt ]; then
             echo "[CI] Installing from requirements-ci.txt"
@@ -155,7 +162,9 @@ jobs:
           fi
 
       - name: Debug repo tree (optional)
+        shell: bash
         run: |
+          set -euxo pipefail
           echo "PWD=$(pwd)"
           echo "=== show scripts directory top-level ==="
           ls -la scripts || true
@@ -168,6 +177,7 @@ jobs:
           fi
 
       - name: Run shorts
+        shell: bash
         run: |
           set -euxo pipefail
           python scripts/run_shorts.py \
