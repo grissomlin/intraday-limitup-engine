@@ -4,24 +4,31 @@
 UK rolling-window price sync (DB-based) — Batch + Clean Stats
 (Adapted from markets/us/us_prices.py)
 
-對外 API：
+✅ Fix (scale normalize before writing DB):
+- UK tickers may appear in pence or pounds (sometimes mixed by day).
+- Normalize daily OHLC using day-to-day ratio and an optional DB seed prev_close.
+- Prevent writing "dirty" mixed-scale data into stock_prices.
+
+Public API:
 ✅ run_sync(start_date=None, end_date=None, refresh_list=True)
 
-下載策略：
-✅ batch：yf.download("VOD.L HSBA.L ...", group_by="ticker")
-✅ 單檔 fallback：只救最終失敗者（可關）
-
-環境變數（UK 版）：
+Env:
 - UK_DB_PATH
 - UK_ROLLING_TRADING_DAYS        (default 30)
 - UK_CALENDAR_TICKER             (default ^FTSE)
 - UK_CAL_LOOKBACK_CAL_DAYS       (default 180)
-- UK_ROLLING_CAL_DAYS            (default 90)   # calendar 失敗才用
+- UK_ROLLING_CAL_DAYS            (default 90)
 - UK_DAILY_BATCH_SIZE            (default 200)
 - UK_BATCH_SLEEP_SEC             (default 0.05)
 - UK_FALLBACK_SINGLE             (default 1)
 - UK_YF_THREADS                  (default 1)
-- UK_SLEEP_SEC                   (default 0.02)  # 單檔 fallback sleep
+- UK_SLEEP_SEC                   (default 0.02)
+
+Scale normalize env:
+- UK_SCALE_UPPER_RATIO           (default 20.0)  # ratio >= => divide by factor
+- UK_SCALE_LOWER_RATIO           (default 0.05)  # ratio <= => multiply by factor
+- UK_SCALE_FACTOR                (default 100.0)
+- UK_SCALE_DEBUG                 (default 0)     # 1 => print summary per batch
 """
 
 from __future__ import annotations
@@ -75,7 +82,6 @@ def _rolling_trading_days() -> int:
 
 
 def _calendar_ticker() -> str:
-    # FTSE 100 index
     return os.getenv("UK_CALENDAR_TICKER", "^FTSE")
 
 
@@ -105,6 +111,22 @@ def _yf_threads_enabled() -> bool:
 
 def _single_sleep_sec() -> float:
     return float(os.getenv("UK_SLEEP_SEC", "0.02"))
+
+
+def _scale_upper_ratio() -> float:
+    return float(os.getenv("UK_SCALE_UPPER_RATIO", "20.0"))
+
+
+def _scale_lower_ratio() -> float:
+    return float(os.getenv("UK_SCALE_LOWER_RATIO", "0.05"))
+
+
+def _scale_factor() -> float:
+    return float(os.getenv("UK_SCALE_FACTOR", "100.0"))
+
+
+def _scale_debug() -> bool:
+    return str(os.getenv("UK_SCALE_DEBUG", "0")).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 # =============================================================================
@@ -255,7 +277,6 @@ def _get_uk_items(db_path: str, refresh_list: bool) -> List[Tuple[str, str]]:
     if get_uk_stock_list is not None:
         try:
             raw = get_uk_stock_list(db_path=Path(db_path), refresh_list=refresh_list)
-            # 兼容：[(sym,name)] 或 [{"symbol":...}]
             if isinstance(raw, list) and raw:
                 if isinstance(raw[0], dict):
                     for d in raw:
@@ -276,7 +297,6 @@ def _get_uk_items(db_path: str, refresh_list: bool) -> List[Tuple[str, str]]:
     if items:
         return items
 
-    # DB fallback
     if os.path.exists(db_path):
         conn = sqlite3.connect(db_path)
         try:
@@ -288,6 +308,169 @@ def _get_uk_items(db_path: str, refresh_list: bool) -> List[Tuple[str, str]]:
             conn.close()
 
     return items
+
+
+# =============================================================================
+# Scale normalize helpers (IMPORTANT)
+# =============================================================================
+def _fetch_prev_close_seed(conn: sqlite3.Connection, symbols: List[str], start_ymd: str) -> Dict[str, float]:
+    """
+    For each symbol, get the last close strictly before start_ymd.
+    This acts as a seed to normalize the first day in the window.
+    """
+    if not symbols:
+        return {}
+
+    # sqlite has param limit; chunk it
+    out: Dict[str, float] = {}
+    chunk = 900
+    for i in range(0, len(symbols), chunk):
+        sub = symbols[i : i + chunk]
+        qs = ",".join(["?"] * len(sub))
+        sql = f"""
+        SELECT p.symbol, p.close
+        FROM stock_prices p
+        JOIN (
+          SELECT symbol, MAX(date) AS maxd
+          FROM stock_prices
+          WHERE date < ? AND symbol IN ({qs})
+          GROUP BY symbol
+        ) t
+        ON t.symbol = p.symbol AND t.maxd = p.date
+        """
+        rows = conn.execute(sql, [start_ymd] + sub).fetchall()
+        for sym, close in rows:
+            try:
+                if close is not None:
+                    out[str(sym)] = float(close)
+            except Exception:
+                pass
+    return out
+
+
+def _normalize_symbol_ohlc(
+    df_sym: pd.DataFrame,
+    seed_prev_close: Optional[float],
+    upper_ratio: float,
+    lower_ratio: float,
+    factor: float,
+) -> Tuple[pd.DataFrame, int, int]:
+    """
+    Normalize a single symbol's OHLC within the downloaded window.
+
+    Forward pass uses last adjusted close (seeded from DB prev close if available).
+    Backward pass helps fix the very first day when seed is missing.
+    Returns: (df_adjusted, n_scaled_down, n_scaled_up)
+    """
+    if df_sym.empty:
+        return df_sym, 0, 0
+
+    df_sym = df_sym.sort_values("date").reset_index(drop=True)
+
+    # Ensure numeric
+    for c in ("open", "high", "low", "close"):
+        df_sym[c] = pd.to_numeric(df_sym[c], errors="coerce")
+
+    n_down = 0
+    n_up = 0
+    eps = 1e-12
+
+    # ---------- forward pass ----------
+    last = float(seed_prev_close) if seed_prev_close is not None else None
+    for idx in range(len(df_sym)):
+        close = df_sym.at[idx, "close"]
+        if last is not None and last > eps and close is not None and close > eps:
+            ratio = float(close) / float(last)
+            if ratio >= upper_ratio:
+                for c in ("open", "high", "low", "close"):
+                    v = df_sym.at[idx, c]
+                    if v is not None and pd.notna(v):
+                        df_sym.at[idx, c] = float(v) / factor
+                n_down += 1
+                close = df_sym.at[idx, "close"]
+            elif ratio <= lower_ratio:
+                for c in ("open", "high", "low", "close"):
+                    v = df_sym.at[idx, c]
+                    if v is not None and pd.notna(v):
+                        df_sym.at[idx, c] = float(v) * factor
+                n_up += 1
+                close = df_sym.at[idx, "close"]
+
+        # update last
+        if close is not None and pd.notna(close) and float(close) > eps:
+            last = float(close)
+
+    # ---------- backward pass (only meaningful if no seed) ----------
+    if seed_prev_close is None and len(df_sym) >= 2:
+        next_close: Optional[float] = None
+        for idx in range(len(df_sym) - 1, -1, -1):
+            close = df_sym.at[idx, "close"]
+            if next_close is not None and next_close > eps and close is not None and close > eps:
+                ratio = float(close) / float(next_close)
+                # If today's close is 100x of tomorrow, today is likely pence; divide
+                if ratio >= upper_ratio:
+                    for c in ("open", "high", "low", "close"):
+                        v = df_sym.at[idx, c]
+                        if v is not None and pd.notna(v):
+                            df_sym.at[idx, c] = float(v) / factor
+                    n_down += 1
+                    close = df_sym.at[idx, "close"]
+                elif ratio <= lower_ratio:
+                    for c in ("open", "high", "low", "close"):
+                        v = df_sym.at[idx, c]
+                        if v is not None and pd.notna(v):
+                            df_sym.at[idx, c] = float(v) * factor
+                    n_up += 1
+                    close = df_sym.at[idx, "close"]
+
+            if close is not None and pd.notna(close) and float(close) > eps:
+                next_close = float(close)
+
+    return df_sym, n_down, n_up
+
+
+def _normalize_prices_long(
+    df_long: pd.DataFrame,
+    prev_close_seed: Dict[str, float],
+) -> pd.DataFrame:
+    """
+    Normalize long df (symbol,date,open,high,low,close,volume) before DB insert.
+    """
+    if df_long is None or df_long.empty:
+        return df_long
+
+    upper = _scale_upper_ratio()
+    lower = _scale_lower_ratio()
+    factor = _scale_factor()
+
+    # sanitize cols
+    dfw = df_long.copy()
+    dfw["symbol"] = dfw["symbol"].astype(str)
+    dfw["date"] = dfw["date"].astype(str).str.slice(0, 10)
+
+    for c in ("open", "high", "low", "close"):
+        dfw[c] = pd.to_numeric(dfw[c], errors="coerce")
+
+    dfw["volume"] = pd.to_numeric(dfw.get("volume"), errors="coerce")
+
+    total_down = 0
+    total_up = 0
+    out_parts: List[pd.DataFrame] = []
+
+    for sym, g in dfw.groupby("symbol", sort=False):
+        seed = prev_close_seed.get(sym)
+        g2, n_down, n_up = _normalize_symbol_ohlc(g, seed, upper_ratio=upper, lower_ratio=lower, factor=factor)
+        total_down += n_down
+        total_up += n_up
+        out_parts.append(g2)
+
+    out = pd.concat(out_parts, ignore_index=True) if out_parts else dfw
+    out = out.dropna(subset=["symbol", "date"]).sort_values(["symbol", "date"]).reset_index(drop=True)
+
+    if _scale_debug() and (total_down > 0 or total_up > 0):
+        log(f"🧯 UK scale-normalize applied: scaled_down(/100)={total_down} scaled_up(*100)={total_up}")
+
+    return out
 
 
 # =============================================================================
@@ -523,9 +706,10 @@ def run_sync(
 ) -> Dict[str, Any]:
     """
     UK rolling-window sync:
-    - end_date 若未給：用 calendar ticker 最新交易日（資料源）當 end_inclusive，再推 end_excl
+    - end_date 若未給：用 calendar ticker 最新交易日當 end_inclusive，再推 end_excl
     - window 預設：最新 N 個交易日
     - 不增量：先刪掉 window 起點之後的舊 price，再重寫入
+    - ✅ 下載後寫入前：scale normalize（避免 DB 再被寫髒）
     """
     db_path = _db_path()
     init_db(db_path)
@@ -570,11 +754,18 @@ def run_sync(
 
     log(f"📦 UK DB = {db_path}")
     log(f"🚀 UK run_sync | window: {start_ymd} ~ {end_inclusive} | refresh_list={refresh_list}")
-    log(f"⚙️ batch_size={_batch_size()} threads={_yf_threads_enabled()} fallback_single={_fallback_single_enabled()} total={total}")
+    log(
+        f"⚙️ batch_size={_batch_size()} threads={_yf_threads_enabled()} fallback_single={_fallback_single_enabled()} total={total} "
+        f"| scale upper={_scale_upper_ratio()} lower={_scale_lower_ratio()} factor={_scale_factor()}"
+    )
 
-    # ---------- rolling window delete ----------
+    # ---------- open conn once (we need seed prev_close BEFORE delete) ----------
     conn = sqlite3.connect(db_path, timeout=120)
     try:
+        # 1) fetch seed prev_close per symbol (strictly before start_ymd)
+        prev_seed = _fetch_prev_close_seed(conn, tickers, start_ymd)
+
+        # 2) rolling window delete
         conn.execute("DELETE FROM stock_prices WHERE date >= ?", (start_ymd,))
         conn.commit()
     finally:
@@ -599,6 +790,8 @@ def run_sync(
                 continue
 
             if df_long is not None and not df_long.empty:
+                # ✅ normalize before write
+                df_long = _normalize_prices_long(df_long, prev_close_seed=prev_seed)
                 _insert_prices(conn, df_long)
                 conn.commit()
 
@@ -616,6 +809,8 @@ def run_sync(
                 for sym in need_fallback:
                     df_one, err_one = _download_one(sym, start_ymd, end_excl_date)
                     if df_one is not None and not df_one.empty:
+                        # ✅ normalize before write (single)
+                        df_one = _normalize_prices_long(df_one, prev_close_seed=prev_seed)
                         _insert_prices(conn, df_one)
                         conn.commit()
                         ok_set.add(sym)
@@ -663,6 +858,11 @@ def run_sync(
             "size": int(_batch_size()),
             "threads": bool(_yf_threads_enabled()),
             "fallback_single": bool(_fallback_single_enabled()),
+        },
+        "scale": {
+            "upper_ratio": float(_scale_upper_ratio()),
+            "lower_ratio": float(_scale_lower_ratio()),
+            "factor": float(_scale_factor()),
         },
     }
 
