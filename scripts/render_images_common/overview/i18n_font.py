@@ -169,16 +169,24 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         primary_jp = ["Noto Sans JP", "Noto Sans CJK JP", "Yu Gothic", "Meiryo"]
         primary_kr = ["Malgun Gothic", "Noto Sans KR", "Noto Sans CJK KR"]
 
-        # ✅ Thai font candidates (best-effort; may not exist on all machines)
+        # ✅ Thai font candidates:
+        # - GitHub Actions (ubuntu-latest) 很常見會有 Noto Looped Thai / UI（若你 apt 裝 fonts-noto-*）
+        # - 先放 Thai，再放 Latin fallback，最後才放 CJK（避免 Thai 被 CJK 字型搶走）
         primary_th = [
+            "Noto Looped Thai",
+            "Noto Looped Thai UI",
             "Noto Sans Thai",
             "Noto Sans Thai UI",
+            # Latin fallback (讓英文/數字比較穩)
+            "Noto Sans",
+            # Windows common
             "Tahoma",
             "Leelawadee UI",
             "TH Sarabun New",
             "Angsana New",
         ]
 
+        # General fallback
         fallback = ["Arial Unicode MS", "DejaVu Sans", "Noto Sans"]
 
         # Choose zh primary by market
@@ -190,10 +198,12 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         # Font order strategy
         # ---------------------------------------------------------------------
         if profile == "TH" and market in {"US", "CA", "AU", "UK"}:
-            # ✅ Force TH-like feel into EN markets (for your Sector/Market label look)
+            # ✅ Force TH-like feel into EN markets (your Sector/Market label look)
+            # Thai first, then zh (in case mixed), then kr/jp, then fallback
             order = primary_th + zh_primary + primary_kr + primary_jp + fallback
         else:
             if market == "TH":
+                # ✅ TH must always put Thai fonts FIRST (avoid tofu squares)
                 order = primary_th + zh_primary + primary_kr + primary_jp + fallback
             elif need_kr:
                 order = primary_kr + zh_primary + primary_jp + fallback
