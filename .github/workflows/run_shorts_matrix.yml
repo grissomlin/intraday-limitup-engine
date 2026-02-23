@@ -20,21 +20,20 @@ on:
         type: string
 
       markets:
-        description: "markets to run: all | au | au,us,tw (comma-separated, case-insensitive)"
+        description: "markets to run: all | au | au,us,tw"
         required: false
         default: "all"
         type: string
 
 jobs:
   prepare:
-    name: Prepare matrix
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       markets_normalized: ${{ steps.set-matrix.outputs.markets_normalized }}
 
     steps:
-      - name: Build matrix from input
+      - name: Build matrix
         id: set-matrix
         shell: bash
         run: |
@@ -51,43 +50,28 @@ jobs:
             IFS=',' read -r -a arr <<< "$raw"
             selected=""
             for m in "${arr[@]}"; do
-              [ -z "$m" ] && continue
               if echo " $ALL " | grep -q " $m "; then
-                if ! echo " $selected " | grep -q " $m "; then
-                  selected="$selected $m"
-                fi
+                selected="$selected $m"
               else
-                echo "::error::Invalid market '$m'. Allowed: $ALL or 'all'"
+                echo "::error::Invalid market '$m'"
                 exit 1
               fi
             done
-            selected="$(echo "$selected" | xargs || true)"
-            if [ -z "$selected" ]; then
-              echo "::error::No valid markets selected."
-              exit 1
-            fi
+            selected="$(echo "$selected" | xargs)"
           fi
 
           json='{"market":['
           first=1
           for m in $selected; do
-            if [ $first -eq 1 ]; then
-              first=0
-            else
-              json="$json,"
-            fi
+            if [ $first -eq 1 ]; then first=0; else json="$json,"; fi
             json="$json\"$m\""
           done
           json="$json]}"
-
-          echo "Selected markets: $selected"
-          echo "Matrix JSON: $json"
 
           echo "markets_normalized=$selected" >> "$GITHUB_OUTPUT"
           echo "matrix=$json" >> "$GITHUB_OUTPUT"
 
   run:
-    name: run_shorts ${{ matrix.market }}
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -106,15 +90,7 @@ jobs:
       YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Echo inputs
-        run: |
-          echo "slot=${{ inputs.slot }}"
-          echo "images_ymd=${{ inputs.images_ymd }}"
-          echo "markets_selected=${{ needs.prepare.outputs.markets_normalized }}"
-          echo "matrix.market=${{ matrix.market }}"
+      - uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -122,7 +98,7 @@ jobs:
           python-version: "3.11"
 
       # ------------------------------------------------------------
-      # Install system dependencies
+      # System deps
       # ------------------------------------------------------------
       - name: Install system deps
         run: |
@@ -135,20 +111,14 @@ jobs:
             fonts-noto-color-emoji \
             fontconfig
 
-          # TH only: install Thai fonts
           if [ "${{ matrix.market }}" = "th" ]; then
-            echo "[TH] Installing Thai fonts"
             sudo apt-get install -y \
               fonts-noto-core \
               fonts-noto-ui-core
           fi
 
           sudo fc-cache -fv
-
           rm -rf ~/.cache/matplotlib || true
-
-          echo "=== Installed fonts sample ==="
-          fc-list | grep -i -E "noto|thai|cjk" | head -n 100 || true
 
       # ------------------------------------------------------------
       # Python deps
@@ -172,13 +142,21 @@ jobs:
           from matplotlib import font_manager as fm
           fm._load_fontmanager(try_read_cache=False)
           names = sorted({f.name for f in fm.fontManager.ttflist})
-          hit = [n for n in names if "noto" in n.lower() or "thai" in n.lower() or "cjk" in n.lower()]
-          print("Total fonts:", len(names))
-          print("Sample:", hit[:80])
+          print("Fonts count:", len(names))
+          print("Sample:", [n for n in names if "noto" in n.lower()][:20])
           PY
 
       # ------------------------------------------------------------
-      # Run
+      # Ensure output dirs exist (CRITICAL FIX)
+      # ------------------------------------------------------------
+      - name: Ensure output directories
+        run: |
+          mkdir -p media/images
+          mkdir -p media/videos
+          mkdir -p outputs
+
+      # ------------------------------------------------------------
+      # Run shorts
       # ------------------------------------------------------------
       - name: Run shorts
         run: |
