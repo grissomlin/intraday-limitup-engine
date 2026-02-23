@@ -152,9 +152,20 @@ jobs:
       cancel-in-progress: true
 
     env:
+      # -----------------------------
+      # Google Drive (Uploader reads these)
+      # -----------------------------
       GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+      GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
+      GDRIVE_CLIENT_SECRET_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_B64 }}
+      GDRIVE_ALLOW_INTERACTIVE: "0"
+
+      # -----------------------------
+      # YouTube
+      # -----------------------------
       YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
       YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
+
       MPLBACKEND: Agg
 
     steps:
