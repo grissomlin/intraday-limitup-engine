@@ -9,99 +9,92 @@ def _safe_str(x: Any) -> str:
     return str(x).strip() if x is not None else ""
 
 
-def _parse_ymd_hhmm_from_iso(dt_iso: str) -> Tuple[str, str]:
-    """
-    Try parse ISO-ish datetime string and return (YYYY-MM-DD, HH:MM).
-    Accepts:
-      - 2026-02-11T14:49:00+08:00
-      - 2026-02-11 14:49:00
-      - 2026-02-11T14:49:00Z
-    If missing/invalid -> ("", "")
-    """
-    s = _safe_str(dt_iso)
-    if not s:
-        return "", ""
-
-    try:
-        # split date/time
-        if "T" in s:
-            d, t = s.split("T", 1)
-        elif " " in s:
-            d, t = s.split(" ", 1)
-        else:
-            # maybe only time
-            return "", s[:5]
-
-        ymd = d[:10] if len(d) >= 10 else ""
-        hhmm = t[:5] if len(t) >= 5 else ""
-        return ymd, hhmm
-    except Exception:
-        return "", ""
-
-
 def parse_cutoff(payload: Dict[str, Any]) -> str:
-    # trading date (data date)
+    # trade date for display (prefer ymd_effective)
+    return _safe_str(payload.get("ymd_effective") or payload.get("ymd") or "")
+
+
+def _slot_zh(slot: str) -> str:
+    s = (slot or "").strip().lower()
+    if s == "open":
+        return "開盤"
+    if s == "close":
+        return "收盤"
+    if s == "midday":
+        return "盤中"
+    # fallback
+    return "盤中"
+
+
+def _format_trade_line(payload: Dict[str, Any]) -> str:
     ymd = _safe_str(payload.get("ymd_effective") or payload.get("ymd") or "")
-    return ymd or ""
+    slot = _slot_zh(_safe_str(payload.get("slot") or "midday"))
+    if ymd:
+        return f"台灣交易日 {ymd} {slot}"
+    return f"台灣交易日 {slot}"
+
+
+def _format_update_line(payload: Dict[str, Any]) -> str:
+    """
+    ✅ Correct rule (match overview):
+    - Prefer meta.time.market_finished_at (already market-local "YYYY-MM-DD HH:MM")
+    - Prefer meta.time.market_tz_offset / market_utc_offset (e.g. "+08:00") -> show as "UTC+08:00"
+    Fallback:
+    - payload.generated_at (best effort); if it looks like UTC ISO "....Z", label as "(UTC)".
+    """
+    meta = payload.get("meta") or {}
+    t = meta.get("time") or {}
+
+    produced_at = _safe_str(t.get("market_finished_at"))
+    off = _safe_str(t.get("market_tz_offset") or t.get("market_utc_offset"))
+
+    # If we have market-local produced_at, we must NOT accidentally show UTC string.
+    if produced_at:
+        tz_label = f"UTC{off}" if off else ""
+        return f"更新 {produced_at}" + (f" ({tz_label})" if tz_label else "")
+
+    # -----------------------
+    # Fallback: generated_at
+    # -----------------------
+    ga = _safe_str(payload.get("generated_at"))
+    if not ga:
+        return ""
+
+    # common shapes:
+    #  - 2026-02-23T05:15:12Z   (UTC)
+    #  - 2026-02-23T05:15:12+00:00
+    #  - 2026-02-23 13:15
+    show = ga
+    label = ""
+
+    if "T" in ga and len(ga) >= 16:
+        # keep "YYYY-MM-DD HH:MM"
+        show = ga.replace("T", " ", 1)[:16]
+        if ga.endswith("Z") or "+00:00" in ga:
+            label = "UTC"
+    elif " " in ga and len(ga) >= 16:
+        show = ga[:16]
+
+    if label:
+        return f"更新 {show} ({label})"
+    return f"更新 {show}"
 
 
 def get_market_time_info(payload: Dict[str, Any]) -> Tuple[str, str]:
     """
-    Returns (ymd_data, time_note)
+    Returns:
+      (ymd_for_folder_or_display, time_note_two_lines)
 
-    time_note will be TWO lines if possible:
-      line1: "{market_label} {ymd_data} {session}"
-      line2: "更新 {update_ymd} {hhmm}（UTC+08:00）"
-
-    If update_ymd not available, fallback to:
-      - asof hh:mm (no date) -> use line2: "更新 {hhmm}（UTC+08:00）"
+    time_note is two lines:
+      line1: 台灣交易日 YYYY-MM-DD 盤中
+      line2: 更新 YYYY-MM-DD HH:MM (UTC+08:00)
     """
-    ymd_data = _safe_str(payload.get("ymd_effective") or payload.get("ymd") or "")
-    slot = _safe_str(payload.get("slot") or "")
-    meta = payload.get("meta") or {}
+    ymd = _safe_str(payload.get("ymd_effective") or payload.get("ymd") or "")
+    line1 = _format_trade_line(payload)
+    line2 = _format_update_line(payload)
 
-    if slot == "close":
-        session = "收盤"
-    elif slot == "midday":
-        session = "盤中"
-    elif slot == "open":
-        session = "開盤"
-    else:
-        session = slot or "資料"
+    note = line1
+    if line2:
+        note = f"{line1}\n{line2}"
 
-    market_label = _safe_str(meta.get("market_label") or "") or "台灣交易日"
-
-    updated_market = _safe_str(meta.get("pipeline_finished_at_market") or "")
-    if not updated_market:
-        updated_market = _safe_str(payload.get("generated_at") or "")
-
-    upd_ymd, hhmm = _parse_ymd_hhmm_from_iso(updated_market)
-
-    # final fallback: payload.asof may be "14:49" or "2026-02-11 14:49"
-    if not hhmm:
-        asof = _safe_str(payload.get("asof") or "")
-        a_ymd, a_hhmm = _parse_ymd_hhmm_from_iso(asof)
-        hhmm = a_hhmm or asof[:5]
-        if not upd_ymd:
-            upd_ymd = a_ymd
-
-    offset = _safe_str(meta.get("market_utc_offset") or "") or "UTC+08:00"
-    offset_part = f"（{offset}）" if offset else ""
-
-    # line1: market + data date + session
-    if ymd_data:
-        line1 = f"{market_label} {ymd_data} {session}".strip()
-    else:
-        line1 = f"{market_label} {session}".strip()
-
-    # line2: update date+time preferred
-    if upd_ymd and hhmm:
-        line2 = f"更新 {upd_ymd} {hhmm}{offset_part}".strip()
-    elif hhmm:
-        line2 = f"更新 {hhmm}{offset_part}".strip()
-    else:
-        # very last fallback
-        line2 = f"更新 {offset_part}".strip() if offset_part else "更新"
-
-    time_note = f"{line1}\n{line2}".strip()
-    return ymd_data, time_note
+    return ymd, note
