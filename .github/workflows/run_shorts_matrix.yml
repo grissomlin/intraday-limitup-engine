@@ -39,7 +39,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Canonical list (your original)
+          # Canonical list
           ALL="cn tw jp kr th us ca uk au"
 
           raw="${{ inputs.markets }}"
@@ -48,12 +48,10 @@ jobs:
           if [ -z "$raw" ] || [ "$raw" = "all" ] || [ "$raw" = "*" ]; then
             selected="$ALL"
           else
-            # split by comma
             IFS=',' read -r -a arr <<< "$raw"
             selected=""
             for m in "${arr[@]}"; do
               [ -z "$m" ] && continue
-              # validate against ALL
               if echo " $ALL " | grep -q " $m "; then
                 if ! echo " $selected " | grep -q " $m "; then
                   selected="$selected $m"
@@ -64,7 +62,6 @@ jobs:
               fi
             done
 
-            # if user typed only invalid/empty entries
             selected="$(echo "$selected" | xargs || true)"
             if [ -z "$selected" ]; then
               echo "::error::No valid markets selected. Allowed: $ALL or 'all'"
@@ -83,7 +80,6 @@ jobs:
             fi
             json="$json\"$m\""
           done
-          # ✅ FIX: close JSON properly (NO stray quote)
           json="$json]}"
 
           echo "Selected markets: $selected"
@@ -136,15 +132,40 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install system deps (ffmpeg + CJK fonts)
+      # ✅ A) Workflow 加裝字型 + 清 cache + rebuild（最重要）
+      - name: Install system deps (ffmpeg + fonts)
         shell: bash
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-noto-cjk fonts-noto-cjk-extra
-          fc-cache -f -v
-          echo "=== font check (Noto CJK) ==="
-          fc-list | grep -i "noto.*cjk" | head -n 30 || true
+          sudo apt-get install -y \
+            ffmpeg \
+            fonts-noto-cjk \
+            fonts-noto-color-emoji \
+            fontconfig
+
+          # rebuild fontconfig cache
+          sudo fc-cache -fv
+
+          # nuke matplotlib font cache (very important on CI)
+          rm -rf ~/.cache/matplotlib || true
+
+          # optional: show installed noto/cjk fonts (debug)
+          echo "=== fc-list (noto/cjk sample) ==="
+          fc-list | grep -i -E "noto|cjk" | head -n 80 || true
+
+      - name: Rebuild matplotlib font manager (debug)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          from matplotlib import font_manager as fm
+          fm._load_fontmanager(try_read_cache=False)
+          names = sorted({f.name for f in fm.fontManager.ttflist})
+          hit = [n for n in names if ("noto" in n.lower()) or ("cjk" in n.lower())]
+          print("matplotlib fonts =", len(names))
+          print("Noto/CJK sample =", hit[:80])
+          PY
 
       - name: Install python deps
         shell: bash
