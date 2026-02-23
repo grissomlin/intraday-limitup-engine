@@ -83,7 +83,8 @@ jobs:
             fi
             json="$json\"$m\""
           done
-          json="$json']}"
+          # ✅ FIX: close JSON properly (NO stray quote)
+          json="$json]}"
 
           echo "Selected markets: $selected"
           echo "Matrix JSON: $json"
