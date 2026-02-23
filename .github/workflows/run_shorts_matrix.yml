@@ -1,3 +1,4 @@
+# .github/workflows/run_shorts_matrix.yml
 name: Run Shorts (matrix)
 
 on:
@@ -81,8 +82,13 @@ jobs:
 
     env:
       MPLBACKEND: Agg
+
+      # ✅ isolate matplotlib config/cache per matrix job (prevents cross-market cache weirdness)
+      MPLCONFIGDIR: ${{ runner.temp }}/mpl-${{ matrix.market }}
+
       RUN_SHORTS_DEBUG_TREE: "1"
       OVERVIEW_DEBUG_FONTS: "1"
+      OVERVIEW_DEBUG_FOOTER: "1"
 
       GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
       YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
@@ -122,8 +128,12 @@ jobs:
           # Clear font cache
           sudo fc-cache -fv
 
-          # Clear matplotlib cache
-          rm -rf ~/.cache/matplotlib || true
+          # Clear matplotlib cache (both places)
+          rm -rf ~/.cache/matplotlib ~/.config/matplotlib || true
+
+          # Also clear isolated MPLCONFIGDIR (just in case)
+          rm -rf "${MPLCONFIGDIR}" || true
+          mkdir -p "${MPLCONFIGDIR}"
 
       # ============================================================
       # PYTHON DEPENDENCIES
@@ -144,7 +154,12 @@ jobs:
       - name: Rebuild matplotlib font manager (verify)
         run: |
           python - <<'PY'
+          import os
           from matplotlib import font_manager as fm
+          import matplotlib.pyplot as plt
+
+          print("MPLCONFIGDIR:", os.environ.get("MPLCONFIGDIR"))
+
           fm._load_fontmanager(try_read_cache=False)
           names = sorted({f.name for f in fm.fontManager.ttflist})
 
@@ -168,6 +183,11 @@ jobs:
           print("\n[FONT CHECK]")
           for n in want:
               print(f"{n:22} : {'OK' if n in names else 'MISSING'}")
+
+          # show rcParams default order head (useful when debugging)
+          print("\n[rcParams preview]")
+          print("  font.family     =", plt.rcParams.get("font.family"))
+          print("  font.sans-serif =", (plt.rcParams.get("font.sans-serif") or [])[:20])
 
           print("\nThai sample:", [n for n in names if "thai" in n.lower()][:20])
           print("CJK sample :", [n for n in names if "cjk" in n.lower()][:20])
