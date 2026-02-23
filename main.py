@@ -7,16 +7,23 @@ import os
 import json
 import argparse
 import subprocess
-from datetime import datetime, timezone, timedelta
+import platform
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, Tuple
+
+from markets.timekit import (
+    market_today_ymd,
+    build_market_time_meta,
+)
 
 
 # =============================================================================
 # Env helpers
 # =============================================================================
 def is_github_actions() -> bool:
-    return os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+    v = (os.getenv("GITHUB_ACTIONS", "") or "").strip().lower()
+    return v in ("1", "true", "yes", "y", "on")
 
 
 def parse_bool_env(name: str, default: bool) -> bool:
@@ -31,92 +38,71 @@ def parse_bool_env(name: str, default: bool) -> bool:
     return default
 
 
-def parse_int_env(name: str, default: int) -> int:
-    v = os.getenv(name)
-    if v is None:
-        return default
-    try:
-        return int(str(v).strip())
-    except Exception:
-        return default
-
-
-def parse_float_env(name: str, default: float) -> float:
-    v = os.getenv(name)
-    if v is None:
-        return default
-    try:
-        return float(str(v).strip())
-    except Exception:
-        return default
-
-
-def today_ymd() -> str:
-    tz_tw = timezone(timedelta(hours=8))
-    return datetime.now(tz_tw).strftime("%Y-%m-%d")
-
-
-# =============================================================================
-# Time helpers (UTC + fixed offset)
-# - Supports fractional offsets like +5.5 (India)
-# =============================================================================
-DEFAULT_TZ_OFFSETS = {
-    # Open movers / global
-    "us": -5,     # default Eastern; DST can be overridden by env
-    "ca": -5,     # TSX/TSXV (Toronto) uses Eastern
-    "uk": 0,      # London
-    "au": +10,    # ASX (Sydney) AEST/AEDT; DST can be overridden by env
-
-    # Limit markets
-    "tw": +8,
-    "cn": +8,
-    "jp": +9,
-    "kr": +9,
-
-    # New markets
-    "in": +5.5,   # India IST = UTC+5:30
-    "th": +7,     # Thailand ICT = UTC+7
-}
-
-
-def _tz_offset_hours(market: str) -> float:
-    market = (market or "").strip().lower()
-    env_name = f"INTRADAY_TZ_OFFSET_{market.upper()}"
-    return parse_float_env(env_name, float(DEFAULT_TZ_OFFSETS.get(market, 0.0)))
-
-
-def _tz_offset_str(hours: float) -> str:
-    # hours may be fractional (e.g. 5.5)
-    sign = "+" if hours >= 0 else "-"
-    ah = abs(float(hours))
-    hh = int(ah)
-    mm = int(round((ah - hh) * 60))
-    # normalize rounding edge case (e.g. 9.999 -> 10:00)
-    if mm >= 60:
-        hh += 1
-        mm -= 60
-    return f"{sign}{hh:02d}:{mm:02d}"
+def _env_bool(name: str, default: str = "0") -> bool:
+    v = str(os.getenv(name, default)).strip().lower()
+    return v in ("1", "true", "yes", "y", "on")
 
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def build_time_meta(market: str, *, finished_utc: datetime) -> Dict[str, Any]:
-    off_h = _tz_offset_hours(market)
-    tz = timezone(timedelta(hours=off_h))
-    market_dt = finished_utc.astimezone(tz)
+# =============================================================================
+# Debug helpers
+# =============================================================================
+def _debug_enabled(cli_no_debug: bool) -> bool:
+    # Default ON (your request). Can disable by --no-debug or INTRADAY_DEBUG=0.
+    if cli_no_debug:
+        return False
+    return parse_bool_env("INTRADAY_DEBUG", True)
 
-    off_str = _tz_offset_str(off_h)
-    return {
-        "finished_at_utc": finished_utc.isoformat(timespec="seconds"),
-        "market_tz": f"UTC{off_str}",
-        # keep both (hours can be float)
-        "market_utc_offset_hours": float(off_h),
-        "market_utc_offset": off_str,
-        "market_finished_at": market_dt.strftime("%Y-%m-%d %H:%M"),
-        "market_finished_hm": market_dt.strftime("%H:%M"),
-    }
+
+def _dbg(msg: str, *, enabled: bool) -> None:
+    if enabled:
+        print(msg, flush=True)
+
+
+def _tree(
+    root: Path,
+    *,
+    enabled: bool,
+    max_depth: int = 5,
+    max_items: int = 300,
+) -> None:
+    if not enabled:
+        return
+    root = Path(root)
+    print(f"[debug-tree] {root}", flush=True)
+    if not root.exists():
+        print("  (missing)", flush=True)
+        return
+
+    items_printed = 0
+    root_depth = len(root.resolve().parts)
+
+    def _depth(p: Path) -> int:
+        return len(p.resolve().parts) - root_depth
+
+    try:
+        for p in sorted(root.rglob("*")):
+            if items_printed >= max_items:
+                print(f"  ... (truncated, max_items={max_items})", flush=True)
+                break
+            d = _depth(p)
+            if d > max_depth:
+                continue
+            rel = p.relative_to(root).as_posix()
+            if p.is_dir():
+                print(f"  [D] {rel}/", flush=True)
+            else:
+                try:
+                    sz = p.stat().st_size
+                except Exception:
+                    sz = -1
+                print(f"  [F] {rel} ({sz} bytes)", flush=True)
+            items_printed += 1
+    except Exception as e:
+        print(f"  (tree error: {e})", flush=True)
 
 
 # =============================================================================
@@ -126,22 +112,28 @@ def cache_paths(base_dir: Path, market: str, slot: str, ymd: str) -> dict:
     cache_dir = base_dir / "data" / "cache" / market / ymd
     cache_dir.mkdir(parents=True, exist_ok=True)
     return {
+        "dir": cache_dir,
         "marker": cache_dir / f"{slot}.done.json",
         "payload": cache_dir / f"{slot}.payload.json",
     }
 
 
-def should_skip_by_cache(marker_path: Path) -> bool:
-    return marker_path.exists()
+def should_skip_by_cache(marker_path: Path, payload_path: Path) -> bool:
+    # Cache "hit" means marker exists AND payload exists.
+    return marker_path.exists() and payload_path.exists()
 
 
-def write_marker(marker_path: Path, payload_path: Path, meta: dict, payload: dict) -> None:
+def write_payload(payload_path: Path, payload: dict) -> None:
+    payload_path.parent.mkdir(parents=True, exist_ok=True)
+    payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def write_marker(marker_path: Path, payload_path: Path, meta: dict) -> None:
     marker = {
         "meta": meta,
         "payload_path": str(payload_path),
-        "written_at": datetime.now().isoformat(timespec="seconds"),
+        "written_at_utc": _now_utc().isoformat(timespec="seconds").replace("+00:00", "Z"),
     }
-    payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     marker_path.write_text(json.dumps(marker, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -189,14 +181,27 @@ def main():
     ap.add_argument("--start", default=None)
     ap.add_argument("--end", default=None)
     ap.add_argument("--no-refresh-list", action="store_true")
+
+    # ✅ Default ON debug (your request)
+    ap.add_argument("--no-debug", action="store_true", help="Disable main.py debug prints/tree")
+    ap.add_argument("--debug-tree-depth", type=int, default=5)
+    ap.add_argument("--debug-tree-max", type=int, default=250)
+
     args = ap.parse_args()
 
-    default_cache = False if is_github_actions() else True
+    dbg_on = _debug_enabled(args.no_debug)
+
+    # Cache default policy:
+    # - IMPORTANT: payload MUST be written for downstream scripts (run_shorts.py).
+    # - "cache" here only controls marker + skip-on-hit behavior.
+    default_cache = True
     enable_cache = parse_bool_env("INTRADAY_ENABLE_CACHE", default_cache)
     if args.no_cache:
         enable_cache = False
 
-    ymd = today_ymd()
+    # ✅ ymd is market-local (unified for all markets)
+    ymd = market_today_ymd(args.market)
+
     base_dir = Path(__file__).resolve().parent
     paths = cache_paths(base_dir, args.market, args.slot, ymd)
 
@@ -210,10 +215,22 @@ def main():
         "raw_only": bool(args.raw_only),
         "allow_nontrading": bool(args.allow_nontrading),
         "guard_enabled_default": bool(guard_enabled_default()),
+        "cwd": str(Path.cwd()),
+        "base_dir": str(base_dir),
+        "platform": platform.platform(),
+        "python": platform.python_version(),
     }
 
-    if enable_cache and (not args.force) and should_skip_by_cache(paths["marker"]):
+    _dbg(f"[debug] market={args.market} slot={args.slot} asof={args.asof} ymd(market-local)={ymd}", enabled=dbg_on)
+    _dbg(f"[debug] cache_dir={paths['dir']}", enabled=dbg_on)
+    _dbg(f"[debug] payload_path={paths['payload']}", enabled=dbg_on)
+    _dbg(f"[debug] marker_path={paths['marker']}", enabled=dbg_on)
+    _dbg(f"[debug] enable_cache={enable_cache} force={bool(args.force)}", enabled=dbg_on)
+
+    if enable_cache and (not args.force) and should_skip_by_cache(paths["marker"], paths["payload"]):
         print(f"⏭️  Skip (cache hit): {paths['marker']}")
+        if dbg_on:
+            _tree(paths["dir"], enabled=True, max_depth=args.debug_tree_depth, max_items=args.debug_tree_max)
         return
 
     runner = RUNNERS.get(args.market)
@@ -224,27 +241,42 @@ def main():
     payload = runner(args, base_dir, ymd, meta)
     finished_utc = _now_utc()
 
+    # Normalize required fields
     payload.setdefault("market", args.market)
     payload.setdefault("ymd", ymd)
     payload.setdefault("slot", args.slot)
     payload.setdefault("asof", args.asof)
-    payload.setdefault("generated_at", datetime.now().isoformat(timespec="seconds"))
+
+    # ✅ generated_at should be UTC Z to avoid local machine leakage
+    payload.setdefault("generated_at", finished_utc.isoformat(timespec="seconds").replace("+00:00", "Z"))
 
     payload.setdefault("meta", {})
     payload["meta"].setdefault("time", {})
-    payload["meta"]["time"].update(build_time_meta(args.market, finished_utc=finished_utc))
-    payload["meta"]["time"]["started_at_utc"] = started_utc.isoformat(timespec="seconds")
-    payload["meta"]["time"]["duration_seconds"] = int(max(0.0, (finished_utc - started_utc).total_seconds()))
+
+    # ✅ Unified, DST-aware when possible
+    payload["meta"]["time"].update(
+        build_market_time_meta(args.market, started_utc=started_utc, finished_utc=finished_utc)
+    )
+
+    # -------------------------------------------------------------------------
+    # ✅ CRITICAL FIX:
+    # Always write payload json (run_shorts.py depends on it).
+    # Cache flag only controls marker + skip behavior.
+    # -------------------------------------------------------------------------
+    write_payload(paths["payload"], payload)
 
     if enable_cache:
-        write_marker(paths["marker"], paths["payload"], meta, payload)
+        write_marker(paths["marker"], paths["payload"], meta)
         print(f"✅ Cached: {paths['payload']}")
     else:
-        print("✅ Done (cache disabled)")
+        print(f"✅ Payload written (cache disabled): {paths['payload']}")
         try:
             print(f"   stats: {json.dumps(payload.get('stats', {}), ensure_ascii=False)}")
         except Exception:
             pass
+
+    if dbg_on:
+        _tree(paths["dir"], enabled=True, max_depth=args.debug_tree_depth, max_items=args.debug_tree_max)
 
 
 if __name__ == "__main__":
