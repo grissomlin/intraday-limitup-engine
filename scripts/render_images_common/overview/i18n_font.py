@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
+from matplotlib.font_manager import FontProperties
 
 __all__ = [
     "normalize_market",
@@ -17,6 +18,8 @@ __all__ = [
     "has_han",
     "has_thai",
     "has_cjk",
+    # NEW
+    "fontprops_for_text",
 ]
 
 # =============================================================================
@@ -167,7 +170,7 @@ def _debug_print_fonts(market: str, profile: str, font_list: List[str]) -> None:
 
 
 # =============================================================================
-# Font setup
+# Font setup (rcParams)
 # =============================================================================
 def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """
@@ -239,15 +242,7 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         profile = _get_font_profile()
 
         # ---------------------------------------------------------------------
-        # Font order strategy (FIXED)
-        #
-        # Rule:
-        # - Always Latin first (prevents missing glyph warnings for EN/nums/symbols)
-        # - Then add script fonts as fallbacks (Thai/KR/JP/CJK)
-        #
-        # Note:
-        # - Putting Thai first will reproduce your current failure:
-        #   "Glyph 85 (U) missing from font(s) Noto Sans Thai."
+        # Font order strategy
         # ---------------------------------------------------------------------
         if profile == "TH" and market in {"US", "CA", "AU", "UK"}:
             # TH "feel" for EN markets, but DO NOT break Latin measurement.
@@ -285,6 +280,85 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         return font_list[0]
     except Exception:
         return None
+
+
+# =============================================================================
+# NEW: Per-text FontProperties chooser (Thai-safe without breaking Latin glyphs)
+# =============================================================================
+def _available_set() -> set[str]:
+    try:
+        return {f.name for f in fm.fontManager.ttflist}
+    except Exception:
+        return set()
+
+
+def _pick_font_list(order: List[str]) -> List[str]:
+    available = _available_set()
+    out: List[str] = []
+    for n in order:
+        if n in available and n not in out:
+            out.append(n)
+    return out
+
+
+# Font stacks (tuned for CI reality)
+_LATIN_STACK: List[str] = [
+    "Noto Sans",
+    "DejaVu Sans",
+    "Arial Unicode MS",
+]
+
+_THAI_STACK: List[str] = [
+    # Thai first (for Thai glyphs)
+    "Noto Sans Thai",
+    "Noto Sans Thai UI",
+    "Noto Looped Thai",
+    "Noto Looped Thai UI",
+    "Tahoma",
+    "Leelawadee UI",
+    "TH Sarabun New",
+    "Angsana New",
+    # then Latin fallback (for digits/punct if Thai font build is incomplete)
+    "Noto Sans",
+    "DejaVu Sans",
+    "Arial Unicode MS",
+    # optional CJK fallback (harmless if absent)
+    "Noto Sans CJK JP",
+    "Noto Sans CJK TC",
+    "Noto Sans CJK SC",
+]
+
+
+def fontprops_for_text(text: str, *, market: str = "", payload: Optional[Dict[str, Any]] = None) -> FontProperties:
+    """
+    Return FontProperties that matches the script of `text`.
+
+    Why:
+    - rcParams['font.sans-serif'] is a *fallback list*, but Matplotlib often uses the FIRST font
+      for measurement/bbox. That can cause Thai tofu if the first font lacks Thai glyphs.
+    - This helper lets you render Thai text with Thai-first fonts, while keeping English text Latin-first,
+      avoiding both:
+        - Thai glyph missing from font(s) Noto Sans
+        - Glyph 85 (U) missing from font(s) Noto Sans Thai (Thai-only subset on CI)
+    """
+    # normalize market if caller passes it
+    m = market
+    if (not m) and payload:
+        try:
+            m = str(payload.get("market", "") or "")
+        except Exception:
+            m = ""
+    _ = normalize_market(m)
+
+    if has_thai(text or ""):
+        fam = _pick_font_list(_THAI_STACK)
+    else:
+        # Latin first, but still allow Thai later fallback (mixed strings)
+        fam = _pick_font_list(_LATIN_STACK + _THAI_STACK)
+
+    if not fam:
+        return FontProperties()  # fallback to matplotlib default
+    return FontProperties(family=fam)
 
 
 # =============================================================================
