@@ -98,25 +98,31 @@ jobs:
           python-version: "3.11"
 
       # ------------------------------------------------------------
-      # System deps
+      # System deps (Fonts: Latin + CJK (TC/SC/JP/KR) + Thai + Emoji)
       # ------------------------------------------------------------
-      - name: Install system deps
+      - name: Install system deps (fonts + ffmpeg)
         run: |
           set -euxo pipefail
           sudo apt-get update
 
+          # ffmpeg + fontconfig
           sudo apt-get install -y \
             ffmpeg \
-            fonts-noto-cjk \
-            fonts-noto-color-emoji \
             fontconfig
 
-          if [ "${{ matrix.market }}" = "th" ]; then
-            sudo apt-get install -y \
-              fonts-noto-core \
-              fonts-noto-ui-core
-          fi
+          # ✅ Noto families: CJK + core + UI + extra + unhinted (covers Thai/JP/KR/SC/TC reliably)
+          sudo apt-get install -y \
+            fonts-noto-cjk \
+            fonts-noto-core \
+            fonts-noto-ui-core \
+            fonts-noto-extra \
+            fonts-noto-unhinted || true
 
+          # Emoji
+          sudo apt-get install -y \
+            fonts-noto-color-emoji
+
+          # Rebuild font cache and clear matplotlib cache (force re-scan)
           sudo fc-cache -fv
           rm -rf ~/.cache/matplotlib || true
 
@@ -134,16 +140,39 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # Rebuild matplotlib font cache
+      # Rebuild matplotlib font cache + verify key fonts exist
       # ------------------------------------------------------------
-      - name: Rebuild matplotlib font manager
+      - name: Rebuild matplotlib font manager (verify)
         run: |
           python - <<'PY'
           from matplotlib import font_manager as fm
           fm._load_fontmanager(try_read_cache=False)
           names = sorted({f.name for f in fm.fontManager.ttflist})
+
           print("Fonts count:", len(names))
-          print("Sample:", [n for n in names if "noto" in n.lower()][:20])
+
+          want = [
+              "Noto Sans",
+              "DejaVu Sans",
+              "Noto Sans CJK TC",
+              "Noto Sans CJK SC",
+              "Noto Sans CJK JP",
+              "Noto Sans CJK KR",
+              "Noto Sans Thai",
+              "Noto Sans Thai UI",
+              "Noto Looped Thai",
+              "Noto Looped Thai UI",
+              "Noto Color Emoji",
+          ]
+
+          def has(x): return x in names
+          print("\n[FONT CHECK]")
+          for n in want:
+              print(f"{n:22} : {'OK' if has(n) else 'MISSING'}")
+
+          print("\nThai-related sample:", [n for n in names if "thai" in n.lower()][:50])
+          print("CJK-related sample :", [n for n in names if "cjk" in n.lower()][:50])
+          print("Noto sample        :", [n for n in names if "noto" in n.lower()][:30])
           PY
 
       # ------------------------------------------------------------
