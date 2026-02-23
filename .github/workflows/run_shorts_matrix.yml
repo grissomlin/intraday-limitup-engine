@@ -38,7 +38,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           ALL="cn tw jp kr th us ca uk au"
 
           raw="${{ inputs.markets }}"
@@ -97,38 +96,38 @@ jobs:
         with:
           python-version: "3.11"
 
-      # ------------------------------------------------------------
-      # System deps (Fonts: Latin + CJK (TC/SC/JP/KR) + Thai + Emoji)
-      # ------------------------------------------------------------
-      - name: Install system deps (fonts + ffmpeg)
+      # ============================================================
+      # SYSTEM DEPENDENCIES + FULL FONT STACK
+      # ============================================================
+      - name: Install system deps (FULL FONT STACK)
         run: |
           set -euxo pipefail
           sudo apt-get update
 
-          # ffmpeg + fontconfig
           sudo apt-get install -y \
             ffmpeg \
-            fontconfig
-
-          # ✅ Noto families: CJK + core + UI + extra + unhinted (covers Thai/JP/KR/SC/TC reliably)
-          sudo apt-get install -y \
-            fonts-noto-cjk \
+            fontconfig \
+            fonts-dejavu-core \
+            fonts-dejavu-extra \
             fonts-noto-core \
-            fonts-noto-ui-core \
             fonts-noto-extra \
-            fonts-noto-unhinted || true
-
-          # Emoji
-          sudo apt-get install -y \
+            fonts-noto-ui-core \
+            fonts-noto-unhinted \
+            fonts-noto-cjk \
             fonts-noto-color-emoji
 
-          # Rebuild font cache and clear matplotlib cache (force re-scan)
+          # Some runner images provide this, some don't
+          sudo apt-get install -y fonts-noto-cjk-extra || true
+
+          # Clear font cache
           sudo fc-cache -fv
+
+          # Clear matplotlib cache
           rm -rf ~/.cache/matplotlib || true
 
-      # ------------------------------------------------------------
-      # Python deps
-      # ------------------------------------------------------------
+      # ============================================================
+      # PYTHON DEPENDENCIES
+      # ============================================================
       - name: Install Python deps
         run: |
           set -euxo pipefail
@@ -139,9 +138,9 @@ jobs:
             pip install -r requirements.txt
           fi
 
-      # ------------------------------------------------------------
-      # Rebuild matplotlib font cache + verify key fonts exist
-      # ------------------------------------------------------------
+      # ============================================================
+      # FORCE MATPLOTLIB FONT REBUILD + VERIFY
+      # ============================================================
       - name: Rebuild matplotlib font manager (verify)
         run: |
           python - <<'PY'
@@ -162,31 +161,31 @@ jobs:
               "Noto Sans Thai UI",
               "Noto Looped Thai",
               "Noto Looped Thai UI",
+              "Noto Serif CJK JP",
               "Noto Color Emoji",
           ]
 
-          def has(x): return x in names
           print("\n[FONT CHECK]")
           for n in want:
-              print(f"{n:22} : {'OK' if has(n) else 'MISSING'}")
+              print(f"{n:22} : {'OK' if n in names else 'MISSING'}")
 
-          print("\nThai-related sample:", [n for n in names if "thai" in n.lower()][:50])
-          print("CJK-related sample :", [n for n in names if "cjk" in n.lower()][:50])
-          print("Noto sample        :", [n for n in names if "noto" in n.lower()][:30])
+          print("\nThai sample:", [n for n in names if "thai" in n.lower()][:20])
+          print("CJK sample :", [n for n in names if "cjk" in n.lower()][:20])
+          print("Noto sample:", [n for n in names if "noto" in n.lower()][:20])
           PY
 
-      # ------------------------------------------------------------
-      # Ensure output dirs exist (CRITICAL FIX)
-      # ------------------------------------------------------------
+      # ============================================================
+      # ENSURE OUTPUT DIRS
+      # ============================================================
       - name: Ensure output directories
         run: |
           mkdir -p media/images
           mkdir -p media/videos
           mkdir -p outputs
 
-      # ------------------------------------------------------------
-      # Run shorts
-      # ------------------------------------------------------------
+      # ============================================================
+      # RUN SHORTS
+      # ============================================================
       - name: Run shorts
         run: |
           set -euxo pipefail
@@ -201,9 +200,9 @@ jobs:
             --drive-images-mode zip \
             --images-ymd ${{ inputs.images_ymd }}
 
-      # ------------------------------------------------------------
-      # Upload artifacts
-      # ------------------------------------------------------------
+      # ============================================================
+      # UPLOAD ARTIFACTS
+      # ============================================================
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
