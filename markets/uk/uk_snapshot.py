@@ -2,11 +2,10 @@
 # -*- coding: utf-8 -*-
 """DB -> raw snapshot builder for UK (adapted from markets/us/us_snapshot.py).
 
-✅ Changes vs previous draft:
-- NO hard-coded Chinese move words.
-- Use shared move band helper: scripts.render_images_common.move_bands
-- Output move_band / move_key (render layer translates via i18n)
-- Keep badge_text as English fallback (from i18n 'en' pack) for backward compatibility
+✅ Fix (2026-02-23):
+- UK DB may contain mixed price scales (pence vs pounds) even within the SAME symbol.
+- DO NOT compute ret/hit/streak in SQL; compute in pandas AFTER scale normalization.
+- Snapshot output remains compatible (move_band/move_key + badge_text fallback).
 """
 
 from __future__ import annotations
@@ -82,13 +81,21 @@ except Exception:
 # =============================================================================
 # Tunables (env)
 # =============================================================================
-UK_RET_TH = float(os.getenv("UK_RET_TH", "0.10"))       # mover threshold (close ret)
-UK_TOUCH_TH = float(os.getenv("UK_TOUCH_TH", "0.10"))   # touched threshold (high ret)
+UK_RET_TH = float(os.getenv("UK_RET_TH", "0.10"))  # mover threshold (close ret)
+UK_TOUCH_TH = float(os.getenv("UK_TOUCH_TH", "0.10"))  # touched threshold (high ret)
 UK_ROWS_PER_BOX = int(os.getenv("UK_ROWS_PER_BOX", "6"))
 UK_PEER_EXTRA_PAGES = int(os.getenv("UK_PEER_EXTRA_PAGES", "1"))
 
+# How many recent rows per symbol to load for streak calculation
+UK_STREAK_LOOKBACK_ROWS = int(os.getenv("UK_STREAK_LOOKBACK_ROWS", "90"))
+
 # Optional: what language to use for badge_text fallback (render should translate anyway)
 UK_BADGE_FALLBACK_LANG = (os.getenv("UK_BADGE_FALLBACK_LANG", "en") or "en").strip().lower()
+
+# scale normalize thresholds (safe guards)
+UK_SCALE_UPPER_RATIO = float(os.getenv("UK_SCALE_UPPER_RATIO", "20.0"))  # close/prev_close >= 20 => divide by 100
+UK_SCALE_LOWER_RATIO = float(os.getenv("UK_SCALE_LOWER_RATIO", "0.05"))  # close/prev_close <= 0.05 => multiply by 100
+UK_SCALE_FACTOR = float(os.getenv("UK_SCALE_FACTOR", "100.0"))
 
 
 def _pick_latest_leq(conn: sqlite3.Connection, ymd: str) -> Optional[str]:
@@ -103,12 +110,6 @@ def _ceil_div(a: int, b: int) -> int:
 def _build_time_meta_uk(*, ymd_effective: str, asof: str) -> Dict[str, Any]:
     """
     Build meta.time (DST-aware) for overview subtitle.
-
-    We intentionally:
-    - Prefer Europe/London ZoneInfo to compute UTC offset (+00:00 / +01:00)
-    - Use ymd_effective + asof ("HH:MM") as the display timestamp
-    - If ZoneInfo is unavailable (rare on Linux/GitHub, possible on some Windows),
-      return {} so render falls back to showing only Data date.
     """
     if ZoneInfo is None:
         return {}
@@ -121,7 +122,6 @@ def _build_time_meta_uk(*, ymd_effective: str, asof: str) -> Dict[str, Any]:
         if not ymd2 or len(ymd2) < 10 or not hm2 or len(hm2) < 4:
             return {}
 
-        # local dt with tzinfo for correct DST offset
         dt_local = datetime.fromisoformat(f"{ymd2} {hm2}").replace(tzinfo=tz)
 
         off = dt_local.utcoffset()
@@ -135,13 +135,87 @@ def _build_time_meta_uk(*, ymd_effective: str, asof: str) -> Dict[str, Any]:
 
         return {
             "market_tz": "Europe/London",
-            "market_tz_offset": f"{sign}{hh:02d}:{mm:02d}",  # +00:00 / +01:00
+            "market_tz_offset": f"{sign}{hh:02d}:{mm:02d}",
             "market_finished_hm": hm2,
-            # timefmt.py uses this only for extracting date; keep it simple & stable
             "market_finished_at": dt_local.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M"),
         }
     except Exception:
         return {}
+
+
+def _normalize_scale_inplace(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize OHLC scale (pence vs pounds) using close/prev_close ratio.
+
+    If close / prev_close >= UK_SCALE_UPPER_RATIO => divide today's OHLC by UK_SCALE_FACTOR
+    If close / prev_close <= UK_SCALE_LOWER_RATIO => multiply today's OHLC by UK_SCALE_FACTOR
+
+    NOTE:
+    - prev_close is *not* modified (it belongs to previous day).
+    - We normalize today's open/high/low/close only.
+    """
+    if df.empty:
+        return df
+
+    eps = 1e-12
+    valid = df["prev_close"].notna() & (df["prev_close"] > eps) & df["close"].notna() & (df["close"] > eps)
+    if valid.sum() == 0:
+        return df
+
+    ratio = (df.loc[valid, "close"] / df.loc[valid, "prev_close"]).astype(float)
+
+    mask_down = ratio >= float(UK_SCALE_UPPER_RATIO)
+    mask_up = ratio <= float(UK_SCALE_LOWER_RATIO)
+
+    # Apply in dataframe index space
+    idx_down = ratio.index[mask_down]
+    idx_up = ratio.index[mask_up]
+
+    if len(idx_down) > 0:
+        for c in ("open", "high", "low", "close"):
+            if c in df.columns:
+                df.loc[idx_down, c] = df.loc[idx_down, c] / float(UK_SCALE_FACTOR)
+        df.loc[idx_down, "scale_note"] = "scaled_down(/100)"
+
+    if len(idx_up) > 0:
+        for c in ("open", "high", "low", "close"):
+            if c in df.columns:
+                df.loc[idx_up, c] = df.loc[idx_up, c] * float(UK_SCALE_FACTOR)
+        df.loc[idx_up, "scale_note"] = "scaled_up(*100)"
+
+    return df
+
+
+def _compute_streaks(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute hit_10_close, streak, hit_prev, streak_prev per symbol.
+
+    streak = consecutive count of hit_10_close ending at each day (reset to 0 on non-hit days).
+    """
+    if df.empty:
+        return df
+
+    df = df.sort_values(["symbol", "ymd"]).reset_index(drop=True)
+
+    # hit_10_close already computed; ensure boolean
+    df["hit_10_close"] = df["hit_10_close"].fillna(False).astype(bool)
+
+    # group key resets when hit is False
+    # g = cumulative count of non-hit rows -> partitions into hit-runs
+    df["g"] = (~df["hit_10_close"]).groupby(df["symbol"]).cumsum()
+
+    # streak within (symbol, g) for hit rows
+    df["streak"] = 0
+    hit_rows = df["hit_10_close"]
+    df.loc[hit_rows, "streak"] = (
+        df.loc[hit_rows, "hit_10_close"].astype(int).groupby([df.loc[hit_rows, "symbol"], df.loc[hit_rows, "g"]]).cumsum()
+    )
+
+    # previous day info
+    df["hit_prev"] = df.groupby("symbol")["hit_10_close"].shift(1).fillna(False).astype(int)
+    df["streak_prev"] = df.groupby("symbol")["streak"].shift(1).fillna(0).astype(int)
+
+    return df.drop(columns=["g"], errors="ignore")
 
 
 def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None) -> Dict[str, Any]:
@@ -158,92 +232,29 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
         log(f"🕒 requested ymd={ymd} slot={slot} asof={asof}")
         log(f"📅 ymd_effective = {ymd_effective}")
 
-        # streak 計算：hit=close ret >= TH，區間累加（沿用 US SQL pattern）
+        # Load recent rows per symbol (for streak), with prev_close via LAG(close)
         sql = """
-        WITH p AS (
+        WITH base AS (
           SELECT
-            symbol,
-            date,
-            open, high, low, close, volume,
-            LAG(close) OVER (PARTITION BY symbol ORDER BY date) AS prev_close
-          FROM stock_prices
-          WHERE date <= ?
-        ),
-        rets AS (
-          SELECT
-            symbol,
-            date,
-            open, high, low, close, volume,
-            prev_close,
-            CASE
-              WHEN prev_close IS NOT NULL AND prev_close > 0 AND close IS NOT NULL
-              THEN (close / prev_close) - 1.0
-              ELSE NULL
-            END AS ret,
-            CASE
-              WHEN prev_close IS NOT NULL AND prev_close > 0 AND close IS NOT NULL
-                   AND (close / prev_close) - 1.0 >= ?
-              THEN 1 ELSE 0
-            END AS hit
-          FROM p
-        ),
-        grp AS (
-          SELECT
-            symbol,
-            date,
-            open, high, low, close, volume,
-            prev_close,
-            ret,
-            hit,
-            SUM(CASE WHEN hit = 0 THEN 1 ELSE 0 END)
-              OVER (PARTITION BY symbol ORDER BY date ROWS UNBOUNDED PRECEDING) AS g
-          FROM rets
-          WHERE ret IS NOT NULL
-        ),
-        streaked AS (
-          SELECT
-            symbol,
-            date,
-            open, high, low, close, volume,
-            prev_close,
-            ret,
-            hit,
-            CASE
-              WHEN hit = 1 THEN
-                SUM(hit) OVER (
-                  PARTITION BY symbol, g
-                  ORDER BY date
-                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                )
-              ELSE 0
-            END AS streak
-          FROM grp
-        ),
-        final AS (
-          SELECT
-            s.*,
-            LAG(s.hit)    OVER (PARTITION BY s.symbol ORDER BY s.date) AS hit_prev,
-            LAG(s.streak) OVER (PARTITION BY s.symbol ORDER BY s.date) AS streak_prev
-          FROM streaked s
+            sp.symbol,
+            sp.date AS ymd,
+            sp.open, sp.high, sp.low, sp.close, sp.volume,
+            LAG(sp.close) OVER (PARTITION BY sp.symbol ORDER BY sp.date) AS prev_close,
+            i.name,
+            i.sector,
+            i.market_detail,
+            ROW_NUMBER() OVER (PARTITION BY sp.symbol ORDER BY sp.date DESC) AS rn
+          FROM stock_prices sp
+          JOIN stock_info i ON i.symbol = sp.symbol
+          WHERE i.market='UK' AND sp.date <= ?
         )
         SELECT
-          f.symbol,
-          f.date AS ymd,
-          f.open, f.high, f.low, f.close, f.volume,
-          f.prev_close,
-          f.ret,
-          f.hit,
-          f.streak,
-          COALESCE(f.hit_prev, 0) AS hit_prev,
-          COALESCE(f.streak_prev, 0) AS streak_prev,
-          i.name,
-          i.sector,
-          i.market_detail
-        FROM final f
-        JOIN stock_info i ON i.symbol = f.symbol
-        WHERE i.market='UK' AND f.date = ?
+          symbol, ymd, open, high, low, close, volume, prev_close,
+          name, sector, market_detail
+        FROM base
+        WHERE rn <= ?
         """
-        df = pd.read_sql_query(sql, conn, params=(ymd_effective, UK_RET_TH, ymd_effective))
+        df = pd.read_sql_query(sql, conn, params=(ymd_effective, int(UK_STREAK_LOOKBACK_ROWS)))
     finally:
         conn.close()
 
@@ -265,6 +276,7 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
                 "touch_th": UK_TOUCH_TH,
                 "rows_per_box": UK_ROWS_PER_BOX,
                 "peer_extra_pages": UK_PEER_EXTRA_PAGES,
+                "streak_lookback_rows": UK_STREAK_LOOKBACK_ROWS,
             },
             "stats": {"snapshot_main_count": 0, "snapshot_open_count": 0},
             "snapshot_main": [],
@@ -283,31 +295,58 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
     df["name"] = df["name"].fillna("Unknown")
     df["sector"] = df["sector"].fillna("Unknown").replace("", "Unknown")
     df["market_detail"] = df["market_detail"].fillna("Unknown")
+    df["scale_note"] = ""
 
-    for col in ("prev_close", "open", "high", "low", "close", "ret"):
+    for col in ("prev_close", "open", "high", "low", "close"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df["volume"] = pd.to_numeric(df.get("volume"), errors="coerce").fillna(0).astype(int)
-    df["streak"] = pd.to_numeric(df.get("streak"), errors="coerce").fillna(0).astype(int)
-    df["streak_prev"] = pd.to_numeric(df.get("streak_prev"), errors="coerce").fillna(0).astype(int)
-    df["hit"] = pd.to_numeric(df.get("hit"), errors="coerce").fillna(0).astype(int)
-    df["hit_prev"] = pd.to_numeric(df.get("hit_prev"), errors="coerce").fillna(0).astype(int)
 
+    # Drop rows with no prev_close or no close (cannot compute ret)
     m = df["prev_close"].notna() & (df["prev_close"] > 0) & df["close"].notna()
     skipped_no_prev = int((~m).sum())
     df = df[m].copy()
+    if df.empty:
+        return {
+            "market": "uk",
+            "slot": slot,
+            "asof": asof,
+            "ymd": ymd,
+            "ymd_effective": ymd_effective,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "filters": {
+                "enable_open_watchlist": True,
+                "note": "UK treated as open_limit (no daily limit). Built from local DB.",
+                "ret_th": UK_RET_TH,
+                "touch_th": UK_TOUCH_TH,
+                "rows_per_box": UK_ROWS_PER_BOX,
+                "peer_extra_pages": UK_PEER_EXTRA_PAGES,
+                "streak_lookback_rows": UK_STREAK_LOOKBACK_ROWS,
+            },
+            "stats": {"snapshot_main_count": 0, "snapshot_open_count": 0, "snapshot_open_skipped_no_prev": skipped_no_prev},
+            "snapshot_main": [],
+            "snapshot_open": [],
+            "peers_by_sector": {},
+            "peers_not_limitup": [],
+            "errors": [{"reason": "all_rows_missing_prev_close_or_close"}],
+            "meta": {"db_path": str(db_path), "ymd_effective": ymd_effective, "time": time_meta},
+        }
 
-    # touched (intraday high)
+    # -------- SCALE NORMALIZE (UK pence/£ mixed) --------
+    df = _normalize_scale_inplace(df)
+
+    # -------- recompute ret / touch_ret after normalization --------
+    df["ret"] = (df["close"] / df["prev_close"]) - 1.0
     df["touch_ret"] = (df["high"] / df["prev_close"]) - 1.0
+
+    # touched / hit flags
     df["touched_10"] = df["touch_ret"].notna() & (df["touch_ret"] >= UK_TOUCH_TH)
     df["hit_10_close"] = df["ret"].notna() & (df["ret"] >= UK_RET_TH)
     df["touched_only"] = df["touched_10"] & (~df["hit_10_close"])
 
-    # semantic correction: if not hit today -> streak=0; if hit today but prev not -> streak=1
-    df.loc[~df["hit_10_close"], "streak"] = 0
-    mask_first = df["hit_10_close"] & (df["hit_prev"] == 0)
-    df.loc[mask_first, "streak"] = 1
+    # -------- recompute streak / prev flags --------
+    df = _compute_streaks(df)
 
     # move band / key (no text here; render should translate)
     badges = df["ret"].fillna(0.0).apply(lambda x: move_badge(float(x)))
@@ -315,12 +354,41 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
     df["move_key"] = badges.apply(lambda t: str(t[1]) if t and len(t) >= 2 else "")
 
     # backward compatible fields
-    # badge_level: reuse band (>=0). badge_text: translated string by i18n (fallback lang only)
     df["badge_level"] = df["move_band"].where(df["move_band"] >= 0, 0).astype(int)
     df["badge_text"] = df["move_key"].apply(lambda k: _t(UK_BADGE_FALLBACK_LANG, k, default="") if k else "")
 
+    # -------- select day rows --------
+    df_day = df[df["ymd"].astype(str) == str(ymd_effective)].copy()
+    if df_day.empty:
+        # We had history but not the day; return empty snapshot.
+        return {
+            "market": "uk",
+            "slot": slot,
+            "asof": asof,
+            "ymd": ymd,
+            "ymd_effective": ymd_effective,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "filters": {
+                "enable_open_watchlist": True,
+                "note": "UK treated as open_limit (no daily limit). Built from local DB.",
+                "ret_th": UK_RET_TH,
+                "touch_th": UK_TOUCH_TH,
+                "rows_per_box": UK_ROWS_PER_BOX,
+                "peer_extra_pages": UK_PEER_EXTRA_PAGES,
+                "streak_lookback_rows": UK_STREAK_LOOKBACK_ROWS,
+            },
+            "stats": {"snapshot_main_count": 0, "snapshot_open_count": 0, "snapshot_open_skipped_no_prev": skipped_no_prev},
+            "snapshot_main": [],
+            "snapshot_open": [],
+            "peers_by_sector": {},
+            "peers_not_limitup": [],
+            "errors": [{"reason": "no_rows_for_ymd_effective_after_history_load"}],
+            "meta": {"db_path": str(db_path), "ymd_effective": ymd_effective, "time": time_meta},
+        }
+
+    # -------- build snapshot_open rows --------
     snapshot_open: List[Dict[str, Any]] = []
-    for _, r in df.iterrows():
+    for _, r in df_day.iterrows():
         prev_close = float(r["prev_close"] or 0.0)
         close = float(r["close"] or 0.0)
         ret = float(r.get("ret") or 0.0)
@@ -374,11 +442,13 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
                 "badge_level": int(r.get("badge_level") or 0),
                 "limit_type": "open_limit",
                 "status_text": status_text,
+                # (debug hint; harmless if ignored by render)
+                # "scale_note": str(r.get("scale_note") or ""),
             }
         )
 
-    # peers (same logic as US open-limit style)
-    df_sort = df.copy()
+    # -------- peers (same logic as US open-limit style) --------
+    df_sort = df_day.copy()
     df_sort["ret_sort"] = df_sort["ret"].fillna(-999.0)
     df_sort["touch_sort"] = df_sort["touch_ret"].fillna(-999.0)
 
@@ -449,6 +519,10 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
             "rows_per_box": UK_ROWS_PER_BOX,
             "peer_extra_pages": UK_PEER_EXTRA_PAGES,
             "badge_fallback_lang": UK_BADGE_FALLBACK_LANG,
+            "streak_lookback_rows": int(UK_STREAK_LOOKBACK_ROWS),
+            "scale_upper_ratio": float(UK_SCALE_UPPER_RATIO),
+            "scale_lower_ratio": float(UK_SCALE_LOWER_RATIO),
+            "scale_factor": float(UK_SCALE_FACTOR),
         },
         "stats": {
             "snapshot_main_count": 0,
@@ -471,9 +545,6 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
 
 
 if __name__ == "__main__":
-    # Quick test:
-    # set UK_DB_PATH=...
-    # python -m markets.uk.uk_snapshot
     res = run_intraday(
         slot="test",
         asof=datetime.now().strftime("%H:%M"),
