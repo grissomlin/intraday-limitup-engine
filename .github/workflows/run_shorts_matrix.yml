@@ -114,7 +114,12 @@ jobs:
       # optional: keep run_shorts debug tree default-on; you can still disable per run via args/env
       RUN_SHORTS_DEBUG_TREE: "1"
 
-      # (optional) enable font debug for TW sector pages when you need it
+      # ✅ Enable overview font debug (so you can verify selected rcParams order in CI logs)
+      OVERVIEW_DEBUG_FONTS: "1"
+
+      # (optional) enable more debug if needed
+      # OVERVIEW_DEBUG: "1"
+      # OVERVIEW_DEBUG_FOOTER: "1"
       # SECTOR_DEBUG_FONTS: "1"
 
     steps:
@@ -165,7 +170,7 @@ jobs:
           # nuke matplotlib font cache (very important on CI)
           rm -rf ~/.cache/matplotlib || true
 
-          # optional: show installed noto/thai fonts (debug)
+          # optional: show installed thai/noto fonts (debug)
           echo "=== fc-list (thai/noto sample) ==="
           fc-list | grep -i -E "thai|noto" | head -n 120 || true
 
