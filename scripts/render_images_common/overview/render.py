@@ -43,6 +43,7 @@ except Exception:
     from .i18n_font import normalize_market, resolve_lang, setup_cjk_font
 
     # Fallback (won't crash if your i18n_font.py hasn't added it yet)
+    # IMPORTANT: use rcParams['font.sans-serif'] to keep measurement/render consistent.
     def fontprops_for_text(
         _text: str,
         *,
@@ -50,7 +51,13 @@ except Exception:
         payload: Optional[Dict[str, Any]] = None,
         weight: Optional[str] = None,
     ) -> FontProperties:
-        return FontProperties(family="sans-serif", weight=(weight or "regular"))
+        fam = plt.rcParams.get("font.sans-serif") or ["sans-serif"]
+        w = (weight or "regular").strip().lower()
+        if w in {"normal"}:
+            w = "regular"
+        if w in {"heavy", "black"}:
+            w = "bold"
+        return FontProperties(family=fam, weight=w)
 
 
 from .text import ellipsize_to_px, text_px
@@ -164,7 +171,9 @@ def _debug_pct_dump(
         ct, pt = badge_text(r, metric, lang)
 
         print(f"[{i:02d}] {sec}")
-        print(f"     raw: locked_pct={locked_pct} touched_pct={touched_pct} bigmove10_pct={bigmove10_pct} mix_pct={mix_pct}")
+        print(
+            f"     raw: locked_pct={locked_pct} touched_pct={touched_pct} bigmove10_pct={bigmove10_pct} mix_pct={mix_pct}"
+        )
         print(f"     calc: value={v} compute_pct={p}")
         print(f"     badge_text: count='{ct}' pct='{pt}'")
 
@@ -307,7 +316,6 @@ def _render_one_page(
 
     # ---- sector labels ----
     label_fontsize = 44
-    # ✅ Use same font selection for label text (Thai/CJK safe)
     fp_lbl = fontprops_for_text(
         " ".join(sectors_raw[:3]) if sectors_raw else "",
         market=market,
@@ -330,7 +338,7 @@ def _render_one_page(
             va="center",
             fontsize=label_fontsize,
             color=sector_color,
-            fontproperties=fp_lbl,  # ✅
+            fontproperties=fp_lbl,
         )
 
     # ---- badges ----
@@ -356,7 +364,6 @@ def _render_one_page(
         v = float(compute_value(row_eff, metric))
         count_text, pct_text = badge_text(row_eff, metric, lang)
 
-        # ✅ badges are mostly latin digits, but still use unified resolver
         fp_count = fontprops_for_text(count_text or "0", market=market, payload=payload, weight="bold")
         fp_pct = fontprops_for_text(pct_text or "0%", market=market, payload=payload, weight="bold")
 
@@ -376,7 +383,7 @@ def _render_one_page(
             fontsize=fs_count,
             color="white",
             weight="bold",
-            fontproperties=fp_count,  # ✅
+            fontproperties=fp_count,
             bbox=dict(boxstyle="round,pad=0.3", facecolor="black", alpha=0.3, edgecolor="none"),
         )
 
@@ -428,7 +435,7 @@ def _render_one_page(
             fontsize=fs_pct,
             color=pct_color,
             weight="bold",
-            fontproperties=fp_pct,  # ✅
+            fontproperties=fp_pct,
             alpha=pct_text_alpha,
             bbox=dict(boxstyle="round,pad=0.20", facecolor="black", alpha=pct_box_alpha, edgecolor="none"),
             path_effects=[pe.withStroke(linewidth=stroke_w, foreground="black", alpha=0.90)],
@@ -436,8 +443,6 @@ def _render_one_page(
 
     # ---- title + subtitle ----
     title = title_for_metric(metric, market, lang)
-
-    # ✅ Title font selection must match actual render & measurement
     title_fp = fontprops_for_text(title, market=market, payload=payload, weight="bold")
 
     fig.canvas.draw()
@@ -454,7 +459,7 @@ def _render_one_page(
             color="white",
             weight="bold",
             linespacing=1.1,
-            fontproperties=title_fp,  # ✅
+            fontproperties=title_fp,
         )
         subtitle_y = 0.885
     else:
@@ -470,7 +475,7 @@ def _render_one_page(
                 fontsize=title_fs,
                 color="white",
                 weight="bold",
-                fontproperties=title_fp,  # ✅
+                fontproperties=title_fp,
             )
             subtitle_y = 0.91
         else:
@@ -487,7 +492,7 @@ def _render_one_page(
                 color="white",
                 weight="bold",
                 linespacing=1.1,
-                fontproperties=title2_fp,  # ✅
+                fontproperties=title2_fp,
             )
             subtitle_y = 0.885
 
@@ -503,7 +508,7 @@ def _render_one_page(
             color="#aaa",
             style="italic",
             linespacing=1.25,
-            fontproperties=subtitle_fp,  # ✅
+            fontproperties=subtitle_fp,
         )
 
     # ---- bottom footer ----
@@ -549,7 +554,7 @@ def _render_one_page(
             fontsize=fs_center,
             color="#d9d9d9",
             weight="bold",
-            fontproperties=footer_fp,  # ✅
+            fontproperties=footer_fp,
         )
     if footer_center2:
         fig.text(
@@ -562,7 +567,7 @@ def _render_one_page(
             color="#d9d9d9",
             weight="bold",
             alpha=0.92,
-            fontproperties=footer_fp,  # ✅
+            fontproperties=footer_fp,
         )
     if footer_center3:
         fig.text(
@@ -575,7 +580,7 @@ def _render_one_page(
             color="#d9d9d9",
             weight="bold",
             alpha=0.92,
-            fontproperties=footer_fp,  # ✅
+            fontproperties=footer_fp,
         )
     if footer_center4:
         fig.text(
@@ -587,7 +592,7 @@ def _render_one_page(
             fontsize=fs_disc_env,
             color="#FFD54A",
             alpha=0.65,
-            fontproperties=footer_disc_fp,  # ✅
+            fontproperties=footer_disc_fp,
         )
 
     if footer_right:
@@ -600,7 +605,7 @@ def _render_one_page(
             fontsize=22,
             color="#555",
             alpha=0.6,
-            fontproperties=footer_right_fp,  # ✅
+            fontproperties=footer_right_fp,
         )
 
     _ = footer_note_text  # intentionally unused
@@ -642,12 +647,12 @@ def _render_empty(
         fontsize=56,
         color="white",
         weight="bold",
-        fontproperties=fp_main,  # ✅
+        fontproperties=fp_main,
     )
 
     if ymd:
         fp_ymd = fontprops_for_text(ymd, market=market, payload=payload, weight="regular")
-        fig.text(0.5, 0.42, ymd, ha="center", va="center", fontsize=36, color="#888", fontproperties=fp_ymd)  # ✅
+        fig.text(0.5, 0.42, ymd, ha="center", va="center", fontsize=36, color="#888", fontproperties=fp_ymd)
 
     if subtitle:
         fp_sub = fontprops_for_text(subtitle, market=market, payload=payload, weight="regular")
@@ -661,7 +666,7 @@ def _render_empty(
             color="#888",
             style="italic",
             linespacing=1.25,
-            fontproperties=fp_sub,  # ✅
+            fontproperties=fp_sub,
         )
 
     fig.savefig(out_path, dpi=100, facecolor="#1a1a2e", bbox_inches=None, pad_inches=0.0)
@@ -813,11 +818,15 @@ def render_overview_png(
         if force_paging:
             fname = f"overview_sectors_{metric_eff}_p{idx}.png"
         else:
-            fname = f"overview_sectors_{metric_eff}.png" if len(pages) == 1 else f"overview_sectors_{metric_eff}_p{idx}.png"
+            fname = (
+                f"overview_sectors_{metric_eff}.png"
+                if len(pages) == 1
+                else f"overview_sectors_{metric_eff}_p{idx}.png"
+            )
 
         out_path = out_dir / fname
         _render_one_page(
-            payload=payload,  # ✅ NEW
+            payload=payload,
             sector_rows=rows,
             out_path=out_path,
             market=market,
@@ -840,7 +849,7 @@ def render_overview_png(
         out_path2 = out_dir / f"overview_sectors_{metric_eff}_p{len(pages) + 1}.png"
         c1, c2, c3, c4 = gainbins_footer_center_lines(payload, lang_bins)
         _render_one_page(
-            payload=payload,  # ✅ NEW
+            payload=payload,
             sector_rows=gain_rows,
             out_path=out_path2,
             market=market,
