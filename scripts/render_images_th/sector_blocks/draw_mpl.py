@@ -17,31 +17,56 @@ from .layout import LayoutSpec, calc_rows_layout
 def setup_thai_font() -> str | None:
     """
     Goal:
-    - Thai (TH)
-    - Do not break mixed footer (EN/CN) too badly (fallback ok)
+    - Thai (TH) must render correctly (no tofu)
+    - Keep mixed footer (EN/CN/JP) "not too broken" via fallback stack
+
+    Strategy:
+    - Put Thai fonts FIRST (including Ubuntu/GHA common ones)
+    - Then Latin (Noto Sans) for numbers/EN stability
+    - Then CJK fallbacks
     """
+    # ✅ Thai first (include GitHub Actions/Ubuntu common Looped Thai family)
     font_candidates = [
-        # Common in Linux/Colab
+        # Common on ubuntu-latest if fonts-noto-* installed
+        "Noto Looped Thai",
+        "Noto Looped Thai UI",
+        # Common Thai families
         "Noto Sans Thai",
         "Noto Sans Thai UI",
+        # Latin for stability (numbers/EN)
         "Noto Sans",
         # Windows common
         "Tahoma",
         "Leelawadee UI",
         "TH Sarabun New",
+        "Angsana New",
         # CJK fallbacks (in case your UI still has Chinese/JP)
         "Noto Sans CJK TC",
+        "Noto Sans CJK SC",
+        "Noto Sans CJK JP",
+        "Noto Sans CJK KR",
         "Microsoft JhengHei",
+        "Microsoft YaHei",
         "Arial Unicode MS",
         "DejaVu Sans",
     ]
+
     available = {f.name for f in fm.fontManager.ttflist}
+
+    # Build a real fallback stack, not just a single font
+    font_list: List[str] = []
     for f in font_candidates:
-        if f in available:
-            plt.rcParams["font.sans-serif"] = [f]
-            plt.rcParams["axes.unicode_minus"] = False
-            return f
-    return None
+        if f in available and f not in font_list:
+            font_list.append(f)
+
+    if not font_list:
+        return None
+
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = font_list
+    plt.rcParams["axes.unicode_minus"] = False
+
+    return font_list[0]
 
 
 # =============================================================================
