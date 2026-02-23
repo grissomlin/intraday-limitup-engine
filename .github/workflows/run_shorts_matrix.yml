@@ -32,6 +32,7 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       markets_normalized: ${{ steps.set-matrix.outputs.markets_normalized }}
+
     steps:
       - name: Build matrix from input
         id: set-matrix
@@ -39,7 +40,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Canonical list
           ALL="cn tw jp kr th us ca uk au"
 
           raw="${{ inputs.markets }}"
@@ -61,15 +61,13 @@ jobs:
                 exit 1
               fi
             done
-
             selected="$(echo "$selected" | xargs || true)"
             if [ -z "$selected" ]; then
-              echo "::error::No valid markets selected. Allowed: $ALL or 'all'"
+              echo "::error::No valid markets selected."
               exit 1
             fi
           fi
 
-          # build JSON: {"market":["cn","tw",...]}
           json='{"market":['
           first=1
           for m in $selected; do
@@ -99,39 +97,22 @@ jobs:
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
 
     env:
-      # ✅ render_images_* reads this
-      GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
-
-      # ✅ youtube_pipeline_safe.py reads this
-      YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
-
-      # ✅ youtube_pipeline_safe.py reads this
-      YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
-
-      # ✅ avoid matplotlib GUI
       MPLBACKEND: Agg
-
-      # optional: keep run_shorts debug tree default-on; you can still disable per run via args/env
       RUN_SHORTS_DEBUG_TREE: "1"
-
-      # ✅ Enable overview font debug (so you can verify selected rcParams order in CI logs)
       OVERVIEW_DEBUG_FONTS: "1"
 
-      # (optional) enable more debug if needed
-      # OVERVIEW_DEBUG: "1"
-      # OVERVIEW_DEBUG_FOOTER: "1"
-      # SECTOR_DEBUG_FONTS: "1"
+      GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+      YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+      YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Echo inputs / selection
-        shell: bash
+      - name: Echo inputs
         run: |
           echo "slot=${{ inputs.slot }}"
           echo "images_ymd=${{ inputs.images_ymd }}"
-          echo "markets_input=${{ inputs.markets }}"
           echo "markets_selected=${{ needs.prepare.outputs.markets_normalized }}"
           echo "matrix.market=${{ matrix.market }}"
 
@@ -140,87 +121,66 @@ jobs:
         with:
           python-version: "3.11"
 
-      # ✅ Install system deps + clear font caches (important)
-      - name: Install system deps (ffmpeg + fonts)
-        shell: bash
+      # ------------------------------------------------------------
+      # Install system dependencies
+      # ------------------------------------------------------------
+      - name: Install system deps
         run: |
           set -euxo pipefail
           sudo apt-get update
 
-          # Base deps for all markets
           sudo apt-get install -y \
             ffmpeg \
             fonts-noto-cjk \
             fonts-noto-color-emoji \
             fontconfig
 
-          # ✅ Thai Noto fonts ONLY for TH runner (matrix job is isolated per market)
+          # TH only: install Thai fonts
           if [ "${{ matrix.market }}" = "th" ]; then
-            echo "[TH] Installing Thai Noto fonts: fonts-noto-core + fonts-noto-ui-core"
+            echo "[TH] Installing Thai fonts"
             sudo apt-get install -y \
               fonts-noto-core \
               fonts-noto-ui-core
-          else
-            echo "[${{ matrix.market }}] Skip Thai fonts"
           fi
 
-          # rebuild fontconfig cache
           sudo fc-cache -fv
 
-          # nuke matplotlib font cache (very important on CI)
           rm -rf ~/.cache/matplotlib || true
 
-          # optional: show installed thai/noto fonts (debug)
-          echo "=== fc-list (thai/noto sample) ==="
-          fc-list | grep -i -E "thai|noto" | head -n 120 || true
+          echo "=== Installed fonts sample ==="
+          fc-list | grep -i -E "noto|thai|cjk" | head -n 100 || true
 
-      - name: Install python deps
-        shell: bash
+      # ------------------------------------------------------------
+      # Python deps
+      # ------------------------------------------------------------
+      - name: Install Python deps
         run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements-ci.txt ]; then
-            echo "[CI] Installing from requirements-ci.txt"
             pip install -r requirements-ci.txt
-          elif [ -f requirements.txt ]; then
-            echo "[CI] Installing from requirements.txt"
-            pip install -r requirements.txt
           else
-            echo "[CI] No requirements file found!"
-            exit 1
+            pip install -r requirements.txt
           fi
 
-      # ✅ must be AFTER python deps (matplotlib must exist)
-      - name: Rebuild matplotlib font manager (debug)
-        shell: bash
+      # ------------------------------------------------------------
+      # Rebuild matplotlib font cache
+      # ------------------------------------------------------------
+      - name: Rebuild matplotlib font manager
         run: |
-          set -euxo pipefail
           python - <<'PY'
           from matplotlib import font_manager as fm
           fm._load_fontmanager(try_read_cache=False)
           names = sorted({f.name for f in fm.fontManager.ttflist})
-          hit = [n for n in names if ("noto" in n.lower()) or ("thai" in n.lower()) or ("cjk" in n.lower())]
-          print("matplotlib fonts =", len(names))
-          print("Noto/Thai/CJK sample =", hit[:120])
+          hit = [n for n in names if "noto" in n.lower() or "thai" in n.lower() or "cjk" in n.lower()]
+          print("Total fonts:", len(names))
+          print("Sample:", hit[:80])
           PY
 
-      - name: Debug repo tree (optional)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          echo "PWD=$(pwd)"
-          echo "=== show scripts directory top-level ==="
-          ls -la scripts || true
-          echo "=== show specific market cli path ==="
-          p="scripts/render_images_${{ matrix.market }}/cli.py"
-          if [ -f "$p" ]; then
-            echo "[OK] $p exists"
-          else
-            echo "[MISS] $p NOT FOUND"
-          fi
-
+      # ------------------------------------------------------------
+      # Run
+      # ------------------------------------------------------------
       - name: Run shorts
-        shell: bash
         run: |
           set -euxo pipefail
           python scripts/run_shorts.py \
@@ -234,7 +194,10 @@ jobs:
             --drive-images-mode zip \
             --images-ymd ${{ inputs.images_ymd }}
 
-      - name: Upload artifacts (always)
+      # ------------------------------------------------------------
+      # Upload artifacts
+      # ------------------------------------------------------------
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -242,5 +205,5 @@ jobs:
           path: |
             outputs/**
             media/videos/**
-            media/images/**/list_video.txt
+            media/images/**
           if-no-files-found: ignore
