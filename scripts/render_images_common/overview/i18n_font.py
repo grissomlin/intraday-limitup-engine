@@ -23,12 +23,6 @@ def has_hangul(text: str) -> bool:
 
 
 def has_kana(text: str) -> bool:
-    """
-    Hiragana + Katakana
-    - Hiragana: 3040-309F
-    - Katakana: 30A0-30FF
-    - Katakana Phonetic Extensions: 31F0-31FF (optional, but safe)
-    """
     if not text:
         return False
     for ch in text:
@@ -39,9 +33,6 @@ def has_kana(text: str) -> bool:
 
 
 def has_han(text: str) -> bool:
-    """
-    CJK Unified Ideographs (Han/Chinese characters)
-    """
     if not text:
         return False
     for ch in text:
@@ -52,9 +43,6 @@ def has_han(text: str) -> bool:
 
 
 def has_thai(text: str) -> bool:
-    """
-    Thai block: 0E00-0E7F
-    """
     if not text:
         return False
     for ch in text:
@@ -65,15 +53,10 @@ def has_thai(text: str) -> bool:
 
 
 def has_cjk(text: str) -> bool:
-    """
-    Backward-compat helper: Han + Hiragana/Katakana
-    (kept because some callers might still use it)
-    """
     if not text:
         return False
     for ch in text:
         o = ord(ch)
-        # Han + Hiragana/Katakana
         if (0x4E00 <= o <= 0x9FFF) or (0x3040 <= o <= 0x30FF):
             return True
     return False
@@ -90,21 +73,19 @@ def normalize_market(m: str) -> str:
         "CHN": "CN", "CHINA": "CN",
         "USA": "US", "NASDAQ": "US", "NYSE": "US",
 
-        # ✅ JP aliases (important: payload might be JPX / TSE)
-        "JPN": "JP", "JAPAN": "JP", "JPX": "JP", "TSE": "JP", "TOSE": "JP", "TOKYO": "JP",
+        "JPN": "JP", "JAPAN": "JP", "JPX": "JP", "TSE": "JP",
+        "TOSE": "JP", "TOKYO": "JP",
 
-        # ✅ KR aliases
         "KOR": "KR", "KOREA": "KR", "KRX": "KR",
 
         "CAN": "CA", "CANADA": "CA", "TSX": "CA", "TSXV": "CA",
         "AUS": "AU", "AUSTRALIA": "AU", "ASX": "AU",
-        "GBR": "UK", "GB": "UK", "UNITED KINGDOM": "UK", "LSE": "UK", "LONDON": "UK",
+        "GBR": "UK", "GB": "UK", "UNITED KINGDOM": "UK",
+        "LSE": "UK", "LONDON": "UK",
         "IND": "IN", "INDIA": "IN", "NSE": "IN", "BSE": "IN",
 
-        # ✅ TH aliases
         "THA": "TH", "THAILAND": "TH", "SET": "TH",
 
-        # optional EU-ish aliases
         "EUR": "EU", "EUROPE": "EU", "EUN": "EU",
     }
     return alias.get(m, m or "TW")
@@ -119,11 +100,6 @@ def _env_on(name: str) -> bool:
 
 
 def _get_font_profile() -> str:
-    """
-    OVERVIEW_FONT_PROFILE:
-      - "TH"      : force TH-like font order (to copy TH "字感" into US/CA/AU/UK)
-      - "DEFAULT" : normal per-market strategy (default)
-    """
     v = (os.getenv("OVERVIEW_FONT_PROFILE") or "").strip().upper()
     if v in {"TH", "DEFAULT"}:
         return v
@@ -134,16 +110,6 @@ def _get_font_profile() -> str:
 # Font setup
 # =============================================================================
 def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    """
-    Configure matplotlib fonts for CJK/KR/JP/TH rendering based on payload.market
-    and detected characters in sector_summary.
-
-    ✅ Debug:
-      - set OVERVIEW_DEBUG_FONTS=1 to print selected font order and rcParams.
-
-    ✅ Optional profile:
-      - set OVERVIEW_FONT_PROFILE=TH to reuse TH font "feel" for non-TH markets.
-    """
     try:
         available = {f.name for f in fm.fontManager.ttflist}
 
@@ -152,7 +118,6 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
             market = str(payload.get("market", "") or "").upper()
         market = normalize_market(market)
 
-        # Detect KR need
         need_kr = False
         if market == "KR":
             need_kr = True
@@ -164,46 +129,40 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
                         need_kr = True
                         break
 
-        primary_cn = ["Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "SimHei", "WenQuanYi Zen Hei"]
-        primary_tw = ["Noto Sans TC", "Noto Sans HK", "Microsoft JhengHei", "PingFang TC"]
+        primary_cn = ["Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "SimHei"]
+        primary_tw = ["Noto Sans TC", "Microsoft JhengHei", "PingFang TC"]
         primary_jp = ["Noto Sans JP", "Noto Sans CJK JP", "Yu Gothic", "Meiryo"]
         primary_kr = ["Malgun Gothic", "Noto Sans KR", "Noto Sans CJK KR"]
 
-        # ✅ Thai font candidates:
-        # - GitHub Actions (ubuntu-latest) 很常見會有 Noto Looped Thai / UI（若你 apt 裝 fonts-noto-*）
-        # - 先放 Thai，再放 Latin fallback，最後才放 CJK（避免 Thai 被 CJK 字型搶走）
+        # ✅ 修正重點：避免 Looped Thai 當第一主字型
         primary_th = [
-            "Noto Looped Thai",
-            "Noto Looped Thai UI",
+            # 先用 Sans Thai（通常含 Latin glyph）
             "Noto Sans Thai",
             "Noto Sans Thai UI",
-            # Latin fallback (讓英文/數字比較穩)
+
+            # Looped Thai 往後排（避免缺字警告）
+            "Noto Looped Thai",
+            "Noto Looped Thai UI",
+
+            # Latin fallback
             "Noto Sans",
-            # Windows common
+
+            # Windows
             "Tahoma",
             "Leelawadee UI",
             "TH Sarabun New",
             "Angsana New",
         ]
 
-        # General fallback
         fallback = ["Arial Unicode MS", "DejaVu Sans", "Noto Sans"]
 
-        # Choose zh primary by market
         zh_primary = primary_cn if market == "CN" else primary_tw
-
         profile = _get_font_profile()
 
-        # ---------------------------------------------------------------------
-        # Font order strategy
-        # ---------------------------------------------------------------------
         if profile == "TH" and market in {"US", "CA", "AU", "UK"}:
-            # ✅ Force TH-like feel into EN markets (your Sector/Market label look)
-            # Thai first, then zh (in case mixed), then kr/jp, then fallback
             order = primary_th + zh_primary + primary_kr + primary_jp + fallback
         else:
             if market == "TH":
-                # ✅ TH must always put Thai fonts FIRST (avoid tofu squares)
                 order = primary_th + zh_primary + primary_kr + primary_jp + fallback
             elif need_kr:
                 order = primary_kr + zh_primary + primary_jp + fallback
@@ -226,85 +185,10 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         plt.rcParams["axes.unicode_minus"] = False
 
         if _env_on("OVERVIEW_DEBUG_FONTS"):
-            try:
-                print("[OVERVIEW_FONT_DEBUG]")
-                print("  market =", market)
-                print("  profile =", profile)
-                print("  selected_font_list =", font_list)
-                print("  rcParams.font.family =", plt.rcParams.get("font.family"))
-                print("  rcParams.font.sans-serif =", plt.rcParams.get("font.sans-serif"))
-            except Exception:
-                pass
+            print("[OVERVIEW_FONT_DEBUG]")
+            print("  market =", market)
+            print("  selected_font_list =", font_list)
 
         return font_list[0]
     except Exception:
         return None
-
-
-# =============================================================================
-# Language resolution
-# =============================================================================
-def _get_payload_lang(payload: Dict[str, Any]) -> str:
-    try:
-        v = (payload.get("lang") or (payload.get("meta") or {}).get("lang") or "")
-        v = str(v).strip().lower()
-        if v in {"en", "zh-tw", "zh-cn", "ja", "ko", "th"}:
-            return v
-    except Exception:
-        pass
-    return ""
-
-
-def _infer_lang_from_sectors(payload: Dict[str, Any]) -> str:
-    """
-    Infer from sector text (best-effort):
-    - Thai => th
-    - Hangul => ko
-    - Kana => ja
-    - Han (no kana) => zh-tw
-    - else => en
-    """
-    ss = payload.get("sector_summary", []) or []
-    if isinstance(ss, list):
-        for r in ss[:80]:
-            s = str((r or {}).get("sector", "") or "")
-            if has_thai(s):
-                return "th"
-            if has_hangul(s):
-                return "ko"
-            if has_kana(s):
-                return "ja"
-            if has_han(s):
-                return "zh-tw"
-    return "en"
-
-
-def _get_market_lang(market: str) -> str:
-    market = normalize_market(market)
-
-    if market == "KR":
-        return "ko"
-    if market == "JP":
-        return "ja"
-    if market == "CN":
-        return "zh-cn"
-    if market == "TH":
-        return "th"
-
-    EN_MARKETS = {"US", "CA", "AU", "UK", "EU", "IN", "SG", "MY", "PH", "ID", "VN"}
-    if market in EN_MARKETS:
-        return "en"
-
-    return "zh-tw"
-
-
-def resolve_lang(payload: Dict[str, Any], market: str) -> str:
-    v = _get_payload_lang(payload)
-    if v:
-        return v
-
-    v = _get_market_lang(market)
-    if v:
-        return v
-
-    return _infer_lang_from_sectors(payload)
