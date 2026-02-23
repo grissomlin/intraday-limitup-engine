@@ -162,9 +162,64 @@ def _debug_print_fonts(market: str, profile: str, font_list: List[str], chosen: 
         print("  market =", market)
         print("  profile =", profile)
         print("  chosen_primary =", chosen)
-        print("  selected_font_list =", font_list[:20], ("... (len=%d)" % len(font_list) if len(font_list) > 20 else ""))
+        print(
+            "  selected_font_list =",
+            font_list[:20],
+            ("... (len=%d)" % len(font_list) if len(font_list) > 20 else ""),
+        )
         print("  rcParams.font.family =", plt.rcParams.get("font.family"))
         print("  rcParams.font.sans-serif (head) =", (plt.rcParams.get("font.sans-serif") or [])[:15])
+    except Exception:
+        pass
+
+
+def _debug_print_noto_paths() -> None:
+    if not _env_on("OVERVIEW_DEBUG_FONTS"):
+        return
+    try:
+        paths = sorted({f.fname for f in fm.fontManager.ttflist})
+        noto = [p for p in paths if "noto" in p.lower()]
+        print("[OVERVIEW_FONT_DEBUG_PATHS]")
+        print("  matplotlib knows noto paths =", len(noto))
+        for p in noto[:30]:
+            print("   ", p)
+    except Exception:
+        pass
+
+
+# =============================================================================
+# Force-register TTC faces (critical on some CI images)
+# =============================================================================
+_CJK_TTC_PATHS = [
+    # Most important: Sans CJK
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Light.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-DemiLight.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Thin.ttc",
+    # Serif CJK (optional)
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
+]
+
+
+def _try_add_noto_cjk_ttc() -> None:
+    """
+    On some GitHub runner + Matplotlib setups, fontManager scans TTC but only
+    registers one family name (often JP). However fc-list shows KR/SC/TC exist.
+
+    Force-add TTC via fontManager.addfont() to register all faces.
+    Safe/idempotent.
+    """
+    try:
+        for p in _CJK_TTC_PATHS:
+            if os.path.exists(p):
+                try:
+                    fm.fontManager.addfont(p)
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -173,6 +228,8 @@ def _debug_print_fonts(market: str, profile: str, font_list: List[str], chosen: 
 # Small helpers
 # =============================================================================
 def _available_font_names() -> set[str]:
+    # Ensure TTC faces are registered before we read names
+    _try_add_noto_cjk_ttc()
     return {f.name for f in fm.fontManager.ttflist}
 
 
@@ -194,7 +251,6 @@ def _filter_available(order: List[str], available: set[str]) -> List[str]:
     return out
 
 
-# ✅ FIX: pick *list* of available families (keeps order)
 def _pick_available_list(candidates: List[str]) -> List[str]:
     try:
         available = _available_font_names()
@@ -223,6 +279,9 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
     - For pure EN markets, keep Latin-first for clean digits/punct, but include CJK/TH as fallbacks.
     """
     try:
+        # critical: ensure TTC faces available in fontManager
+        _try_add_noto_cjk_ttc()
+
         available = _available_font_names()
 
         market = ""
@@ -269,8 +328,9 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
                     break
 
         # Prefer CJK family names that exist on Ubuntu CI (fonts-noto-cjk)
+        # NOTE: runner family name may be "Noto Sans CJK XX" not "Noto Sans XX"
         primary_cn = ["Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", "SimHei", "WenQuanYi Zen Hei"]
-        primary_tw = ["Noto Sans CJK TC", "Noto Sans TC", "Noto Sans HK", "Microsoft JhengHei", "PingFang TC"]
+        primary_tw = ["Noto Sans CJK TC", "Noto Sans TC", "Noto Sans CJK HK", "Noto Sans HK", "Microsoft JhengHei", "PingFang TC"]
         primary_jp = ["Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "Meiryo"]
         primary_kr = ["Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic"]
 
@@ -322,6 +382,7 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
 
         chosen = font_list[0] if font_list else None
         _debug_print_fonts(market, profile, font_list, chosen)
+        _debug_print_noto_paths()
 
         return chosen
     except Exception:
@@ -350,17 +411,11 @@ def fontprops_for_text(
     weight: Optional[str] = None,
 ) -> FontProperties:
     """
-    ✅ FIX (minimal invasive):
-    - Keep your original script detection logic.
-    - But DO NOT return a single-family FontProperties.
-      Return a *family fallback list* so Matplotlib can fall back without
-      switching to DejaVu (missing glyph) and without bbox drift.
-
-    This directly removes warnings like:
-      "Glyph XXXX missing from font(s) DejaVu Sans."
-    And makes ellipsize/layout stable.
+    Keep script detection logic.
+    But return a family fallback list so Matplotlib can fall back without switching
+    to DejaVu (missing glyph) and without bbox drift.
     """
-    # Ensure rcParams are configured (idempotent)
+    # Ensure rcParams configured (idempotent)
     try:
         setup_cjk_font(payload or {"market": market})
     except Exception:
@@ -368,7 +423,6 @@ def fontprops_for_text(
 
     m = normalize_market(market or (payload or {}).get("market", "") if payload else market)
 
-    # Decide script-based primary candidates (KEEP your lists)
     if has_thai(text):
         primary = [
             "Noto Sans Thai",
@@ -408,6 +462,7 @@ def fontprops_for_text(
             primary = [
                 "Noto Sans CJK TC",
                 "Noto Sans TC",
+                "Noto Sans CJK HK",
                 "Noto Sans HK",
                 "Microsoft JhengHei",
                 "PingFang TC",
@@ -420,10 +475,8 @@ def fontprops_for_text(
             "Arial Unicode MS",
         ]
 
-    # ✅ FIX: prefer a *list* of available families, not just first one
     families = _pick_available_list(primary)
     if not families:
-        # last resort: keep behavior but safe
         base = _pick_first_available(primary) or "sans-serif"
         families = [base]
 
