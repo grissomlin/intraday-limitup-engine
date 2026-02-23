@@ -174,10 +174,13 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
     Configure matplotlib fonts for CJK/KR/JP/TH rendering.
 
     IMPORTANT (why you saw tons of 'Glyph missing'):
-    - In CI, some code paths (especially bbox measurement) effectively uses the FIRST font
-      in rcParams['font.sans-serif'].
-    - Therefore we must put a Latin-capable font FIRST (Noto Sans / DejaVu Sans),
-      then Thai fonts, then CJK.
+    - Matplotlib sometimes effectively uses the FIRST font for text measurement / bbox.
+    - If Thai text exists but Thai fonts are not early enough, you get:
+        Glyph xxxx missing from font(s) Noto Sans
+    - If you hard-pick a Thai-only family elsewhere, you can also get:
+        Glyph 'A' missing from font(s) Noto Sans Thai
+      (that second one is usually from sector_blocks forcing FontProperties; i18n_font helps
+       only if caller lets rcParams fallback work.)
     """
     try:
         available = {f.name for f in fm.fontManager.ttflist}
@@ -187,7 +190,7 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
             market = str(payload.get("market", "") or "").upper()
         market = normalize_market(market)
 
-        # Detect KR need
+        # Detect KR need (existing logic)
         need_kr = False
         if market == "KR":
             need_kr = True
@@ -197,6 +200,18 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
                 for r in ss[:80]:
                     if has_hangul(str((r or {}).get("sector", "") or "")):
                         need_kr = True
+                        break
+
+        # ✅ Detect Thai need as well (NEW, symmetrical to KR detection)
+        need_th = False
+        if market == "TH":
+            need_th = True
+        elif payload:
+            ss = payload.get("sector_summary", []) or []
+            if isinstance(ss, list):
+                for r in ss[:80]:
+                    if has_thai(str((r or {}).get("sector", "") or "")):
+                        need_th = True
                         break
 
         # Prefer CJK family names that exist on Ubuntu CI (fonts-noto-cjk)
@@ -217,8 +232,8 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
             "Angsana New",
         ]
 
-        # ✅ Put Latin FIRST to avoid missing glyph warnings for EN/nums/symbols
-        latin_first = ["Noto Sans", "DejaVu Sans", "Arial Unicode MS"]
+        # Latin-capable fonts
+        latin = ["Noto Sans", "DejaVu Sans", "Arial Unicode MS"]
 
         # General fallback
         fallback = ["DejaVu Sans", "Noto Sans", "Arial Unicode MS"]
@@ -227,22 +242,28 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         profile = _get_font_profile()
 
         # ---------------------------------------------------------------------
-        # Font order strategy
+        # Font order strategy (KEY FIX)
+        # - If Thai is needed, Thai fonts must be BEFORE Latin to avoid Thai glyph missing.
+        # - But keep Latin close (right after Thai) so English/symbols still render well.
         # ---------------------------------------------------------------------
         if profile == "TH" and market in {"US", "CA", "AU", "UK"}:
-            # TH "feel" for EN markets, but still keep Latin FIRST
-            order = latin_first + primary_th + zh_primary + primary_kr + primary_jp + fallback
+            # "TH feel" for EN markets: Thai first (for style) BUT keep Latin immediately after
+            order = primary_th + latin + zh_primary + primary_kr + primary_jp + fallback
         else:
-            if market == "TH":
-                # ✅ TH market: Latin FIRST -> Thai -> CJK
-                order = latin_first + primary_th + zh_primary + primary_kr + primary_jp + fallback
+            if need_th:
+                # ✅ TH (or content has Thai): Thai FIRST, then Latin, then CJK
+                order = primary_th + latin + zh_primary + primary_kr + primary_jp + fallback
             elif need_kr:
-                order = latin_first + primary_kr + zh_primary + primary_jp + fallback
+                # KR content: KR first (or at least early), keep Latin near front
+                order = primary_kr + latin + zh_primary + primary_jp + fallback
             else:
                 if market == "JP":
-                    order = latin_first + primary_jp + zh_primary + primary_kr + fallback
+                    order = primary_jp + latin + zh_primary + primary_kr + fallback
+                elif market == "CN":
+                    order = primary_cn + latin + primary_jp + primary_kr + fallback
                 else:
-                    order = latin_first + zh_primary + primary_kr + primary_jp + fallback
+                    # Default: Latin first is fine for EN/most CJK
+                    order = latin + zh_primary + primary_kr + primary_jp + primary_th + fallback
 
         font_list: List[str] = []
         for n in order:
