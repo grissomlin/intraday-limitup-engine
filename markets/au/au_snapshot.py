@@ -36,13 +36,17 @@ So sector/peer pages can display "Prev >= 10%" properly.
   Fallback is DST-aware (rule-of-thumb) so +11 in summer, +10 in winter.
 - Provide market_utc_offset alias and a market_finished_at_iso (with offset)
   so renderers can use a single reliable field without key-order bugs.
+
+✅ IMPORTANT FIX (this revision):
+- Compute stats.is_market_open properly (was previously hard-coded to 0).
+  This matters for runners that gate payload/cache writing on market-open status.
 """
 
 from __future__ import annotations
 
 import os
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time as dtime
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -380,6 +384,66 @@ def _build_meta_time_au(dt_utc: datetime) -> Dict[str, Any]:
     }
 
 
+# -----------------------------------------------------------------------------
+# Market-open detection (AU)
+# -----------------------------------------------------------------------------
+def _sydney_tzinfo(dt_utc: datetime) -> timezone | Any:
+    """
+    Return tzinfo for Australia/Sydney.
+    Prefer ZoneInfo (DST aware); fallback to DST-aware fixed offset.
+    """
+    market_tz = (os.getenv("AU_MARKET_TZ") or "").strip() or "Australia/Sydney"
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(market_tz)
+        except Exception:
+            pass
+    # fallback offset (DST aware)
+    return timezone(_sydney_offset_fallback(dt_utc))
+
+
+def _parse_hhmm(asof: str) -> Optional[dtime]:
+    """
+    Parse "HH:MM" -> datetime.time
+    """
+    s = str(asof or "").strip()
+    if not s:
+        return None
+    try:
+        hh, mm = s.split(":", 1)
+        return dtime(int(hh), int(mm))
+    except Exception:
+        return None
+
+
+def _is_market_open_au(*, dt_utc: datetime, asof: str, has_today_rows: bool) -> int:
+    """
+    Heuristic:
+    - If DB has no today rows, treat as closed.
+    - Otherwise determine Sydney local time for (ymd + asof), and check if in session.
+      ASX (cash equity) normal session ~10:00-16:00 Sydney time.
+
+    Note:
+    - This is a simple gate signal for runners; it doesn't need to be perfect to the minute.
+    """
+    if not has_today_rows:
+        return 0
+
+    t = _parse_hhmm(asof)
+    tzinfo = _sydney_tzinfo(dt_utc)
+    try:
+        now_local = dt_utc.astimezone(tzinfo)
+    except Exception:
+        now_local = dt_utc  # fallback (won't happen often)
+
+    # Prefer the passed "asof" time if it parses; else use now_local time.
+    local_time = t or now_local.timetz().replace(tzinfo=None)
+
+    open_t = dtime(10, 0)
+    close_t = dtime(16, 0)
+    return 1 if (open_t <= local_time <= close_t) else 0
+
+
 def run_intraday(*, slot: str, asof: str, ymd: str) -> Dict[str, Any]:
     """
     Build AU intraday payload with snapshot_open (FULL universe).
@@ -555,6 +619,13 @@ def run_intraday(*, slot: str, asof: str, ymd: str) -> Dict[str, Any]:
                 }
             )
 
+        # ✅ FIX: compute is_market_open (was always 0)
+        is_open = _is_market_open_au(
+            dt_utc=dt_utc,
+            asof=asof,
+            has_today_rows=(df_today is not None and not df_today.empty),
+        )
+
         payload: Dict[str, Any] = {
             "market": "au",
             "ymd": str(ymd)[:10],
@@ -565,7 +636,7 @@ def run_intraday(*, slot: str, asof: str, ymd: str) -> Dict[str, Any]:
             "snapshot_open": rows,
             "stats": {
                 "snapshot_open_count": int(len(rows)),
-                "is_market_open": 0,
+                "is_market_open": int(is_open),
             },
             "meta": {
                 "db_path": db_path,
