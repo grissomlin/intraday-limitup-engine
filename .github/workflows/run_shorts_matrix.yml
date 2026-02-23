@@ -84,7 +84,6 @@ jobs:
       MPLBACKEND: Agg
 
       # ✅ isolate matplotlib config/cache per matrix job
-      # NOTE: runner.temp is not supported in some contexts; use $RUNNER_TEMP instead.
       MPLCONFIGDIR: $RUNNER_TEMP/mpl-${{ matrix.market }}
 
       RUN_SHORTS_DEBUG_TREE: "1"
@@ -104,35 +103,52 @@ jobs:
           python-version: "3.11"
 
       # ============================================================
-      # SYSTEM DEPENDENCIES + FULL FONT STACK
+      # SYSTEM DEPENDENCIES + FULL FONT STACK (CJK/TH/Emoji)
       # ============================================================
       - name: Install system deps (FULL FONT STACK)
+        shell: bash
         run: |
           set -euxo pipefail
+
           sudo apt-get update
 
+          # video/font infra
           sudo apt-get install -y \
             ffmpeg \
-            fontconfig \
+            fontconfig
+
+          # core fallbacks (DejaVu)
+          sudo apt-get install -y \
             fonts-dejavu-core \
-            fonts-dejavu-extra \
+            fonts-dejavu-extra
+
+          # ✅ THE KEY: full Noto CJK + core + emoji
+          sudo apt-get install -y \
+            fonts-noto-cjk \
             fonts-noto-core \
+            fonts-noto-color-emoji
+
+          # Optional but often helpful on runner images
+          sudo apt-get install -y \
             fonts-noto-extra \
             fonts-noto-ui-core \
-            fonts-noto-unhinted \
-            fonts-noto-cjk \
-            fonts-noto-color-emoji
+            fonts-noto-unhinted || true
 
           # Some runner images provide this, some don't
           sudo apt-get install -y fonts-noto-cjk-extra || true
 
-          # Clear font cache
-          sudo fc-cache -fv
+          # Rebuild fontconfig cache
+          sudo fc-cache -f -v
 
-          # Clear matplotlib cache (both places)
+          # Quick sanity listing (shows whether TC/KR/SC actually exist)
+          echo "---- fc-list Noto Sans CJK ----"
+          fc-list | grep -i "Noto Sans CJK" || true
+          echo "------------------------------"
+
+          # Clear matplotlib cache (global)
           rm -rf ~/.cache/matplotlib ~/.config/matplotlib || true
 
-          # Also clear isolated MPLCONFIGDIR (just in case)
+          # Clear isolated MPLCONFIGDIR (per job)
           rm -rf "${MPLCONFIGDIR}" || true
           mkdir -p "${MPLCONFIGDIR}"
 
@@ -140,6 +156,7 @@ jobs:
       # PYTHON DEPENDENCIES
       # ============================================================
       - name: Install Python deps
+        shell: bash
         run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
@@ -153,17 +170,23 @@ jobs:
       # FORCE MATPLOTLIB FONT REBUILD + VERIFY
       # ============================================================
       - name: Rebuild matplotlib font manager (verify)
+        shell: bash
         run: |
+          set -euxo pipefail
           python - <<'PY'
           import os
+          import matplotlib
+          matplotlib.use("Agg")
+
           from matplotlib import font_manager as fm
           import matplotlib.pyplot as plt
 
           print("MPLCONFIGDIR:", os.environ.get("MPLCONFIGDIR"))
 
+          # Force rebuild without reading cache
           fm._load_fontmanager(try_read_cache=False)
-          names = sorted({f.name for f in fm.fontManager.ttflist})
 
+          names = sorted({f.name for f in fm.fontManager.ttflist})
           print("Fonts count:", len(names))
 
           want = [
@@ -185,29 +208,29 @@ jobs:
           for n in want:
               print(f"{n:22} : {'OK' if n in names else 'MISSING'}")
 
-          # show rcParams default order head (useful when debugging)
           print("\n[rcParams preview]")
           print("  font.family     =", plt.rcParams.get("font.family"))
-          print("  font.sans-serif =", (plt.rcParams.get("font.sans-serif") or [])[:20])
+          print("  font.sans-serif =", (plt.rcParams.get("font.sans-serif") or [])[:30])
 
-          print("\nThai sample:", [n for n in names if "thai" in n.lower()][:20])
-          print("CJK sample :", [n for n in names if "cjk" in n.lower()][:20])
-          print("Noto sample:", [n for n in names if "noto" in n.lower()][:20])
+          print("\nThai sample:", [n for n in names if "thai" in n.lower()][:30])
+          print("CJK sample :", [n for n in names if "cjk" in n.lower()][:30])
+          print("Noto sample:", [n for n in names if "noto" in n.lower()][:30])
           PY
 
       # ============================================================
       # ENSURE OUTPUT DIRS
       # ============================================================
       - name: Ensure output directories
+        shell: bash
         run: |
-          mkdir -p media/images
-          mkdir -p media/videos
-          mkdir -p outputs
+          set -euxo pipefail
+          mkdir -p media/images media/videos outputs
 
       # ============================================================
       # RUN SHORTS
       # ============================================================
       - name: Run shorts
+        shell: bash
         run: |
           set -euxo pipefail
           python scripts/run_shorts.py \
