@@ -307,10 +307,11 @@ def draw_block_table(
             alpha=0.90,
         )
 
+    # ✅ FIX: remove duplicated "資料：資料來源："
     ax.text(
         0.05,
         layout.footer_y2,
-        "資料：資料來源：公開市場資料整理｜僅供參考（非投資建議）",
+        "資料來源：公開市場資料整理｜僅供參考（非投資建議）",
         ha="left",
         va="bottom",
         fontsize=layout.footer_fs_2,
@@ -377,9 +378,10 @@ def draw_block_table(
             f"｜漲幅10%+ {surge_cnt_fallback}/{surge_cnt_fallback}"
         )
 
+    # ✅ CHANGE: "產業X%" -> "佔比 X%"
     if sector_share is not None:
         try:
-            top_title += f"｜產業{float(sector_share) * 100.0:.1f}%"
+            top_title += f"｜佔比 {float(sector_share) * 100.0:.1f}%"
         except Exception:
             pass
 
