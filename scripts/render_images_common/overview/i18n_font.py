@@ -8,6 +8,16 @@ from typing import Any, Dict, List, Optional
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 
+__all__ = [
+    "normalize_market",
+    "resolve_lang",
+    "setup_cjk_font",
+    "has_hangul",
+    "has_kana",
+    "has_han",
+    "has_thai",
+    "has_cjk",
+]
 
 # =============================================================================
 # Text detectors
@@ -39,9 +49,7 @@ def has_kana(text: str) -> bool:
 
 
 def has_han(text: str) -> bool:
-    """
-    CJK Unified Ideographs (Han/Chinese characters)
-    """
+    """CJK Unified Ideographs (Han/Chinese characters)"""
     if not text:
         return False
     for ch in text:
@@ -52,9 +60,7 @@ def has_han(text: str) -> bool:
 
 
 def has_thai(text: str) -> bool:
-    """
-    Thai block: 0E00-0E7F
-    """
+    """Thai block: 0E00-0E7F"""
     if not text:
         return False
     for ch in text:
@@ -73,7 +79,6 @@ def has_cjk(text: str) -> bool:
         return False
     for ch in text:
         o = ord(ch)
-        # Han + Hiragana/Katakana
         if (0x4E00 <= o <= 0x9FFF) or (0x3040 <= o <= 0x30FF):
             return True
     return False
@@ -94,14 +99,14 @@ def normalize_market(m: str) -> str:
         "USA": "US",
         "NASDAQ": "US",
         "NYSE": "US",
-        # ✅ JP aliases (payload might be JPX / TSE)
+        # JP aliases
         "JPN": "JP",
         "JAPAN": "JP",
         "JPX": "JP",
         "TSE": "JP",
         "TOSE": "JP",
         "TOKYO": "JP",
-        # ✅ KR aliases
+        # KR aliases
         "KOR": "KR",
         "KOREA": "KR",
         "KRX": "KR",
@@ -121,7 +126,7 @@ def normalize_market(m: str) -> str:
         "INDIA": "IN",
         "NSE": "IN",
         "BSE": "IN",
-        # ✅ TH aliases
+        # TH aliases
         "THA": "TH",
         "THAILAND": "TH",
         "SET": "TH",
@@ -161,15 +166,11 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
     Configure matplotlib fonts for CJK/KR/JP/TH rendering based on payload.market
     and detected characters in sector_summary.
 
-    ✅ Debug:
+    Debug:
       - set OVERVIEW_DEBUG_FONTS=1 to print selected font order and rcParams.
 
-    ✅ Optional profile:
+    Optional profile:
       - set OVERVIEW_FONT_PROFILE=TH to reuse TH font "feel" for non-TH markets.
-
-    NOTE:
-    - For TH we put Thai fonts first BUT include Latin fallback early
-      to avoid glyph-missing warnings (e.g. when footer has "Public" etc).
     """
     try:
         available = {f.name for f in fm.fontManager.ttflist}
@@ -179,7 +180,7 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
             market = str(payload.get("market", "") or "").upper()
         market = normalize_market(market)
 
-        # Detect KR need (either market=KR or sector has Hangul)
+        # Detect KR need
         need_kr = False
         if market == "KR":
             need_kr = True
@@ -194,21 +195,20 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         primary_cn = ["Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "SimHei", "WenQuanYi Zen Hei"]
         primary_tw = ["Noto Sans TC", "Noto Sans HK", "Microsoft JhengHei", "PingFang TC"]
         primary_jp = ["Noto Sans JP", "Noto Sans CJK JP", "Yu Gothic", "Meiryo"]
-        primary_kr = ["Malgun Gothic", "Noto Sans KR", "Noto Sans CJK KR"]
+        primary_kr = ["Noto Sans KR", "Noto Sans CJK KR", "Malgun Gothic"]
 
-        # ✅ Thai font candidates
-        # Put fonts that contain Latin earlier than Looped Thai to reduce glyph-missing warnings.
+        # ✅ IMPORTANT FIX:
+        # Put "Noto Sans Thai" FIRST because it usually includes Latin glyphs.
+        # Looped Thai is stylistic and often misses Latin -> keep later.
         primary_th = [
-            # Thai families (usually include Latin)
             "Noto Sans Thai",
             "Noto Sans Thai UI",
-            # Looped Thai is stylistic; may miss some Latin glyphs -> keep after Sans Thai
             "Noto Looped Thai",
             "Noto Looped Thai UI",
-            # Latin fallback
+            # Latin fallbacks (numbers/EN stable)
             "Noto Sans",
             "DejaVu Sans",
-            # Windows common
+            # Windows common (sometimes present)
             "Tahoma",
             "Leelawadee UI",
             "TH Sarabun New",
@@ -227,11 +227,10 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         # Font order strategy
         # ---------------------------------------------------------------------
         if profile == "TH" and market in {"US", "CA", "AU", "UK"}:
-            # Force TH-like feel into EN markets (your Sector/Market label look)
+            # Force TH-like feel into EN markets
             order = primary_th + zh_primary + primary_kr + primary_jp + fallback
         else:
             if market == "TH":
-                # TH: Thai first, but still keep Latin fallback early (in primary_th)
                 order = primary_th + zh_primary + primary_kr + primary_jp + fallback
             elif need_kr:
                 order = primary_kr + zh_primary + primary_jp + fallback
@@ -328,8 +327,10 @@ def _get_market_lang(market: str) -> str:
 
 def resolve_lang(payload: Dict[str, Any], market: str) -> str:
     """
-    NOTE: overview.render imports this symbol.
-    Keep this function name stable.
+    Public API expected by overview.render:
+      - prefer payload lang
+      - else market lang
+      - else infer from sector text
     """
     v = _get_payload_lang(payload)
     if v:
