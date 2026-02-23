@@ -10,48 +10,30 @@ import shutil
 import subprocess
 import sys
 import zipfile
+import platform
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
-try:
-    from zoneinfo import ZoneInfo  # py>=3.9
-except Exception:  # pragma: no cover
-    ZoneInfo = None  # type: ignore
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# -----------------------------
-# Timezone mapping (market local)
-# -----------------------------
-MARKET_TZ = {
-    "JP": "Asia/Tokyo",
-    "KR": "Asia/Seoul",
-    "TW": "Asia/Taipei",
-    "CN": "Asia/Shanghai",
-    "HK": "Asia/Hong_Kong",
-    "TH": "Asia/Bangkok",
-    # US/CA: choose primary financial center tz
-    "US": "America/New_York",
-    "CA": "America/Toronto",
-    "UK": "Europe/London",
-    "AU": "Australia/Sydney",
-}
+
+# =============================================================================
+# Unified time import (one logic for all markets)
+# =============================================================================
+def _import_timekit():
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from markets.timekit import market_today_ymd, market_now_hhmm  # type: ignore
+    return market_today_ymd, market_now_hhmm
 
 
+# =============================================================================
+# Small env helpers
+# =============================================================================
 def _env_bool(name: str, default: str = "0") -> bool:
     v = str(os.getenv(name, default)).strip().lower()
     return v in ("1", "true", "yes", "y", "on")
-
-
-def _is_ci() -> bool:
-    """
-    Treat as CI if either is set:
-      - GITHUB_ACTIONS=1
-      - CI=1
-    (This mirrors drive_uploader.py behavior.)
-    """
-    return _env_bool("GITHUB_ACTIONS", "0") or _env_bool("CI", "0")
 
 
 def _env_len(name: str) -> int:
@@ -107,26 +89,12 @@ def _normalize_market(m: str) -> Tuple[str, str]:
         "england": "uk",
         "australia": "au",
         "canada": "ca",
+        "india": "in",
     }
     ml = alias.get(ml, ml)
     if not ml:
         raise ValueError("market is required")
     return ml, ml.upper()
-
-
-def _tz_now(market_upper: str) -> datetime:
-    tz_name = MARKET_TZ.get(market_upper, "UTC")
-    if ZoneInfo is None:
-        return datetime.now()
-    return datetime.now(ZoneInfo(tz_name))
-
-
-def market_today_ymd(market_upper: str) -> str:
-    return _tz_now(market_upper).strftime("%Y-%m-%d")
-
-
-def market_now_hhmm(market_upper: str) -> str:
-    return _tz_now(market_upper).strftime("%H:%M")
 
 
 def _ensure_json_file_from_env(env_name: str, default_path: Path) -> Path:
@@ -301,7 +269,6 @@ def _import_build_video():
         if str(REPO_ROOT) not in sys.path:
             sys.path.insert(0, str(REPO_ROOT))
         from scripts.render_video import build_video_from_images  # type: ignore
-
         return build_video_from_images
     except Exception as e:
         raise RuntimeError(
@@ -339,6 +306,52 @@ def _force_clear_recent_done(market_lower: str, slot: str, keep_n: int = 6) -> N
     dirs.sort(key=lambda x: x.name, reverse=True)
     for d in dirs[: max(1, int(keep_n))]:
         _safe_rm(d / f"{slot}.done.json")
+
+
+# =============================================================================
+# Debug tree (default ON; can disable via --no-debug-tree or RUN_SHORTS_DEBUG_TREE=0)
+# =============================================================================
+def _tree(
+    root: Path,
+    *,
+    enabled: bool,
+    max_depth: int = 5,
+    max_items: int = 300,
+) -> None:
+    if not enabled:
+        return
+    root = Path(root)
+    print(f"[debug-tree] {root}", flush=True)
+    if not root.exists():
+        print("  (missing)", flush=True)
+        return
+
+    items_printed = 0
+    root_depth = len(root.resolve().parts)
+
+    def _depth(p: Path) -> int:
+        return len(p.resolve().parts) - root_depth
+
+    try:
+        for p in sorted(root.rglob("*")):
+            if items_printed >= max_items:
+                print(f"  ... (truncated, max_items={max_items})", flush=True)
+                break
+            d = _depth(p)
+            if d > max_depth:
+                continue
+            rel = p.relative_to(root).as_posix()
+            if p.is_dir():
+                print(f"  [D] {rel}/", flush=True)
+            else:
+                try:
+                    sz = p.stat().st_size
+                except Exception:
+                    sz = -1
+                print(f"  [F] {rel} ({sz} bytes)", flush=True)
+            items_printed += 1
+    except Exception as e:
+        print(f"  (tree error: {e})", flush=True)
 
 
 # =============================================================================
@@ -407,7 +420,6 @@ def _drive_upload(
     service = get_drive_service()
 
     # Create nested folders
-    # policy fixed: parent / MARKET / YMD / SLOT
     market_folder = ensure_folder(service, parent_id, market_upper)
     ymd_folder = ensure_folder(service, market_folder, ymd)
     slot_folder = ensure_folder(service, ymd_folder, slot)
@@ -419,7 +431,6 @@ def _drive_upload(
     if want("video"):
         if not out_mp4 or not out_mp4.exists():
             raise FileNotFoundError(f"video not found for drive upload: {out_mp4}")
-        # upload single file by using upload_dir with exact filename pattern
         n = upload_dir(
             service,
             slot_folder,
@@ -428,7 +439,7 @@ def _drive_upload(
             recursive=False,
             overwrite=True,
             verbose=True,
-            concurrent=False,  # single file
+            concurrent=False,
         )
         print(f"[drive] uploaded video: {out_mp4.name} (n={n})")
 
@@ -438,7 +449,6 @@ def _drive_upload(
             raise FileNotFoundError(f"images_dir not found for drive upload: {images_dir}")
 
         if images_mode == "zip":
-            # put zip under media/archives/<market>/<ymd>_<slot>_images.zip
             zip_path = REPO_ROOT / "media" / "archives" / market_upper.lower() / f"{ymd}_{slot}_images.zip"
             _zip_dir_to(zip_path, images_dir)
             n = upload_dir(
@@ -449,12 +459,12 @@ def _drive_upload(
                 recursive=False,
                 overwrite=True,
                 verbose=True,
-                concurrent=False,  # single file
+                concurrent=False,
             )
             print(f"[drive] uploaded images zip: {zip_path.name} (n={n})")
         else:
-            # upload pngs under images_dir (non-recursive + recursive for sectors)
-            # 1) root png
+            from scripts.utils.drive_uploader import upload_dir  # type: ignore
+
             n1 = upload_dir(
                 service,
                 slot_folder,
@@ -466,11 +476,9 @@ def _drive_upload(
                 concurrent=True,
                 workers=int(workers),
             )
-            # 2) sectors png (if exists)
             sec_dir = images_dir / "sectors"
             n2 = 0
             if sec_dir.exists():
-                # put into a subfolder "sectors" to keep tidy
                 n2 = upload_dir(
                     service,
                     slot_folder,
@@ -491,7 +499,7 @@ def main() -> int:
         description="One-shot Shorts pipeline: main.py -> render_images -> render_video -> youtube upload"
     )
 
-    ap.add_argument("--market", required=True, help="jp/kr/tw/th/cn/us/uk/au/ca/hk ...")
+    ap.add_argument("--market", required=True, help="jp/kr/tw/th/cn/us/uk/au/ca/hk/in ...")
     ap.add_argument("--ymd", default="auto", help="YYYY-MM-DD or 'auto' (default auto)")
     ap.add_argument("--slot", default="midday", help="open/midday/close")
 
@@ -524,7 +532,7 @@ def main() -> int:
     ap.add_argument("--skip-upload", action="store_true")
     ap.add_argument("--skip-playlist", action="store_true")
 
-    # step switches (original)
+    # step switches
     ap.add_argument("--skip-main", action="store_true")
     ap.add_argument("--skip-images", action="store_true")
     ap.add_argument("--skip-video", action="store_true")
@@ -541,7 +549,7 @@ def main() -> int:
         help="Force refresh: delete existing payload/done/images/video for the resolved ymd before running.",
     )
 
-    # Google Drive upload switches (NEW)
+    # Google Drive upload switches
     ap.add_argument("--drive", action="store_true", help="Upload artifacts to Google Drive (default: off)")
     ap.add_argument("--drive-parent-id", default="", help="Google Drive folder id to store outputs (required if --drive)")
     ap.add_argument(
@@ -564,27 +572,35 @@ def main() -> int:
     )
     ap.add_argument("--drive-workers", type=int, default=8, help="Drive concurrent workers for images dir mode (default 8)")
 
+    # ✅ Debug tree
+    ap.add_argument("--no-debug-tree", action="store_true", help="Disable folder tree debug prints")
+    ap.add_argument("--debug-tree-depth", type=int, default=5)
+    ap.add_argument("--debug-tree-max", type=int, default=250)
+
     args = ap.parse_args()
+
+    debug_tree = (not args.no_debug_tree) and _env_bool("RUN_SHORTS_DEBUG_TREE", "1")
 
     market_lower, market_upper = _normalize_market(args.market)
     slot = str(args.slot).strip() or "midday"
 
-    # auto ymd (market local date)
+    market_today_ymd_fn, market_now_hhmm_fn = _import_timekit()
+
+    # auto ymd (market local date, unified across repo)
     if str(args.ymd).strip().lower() in ("", "auto"):
-        ymd = market_today_ymd(market_upper)
+        ymd = market_today_ymd_fn(market_upper)
         print(f"[auto] ymd({market_upper}) = {ymd}")
     else:
         ymd = str(args.ymd).strip()
 
     # auto asof (market local time)
     if str(args.asof).strip().lower() in ("", "auto"):
-        asof = market_now_hhmm(market_upper)
+        asof = market_now_hhmm_fn(market_upper)
         print(f"[auto] asof({market_upper}) = {asof}")
     else:
         asof = str(args.asof).strip()
 
     # Default: main + images only (no video, no upload).
-    # Use --full to enable video+upload.
     if not args.full:
         args.skip_video = True
         args.skip_upload = True
@@ -607,10 +623,7 @@ def main() -> int:
 
     if args.force:
         print("[force] deleting existing artifacts (best effort) ...")
-        # kill cache-hit markers for nearby days (fix cross-day / tz mismatch issues)
         _force_clear_recent_done(market_lower, slot, keep_n=6)
-
-        # best effort delete for requested day
         _safe_rm(payload)
         _safe_rm(_done_path(market_lower, ymd, slot))
         _safe_rm(_images_dir(market_lower, ymd, slot))
@@ -624,6 +637,10 @@ def main() -> int:
 
     # payload mismatch fallback
     if not payload.exists():
+        print("[WARN] payload not found at expected path.")
+        if debug_tree:
+            _tree(REPO_ROOT / "data" / "cache" / market_lower, enabled=True, max_depth=args.debug_tree_depth, max_items=args.debug_tree_max)
+
         fb = _latest_payload_fallback(market_lower, slot)
         if fb is None:
             raise FileNotFoundError(f"payload not found: {payload}")
@@ -639,7 +656,6 @@ def main() -> int:
             _safe_rm(_images_dir(market_lower, ymd, slot))
             _safe_rm(_video_out(market_lower, ymd, slot))
 
-            # rerun main to rebuild payload after deletion (unless user skipped main)
             if not args.skip_main:
                 cmd = [py, "main.py", "--market", market_lower, "--slot", slot]
                 if asof and slot != "close":
@@ -647,6 +663,8 @@ def main() -> int:
                 _run(cmd, cwd=REPO_ROOT)
 
             if not payload.exists():
+                if debug_tree:
+                    _tree(REPO_ROOT / "data" / "cache" / market_lower, enabled=True, max_depth=args.debug_tree_depth, max_items=args.debug_tree_max)
                 raise FileNotFoundError(f"payload not found after force rebuild: {payload}")
 
     # 2) Resolve images_dir BEFORE running render_images (for logs)
@@ -660,7 +678,7 @@ def main() -> int:
     images_dir = _images_dir(market_lower, images_ymd, slot)
     print(f"[images] ymd source={args.images_ymd} -> {images_ymd}")
 
-    # If force and images_ymd differs, delete images/video for images_ymd too (best effort)
+    # If force and images_ymd differs, delete images/video for images_ymd too
     if args.force and images_ymd != ymd:
         _safe_rm(_images_dir(market_lower, images_ymd, slot))
         _safe_rm(_video_out(market_lower, images_ymd, slot))
@@ -690,6 +708,8 @@ def main() -> int:
         )
 
     if not images_dir.exists():
+        if debug_tree:
+            _tree(REPO_ROOT / "media" / "images" / market_lower, enabled=True, max_depth=args.debug_tree_depth, max_items=args.debug_tree_max)
         raise FileNotFoundError(f"images_dir not found: {images_dir}")
 
     # 4) render_video
@@ -713,7 +733,6 @@ def main() -> int:
         if not out_mp4.exists():
             raise FileNotFoundError(f"video not generated: {out_mp4}")
 
-        # Drive upload right after video (optional)
         if args.drive and args.drive_order == "after_video":
             _drive_upload(
                 drive_parent_id=str(args.drive_parent_id),
@@ -755,7 +774,6 @@ def main() -> int:
             cmd += ["--skip-playlist"]
         _run(cmd, cwd=REPO_ROOT)
 
-        # Drive upload right after YouTube (default; avoids impacting YT speed)
         if args.drive and args.drive_order == "after_youtube":
             _drive_upload(
                 drive_parent_id=str(args.drive_parent_id),
@@ -770,7 +788,6 @@ def main() -> int:
                 workers=int(args.drive_workers),
             )
 
-    # "end" means: do Drive at the very end regardless of full/skip-upload
     if args.drive and args.drive_order == "end":
         _drive_upload(
             drive_parent_id=str(args.drive_parent_id),
@@ -786,6 +803,7 @@ def main() -> int:
         )
 
     print("\n[OK] All done.")
+    print("platform:", platform.platform())
     print("payload :", payload)
     print("images  :", images_dir)
     if not args.skip_video:
@@ -800,6 +818,12 @@ def main() -> int:
         print(f"drive   : {args.drive_order} upload={args.drive_upload} images_mode={args.drive_images_mode}")
     else:
         print("drive   : (skipped)")
+
+    if debug_tree:
+        # Show the exact locations that matter when debugging missing payload/images
+        _tree(payload.parent, enabled=True, max_depth=args.debug_tree_depth, max_items=args.debug_tree_max)
+        _tree(images_dir, enabled=True, max_depth=args.debug_tree_depth, max_items=args.debug_tree_max)
+
     return 0
 
 
