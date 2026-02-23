@@ -83,8 +83,9 @@ jobs:
     env:
       MPLBACKEND: Agg
 
-      # ✅ isolate matplotlib config/cache per matrix job (prevents cross-market cache weirdness)
-      MPLCONFIGDIR: ${{ runner.temp }}/mpl-${{ matrix.market }}
+      # ✅ isolate matplotlib config/cache per matrix job
+      # NOTE: runner.temp is not supported in some contexts; use $RUNNER_TEMP instead.
+      MPLCONFIGDIR: $RUNNER_TEMP/mpl-${{ matrix.market }}
 
       RUN_SHORTS_DEBUG_TREE: "1"
       OVERVIEW_DEBUG_FONTS: "1"
