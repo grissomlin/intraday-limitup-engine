@@ -194,6 +194,19 @@ def _filter_available(order: List[str], available: set[str]) -> List[str]:
     return out
 
 
+# ✅ FIX: pick *list* of available families (keeps order)
+def _pick_available_list(candidates: List[str]) -> List[str]:
+    try:
+        available = _available_font_names()
+    except Exception:
+        return []
+    out: List[str] = []
+    for n in candidates:
+        if n in available and n not in out:
+            out.append(n)
+    return out
+
+
 # =============================================================================
 # Font setup (rcParams)
 # =============================================================================
@@ -279,9 +292,7 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         zh_primary = primary_cn if market == "CN" else primary_tw
 
         # ---- Build order ----
-        # For script markets: put that script FIRST, then Latin, then other scripts as fallbacks.
         if market in {"TW", "CN", "JP", "KR", "TH"} or need_han or need_jp or need_kr or need_th:
-            # Decide "main script" priority
             if market == "TH" or need_th:
                 order = primary_th + latin + zh_primary + primary_jp + primary_kr
             elif market == "KR" or need_kr:
@@ -291,13 +302,10 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
             elif market == "CN":
                 order = primary_cn + latin + primary_jp + primary_kr + primary_th
             else:
-                # TW or mixed Han
                 order = primary_tw + latin + primary_jp + primary_kr + primary_th
 
-            # add some generic fallbacks at the end
             order = order + ["DejaVu Sans", "Noto Sans"]
         else:
-            # Pure EN markets: Latin first. Optional TH-like profile for US/CA/AU/UK
             if profile == "TH" and market in {"US", "CA", "AU", "UK"}:
                 order = latin + primary_th + zh_primary + primary_kr + primary_jp + ["DejaVu Sans", "Noto Sans"]
             else:
@@ -342,22 +350,15 @@ def fontprops_for_text(
     weight: Optional[str] = None,
 ) -> FontProperties:
     """
-    Return FontProperties that matches *actual glyph coverage* for `text`,
-    so bbox measurement (get_window_extent) is consistent and won't drift.
+    ✅ FIX (minimal invasive):
+    - Keep your original script detection logic.
+    - But DO NOT return a single-family FontProperties.
+      Return a *family fallback list* so Matplotlib can fall back without
+      switching to DejaVu (missing glyph) and without bbox drift.
 
-    Why:
-    - If you measure CJK text with "Noto Sans" (Latin-only), matplotlib emits
-      "Glyph ... missing from font(s) Noto Sans" and widths become incorrect.
-    - Incorrect widths => ellipsize/layout misalignment => overview looks "broken".
-
-    Strategy:
-    - Configure rcParams fallback list via setup_cjk_font() (idempotent).
-    - Choose per-text primary family based on script:
-        Han   -> Noto Sans CJK TC/SC (by market)
-        Kana  -> Noto Sans CJK JP
-        Hangul-> Noto Sans CJK KR
-        Thai  -> Noto Sans Thai / UI
-        else  -> Noto Sans / DejaVu Sans
+    This directly removes warnings like:
+      "Glyph XXXX missing from font(s) DejaVu Sans."
+    And makes ellipsize/layout stable.
     """
     # Ensure rcParams are configured (idempotent)
     try:
@@ -367,7 +368,7 @@ def fontprops_for_text(
 
     m = normalize_market(market or (payload or {}).get("market", "") if payload else market)
 
-    # Decide script-based primary candidates
+    # Decide script-based primary candidates (KEEP your lists)
     if has_thai(text):
         primary = [
             "Noto Sans Thai",
@@ -404,7 +405,6 @@ def fontprops_for_text(
                 "DejaVu Sans",
             ]
         else:
-            # default Han -> treat as TW/HK style
             primary = [
                 "Noto Sans CJK TC",
                 "Noto Sans TC",
@@ -420,13 +420,17 @@ def fontprops_for_text(
             "Arial Unicode MS",
         ]
 
-    base = _pick_first_available(primary) or "sans-serif"
+    # ✅ FIX: prefer a *list* of available families, not just first one
+    families = _pick_available_list(primary)
+    if not families:
+        # last resort: keep behavior but safe
+        base = _pick_first_available(primary) or "sans-serif"
+        families = [base]
 
     w = (weight or "").strip().lower() or None
     if w is None:
-        return FontProperties(family=base)
+        return FontProperties(family=families)
 
-    # normalize common weight aliases
     if w in {"regular", "normal"}:
         w = "regular"
     elif w in {"medium"}:
@@ -434,7 +438,7 @@ def fontprops_for_text(
     elif w in {"bold", "heavy", "black"}:
         w = "bold"
 
-    return FontProperties(family=base, weight=w)
+    return FontProperties(family=families, weight=w)
 
 
 # =============================================================================
