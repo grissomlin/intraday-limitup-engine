@@ -32,7 +32,6 @@ def _safe_desc(s: str, *, limit: int = 4900) -> str:
 # - Keep it short and consistent across markets.
 # =============================================================================
 def _desc_th() -> str:
-    # Thai body can be non-ASCII; keep it short, no emoji, no fancy quotes.
     return _safe_desc(
         "สรุปหุ้นที่เคลื่อนไหวแรง (ชนเพดานราคา/เพิ่มขึ้นมาก) จัดกลุ่มตามอุตสาหกรรม\n"
         "\n"
@@ -49,7 +48,6 @@ def _desc_th() -> str:
 
 
 def _desc_zh_tw() -> str:
-    # Keep Traditional Chinese short, and keep ASCII separators.
     return _safe_desc(
         "整理盤中強勢異動個股與產業分布 (Shorts)\n"
         "\n"
@@ -66,7 +64,6 @@ def _desc_zh_tw() -> str:
 
 
 def _desc_zh_cn() -> str:
-    # Simplified Chinese short, ASCII separators.
     return _safe_desc(
         "汇总盘中强势异动个股与行业分布 (Shorts)\n"
         "\n"
@@ -130,6 +127,29 @@ def _desc_en(region_name: str) -> str:
     )
 
 
+def _desc_en_ca(region_name: str) -> str:
+    """
+    Canada-specific note:
+    TSXV contains many microcaps where very low liquidity can distort % moves.
+    """
+    return _safe_desc(
+        f"Highlights large movers in the {region_name} market, grouped by sector.\n"
+        "\n"
+        "--- Note ---\n"
+        "This is an experiment: auto-generate Shorts from market-mover data.\n"
+        "\n"
+        "--- Disclaimer ---\n"
+        "For data organization only. NOT investment advice.\n"
+        "Real-time calculations may be delayed or inaccurate. Please verify with official exchange sources.\n"
+        "\n"
+        "--- Data Quality ---\n"
+        "Outliers (e.g. extreme % moves) can occur due to data glitches, corporate actions (splits), low-liquidity prints, or symbol mapping.\n"
+        "\n"
+        "--- Canada (TSXV) Filter ---\n"
+        "To reduce low-liquidity distortions, some TSXV microcaps may be excluded based on minimum liquidity and/or market cap.\n"
+    )
+
+
 # =============================================================================
 # Public API
 # =============================================================================
@@ -175,7 +195,13 @@ def build_metadata(market: str, ymd: str, slot: str) -> Dict[str, Any]:
         }
         region = name_map[m]
         title = f"{m}｜{region} Market Movers｜{ymd} {slot}"
-        desc = _desc_en(region)
+
+        # ✅ CA-specific description
+        if m == "CA":
+            desc = _desc_en_ca(region)
+        else:
+            desc = _desc_en(region)
+
         tags = [m, "MarketMovers", "Shorts"]
 
     else:
