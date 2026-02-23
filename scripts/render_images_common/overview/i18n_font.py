@@ -46,7 +46,7 @@ def has_kana(text: str) -> bool:
 
 
 def has_han(text: str) -> bool:
-    """CJK Unified Ideographs (Han/Chinese characters)"""
+    """CJK Unified Ideographs (Han/Chinese characters)."""
     if not text:
         return False
     for ch in text:
@@ -57,7 +57,7 @@ def has_han(text: str) -> bool:
 
 
 def has_thai(text: str) -> bool:
-    """Thai block: 0E00-0E7F"""
+    """Thai block: 0E00-0E7F."""
     if not text:
         return False
     for ch in text:
@@ -154,18 +154,44 @@ def _get_font_profile() -> str:
     return "DEFAULT"
 
 
-def _debug_print_fonts(market: str, profile: str, font_list: List[str]) -> None:
+def _debug_print_fonts(market: str, profile: str, font_list: List[str], chosen: Optional[str]) -> None:
     if not _env_on("OVERVIEW_DEBUG_FONTS"):
         return
     try:
         print("[OVERVIEW_FONT_DEBUG]")
         print("  market =", market)
         print("  profile =", profile)
-        print("  selected_font_list =", font_list)
+        print("  chosen_primary =", chosen)
+        print("  selected_font_list =", font_list[:20], ("... (len=%d)" % len(font_list) if len(font_list) > 20 else ""))
         print("  rcParams.font.family =", plt.rcParams.get("font.family"))
-        print("  rcParams.font.sans-serif =", plt.rcParams.get("font.sans-serif"))
+        print("  rcParams.font.sans-serif (head) =", (plt.rcParams.get("font.sans-serif") or [])[:15])
     except Exception:
         pass
+
+
+# =============================================================================
+# Small helpers
+# =============================================================================
+def _available_font_names() -> set[str]:
+    return {f.name for f in fm.fontManager.ttflist}
+
+
+def _dedup_keep_order(xs: List[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for x in xs:
+        if x and x not in seen:
+            out.append(x)
+            seen.add(x)
+    return out
+
+
+def _filter_available(order: List[str], available: set[str]) -> List[str]:
+    out: List[str] = []
+    for n in order:
+        if n in available and n not in out:
+            out.append(n)
+    return out
 
 
 # =============================================================================
@@ -173,45 +199,61 @@ def _debug_print_fonts(market: str, profile: str, font_list: List[str]) -> None:
 # =============================================================================
 def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """
-    Configure matplotlib fonts for CJK/KR/JP/TH rendering.
+    Configure matplotlib fonts for rendering + bbox measurement.
 
-    IMPORTANT:
-    - Matplotlib often uses the FIRST font for measurement/bbox.
-    - Therefore the FIRST font MUST be Latin-capable to avoid missing glyph warnings
-      for English, digits, punctuation, symbols.
-    - Thai/CJK fonts should appear AFTER Latin to render their scripts via fallback.
+    Key rule for stability:
+    - For markets that actually DISPLAY CJK/TH text (TW/CN/JP/KR/TH),
+      the FIRST font in rcParams['font.sans-serif'] MUST be able to render that script.
+      Otherwise matplotlib will measure with a font that lacks glyphs (=> warnings + wrong widths),
+      and layout/ellipsize will drift.
+
+    - For pure EN markets, keep Latin-first for clean digits/punct, but include CJK/TH as fallbacks.
     """
     try:
-        available = {f.name for f in fm.fontManager.ttflist}
+        available = _available_font_names()
 
         market = ""
         if payload:
             market = str(payload.get("market", "") or "").upper()
         market = normalize_market(market)
 
-        # Detect KR need
-        need_kr = False
-        if market == "KR":
-            need_kr = True
-        elif payload:
+        ss = []
+        if payload:
             ss = payload.get("sector_summary", []) or []
-            if isinstance(ss, list):
-                for r in ss[:80]:
-                    if has_hangul(str((r or {}).get("sector", "") or "")):
-                        need_kr = True
-                        break
+        if not isinstance(ss, list):
+            ss = []
 
-        # Detect Thai need
-        need_th = False
-        if market == "TH":
-            need_th = True
-        elif payload:
-            ss = payload.get("sector_summary", []) or []
-            if isinstance(ss, list):
-                for r in ss[:80]:
-                    if has_thai(str((r or {}).get("sector", "") or "")):
-                        need_th = True
-                        break
+        # Detect KR need (for mixed payloads)
+        need_kr = (market == "KR")
+        if not need_kr and ss:
+            for r in ss[:80]:
+                if has_hangul(str((r or {}).get("sector", "") or "")):
+                    need_kr = True
+                    break
+
+        # Detect Thai need (for mixed payloads)
+        need_th = (market == "TH")
+        if not need_th and ss:
+            for r in ss[:80]:
+                if has_thai(str((r or {}).get("sector", "") or "")):
+                    need_th = True
+                    break
+
+        # Detect JP need (for mixed payloads)
+        need_jp = (market == "JP")
+        if not need_jp and ss:
+            for r in ss[:80]:
+                if has_kana(str((r or {}).get("sector", "") or "")):
+                    need_jp = True
+                    break
+
+        # Detect Han need (for mixed payloads)
+        need_han = (market in {"TW", "CN"})
+        if not need_han and ss:
+            for r in ss[:80]:
+                if has_han(str((r or {}).get("sector", "") or "")):
+                    need_han = True
+                    break
 
         # Prefer CJK family names that exist on Ubuntu CI (fonts-noto-cjk)
         primary_cn = ["Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", "SimHei", "WenQuanYi Zen Hei"]
@@ -219,7 +261,7 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         primary_jp = ["Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "Meiryo"]
         primary_kr = ["Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic"]
 
-        # Thai families (Thai glyph coverage)
+        # Thai families
         primary_th = [
             "Noto Sans Thai",
             "Noto Sans Thai UI",
@@ -231,35 +273,38 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
             "Angsana New",
         ]
 
-        # ✅ Latin MUST be first
-        latin_first = ["Noto Sans", "DejaVu Sans", "Arial Unicode MS"]
+        latin = ["Noto Sans", "DejaVu Sans", "Arial Unicode MS"]
 
-        # General fallback (keep Latin included too)
-        fallback = ["DejaVu Sans", "Noto Sans", "Arial Unicode MS"]
-
-        zh_primary = primary_cn if market == "CN" else primary_tw
         profile = _get_font_profile()
+        zh_primary = primary_cn if market == "CN" else primary_tw
 
-        if profile == "TH" and market in {"US", "CA", "AU", "UK"}:
-            order = latin_first + primary_th + zh_primary + primary_kr + primary_jp + fallback
-        else:
-            if need_th:
-                order = latin_first + primary_th + zh_primary + primary_kr + primary_jp + fallback
-            elif need_kr:
-                order = latin_first + primary_kr + zh_primary + primary_jp + primary_th + fallback
+        # ---- Build order ----
+        # For script markets: put that script FIRST, then Latin, then other scripts as fallbacks.
+        if market in {"TW", "CN", "JP", "KR", "TH"} or need_han or need_jp or need_kr or need_th:
+            # Decide "main script" priority
+            if market == "TH" or need_th:
+                order = primary_th + latin + zh_primary + primary_jp + primary_kr
+            elif market == "KR" or need_kr:
+                order = primary_kr + latin + zh_primary + primary_jp + primary_th
+            elif market == "JP" or need_jp:
+                order = primary_jp + latin + zh_primary + primary_kr + primary_th
+            elif market == "CN":
+                order = primary_cn + latin + primary_jp + primary_kr + primary_th
             else:
-                if market == "JP":
-                    order = latin_first + primary_jp + zh_primary + primary_kr + primary_th + fallback
-                elif market == "CN":
-                    order = latin_first + primary_cn + primary_jp + primary_kr + primary_th + fallback
-                else:
-                    order = latin_first + zh_primary + primary_kr + primary_jp + primary_th + fallback
+                # TW or mixed Han
+                order = primary_tw + latin + primary_jp + primary_kr + primary_th
 
-        font_list: List[str] = []
-        for n in order:
-            if n in available and n not in font_list:
-                font_list.append(n)
+            # add some generic fallbacks at the end
+            order = order + ["DejaVu Sans", "Noto Sans"]
+        else:
+            # Pure EN markets: Latin first. Optional TH-like profile for US/CA/AU/UK
+            if profile == "TH" and market in {"US", "CA", "AU", "UK"}:
+                order = latin + primary_th + zh_primary + primary_kr + primary_jp + ["DejaVu Sans", "Noto Sans"]
+            else:
+                order = latin + zh_primary + primary_jp + primary_kr + primary_th + ["DejaVu Sans", "Noto Sans"]
 
+        order = _dedup_keep_order(order)
+        font_list = _filter_available(order, available)
         if not font_list:
             return None
 
@@ -267,19 +312,20 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         plt.rcParams["font.sans-serif"] = font_list
         plt.rcParams["axes.unicode_minus"] = False
 
-        _debug_print_fonts(market, profile, font_list)
+        chosen = font_list[0] if font_list else None
+        _debug_print_fonts(market, profile, font_list, chosen)
 
-        return font_list[0]
+        return chosen
     except Exception:
         return None
 
 
 # =============================================================================
-# NEW: Per-text FontProperties chooser (supports weight=)
+# Per-text FontProperties chooser (CRITICAL for bbox measurement)
 # =============================================================================
 def _pick_first_available(candidates: List[str]) -> Optional[str]:
     try:
-        available = {f.name for f in fm.fontManager.ttflist}
+        available = _available_font_names()
     except Exception:
         return None
     for n in candidates:
@@ -296,24 +342,85 @@ def fontprops_for_text(
     weight: Optional[str] = None,
 ) -> FontProperties:
     """
-    Return FontProperties that is SAFE for bbox measurement + rendering.
+    Return FontProperties that matches *actual glyph coverage* for `text`,
+    so bbox measurement (get_window_extent) is consistent and won't drift.
 
-    Rule (critical for CI):
-    - Always use a Latin-capable base font (Noto Sans / DejaVu Sans) as the *primary* family
-      so digits/EN/punct never trigger "Glyph ... missing from Noto Sans Thai".
-    - Thai/CJK/KR/JP glyphs are handled by rcParams['font.sans-serif'] fallback list,
-      which we set via setup_cjk_font().
+    Why:
+    - If you measure CJK text with "Noto Sans" (Latin-only), matplotlib emits
+      "Glyph ... missing from font(s) Noto Sans" and widths become incorrect.
+    - Incorrect widths => ellipsize/layout misalignment => overview looks "broken".
 
-    This is the most stable approach on Ubuntu GitHub Actions.
+    Strategy:
+    - Configure rcParams fallback list via setup_cjk_font() (idempotent).
+    - Choose per-text primary family based on script:
+        Han   -> Noto Sans CJK TC/SC (by market)
+        Kana  -> Noto Sans CJK JP
+        Hangul-> Noto Sans CJK KR
+        Thai  -> Noto Sans Thai / UI
+        else  -> Noto Sans / DejaVu Sans
     """
-    # ensure rcParams fallback list is configured (idempotent)
+    # Ensure rcParams are configured (idempotent)
     try:
         setup_cjk_font(payload or {"market": market})
     except Exception:
         pass
 
-    # pick a base family that exists
-    base = _pick_first_available(["Noto Sans", "DejaVu Sans", "Arial Unicode MS"]) or "sans-serif"
+    m = normalize_market(market or (payload or {}).get("market", "") if payload else market)
+
+    # Decide script-based primary candidates
+    if has_thai(text):
+        primary = [
+            "Noto Sans Thai",
+            "Noto Sans Thai UI",
+            "Noto Looped Thai",
+            "Noto Looped Thai UI",
+            "Tahoma",
+            "Leelawadee UI",
+            "DejaVu Sans",
+        ]
+    elif has_hangul(text):
+        primary = [
+            "Noto Sans CJK KR",
+            "Noto Sans KR",
+            "Malgun Gothic",
+            "DejaVu Sans",
+        ]
+    elif has_kana(text):
+        primary = [
+            "Noto Sans CJK JP",
+            "Noto Sans JP",
+            "Yu Gothic",
+            "Meiryo",
+            "DejaVu Sans",
+        ]
+    elif has_han(text):
+        if m == "CN":
+            primary = [
+                "Noto Sans CJK SC",
+                "Noto Sans SC",
+                "Microsoft YaHei",
+                "SimHei",
+                "WenQuanYi Zen Hei",
+                "DejaVu Sans",
+            ]
+        else:
+            # default Han -> treat as TW/HK style
+            primary = [
+                "Noto Sans CJK TC",
+                "Noto Sans TC",
+                "Noto Sans HK",
+                "Microsoft JhengHei",
+                "PingFang TC",
+                "DejaVu Sans",
+            ]
+    else:
+        primary = [
+            "Noto Sans",
+            "DejaVu Sans",
+            "Arial Unicode MS",
+        ]
+
+    base = _pick_first_available(primary) or "sans-serif"
 
     w = (weight or "").strip().lower() or None
     if w is None:
