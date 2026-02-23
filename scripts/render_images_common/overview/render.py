@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
@@ -31,11 +31,27 @@ from .gain_bins import (
     gainbins_footer_center_lines,
 )
 
-from .i18n_font import (
-    normalize_market,
-    resolve_lang,
-    setup_cjk_font,
-)
+# ✅ i18n font (add fontprops_for_text)
+try:
+    from .i18n_font import (
+        normalize_market,
+        resolve_lang,
+        setup_cjk_font,
+        fontprops_for_text,  # ✅ NEW
+    )
+except Exception:
+    from .i18n_font import normalize_market, resolve_lang, setup_cjk_font
+
+    # Fallback (won't crash if your i18n_font.py hasn't added it yet)
+    def fontprops_for_text(
+        _text: str,
+        *,
+        market: str = "",
+        payload: Optional[Dict[str, Any]] = None,
+        weight: Optional[str] = None,
+    ) -> FontProperties:
+        return FontProperties(family="sans-serif", weight=(weight or "regular"))
+
 
 from .text import ellipsize_to_px, text_px
 from .timefmt import date_for_display, subtitle_one_line
@@ -162,6 +178,7 @@ def _debug_pct_dump(
 # =============================================================================
 def _render_one_page(
     *,
+    payload: Optional[Dict[str, Any]],
     sector_rows: List[Dict[str, Any]],
     out_path: Path,
     market: str,
@@ -289,8 +306,14 @@ def _render_one_page(
     renderer = fig.canvas.get_renderer()
 
     # ---- sector labels ----
-    fp_lbl = FontProperties(family="sans-serif", weight="medium")
     label_fontsize = 44
+    # ✅ Use same font selection for label text (Thai/CJK safe)
+    fp_lbl = fontprops_for_text(
+        " ".join(sectors_raw[:3]) if sectors_raw else "",
+        market=market,
+        payload=payload,
+        weight="medium",
+    )
 
     label_area_px = width * (label_right - label_left)
     max_label_px = max(80.0, label_area_px - 40)
@@ -307,12 +330,10 @@ def _render_one_page(
             va="center",
             fontsize=label_fontsize,
             color=sector_color,
-            fontproperties=fp_lbl,
+            fontproperties=fp_lbl,  # ✅
         )
 
     # ---- badges ----
-    fp_count = FontProperties(family="sans-serif", weight="bold")
-    fp_pct = FontProperties(family="sans-serif", weight="bold")
     fs_count = 46
     fs_pct = 28
     if (market or "").upper() in {"US", "CA", "AU", "UK", "EU"}:
@@ -335,6 +356,10 @@ def _render_one_page(
         v = float(compute_value(row_eff, metric))
         count_text, pct_text = badge_text(row_eff, metric, lang)
 
+        # ✅ badges are mostly latin digits, but still use unified resolver
+        fp_count = fontprops_for_text(count_text or "0", market=market, payload=payload, weight="bold")
+        fp_pct = fontprops_for_text(pct_text or "0%", market=market, payload=payload, weight="bold")
+
         if v <= 0:
             count_x = x_max * 0.02
             count_ha = "left"
@@ -351,7 +376,7 @@ def _render_one_page(
             fontsize=fs_count,
             color="white",
             weight="bold",
-            fontproperties=fp_count,
+            fontproperties=fp_count,  # ✅
             bbox=dict(boxstyle="round,pad=0.3", facecolor="black", alpha=0.3, edgecolor="none"),
         )
 
@@ -403,7 +428,7 @@ def _render_one_page(
             fontsize=fs_pct,
             color=pct_color,
             weight="bold",
-            fontproperties=fp_pct,
+            fontproperties=fp_pct,  # ✅
             alpha=pct_text_alpha,
             bbox=dict(boxstyle="round,pad=0.20", facecolor="black", alpha=pct_box_alpha, edgecolor="none"),
             path_effects=[pe.withStroke(linewidth=stroke_w, foreground="black", alpha=0.90)],
@@ -411,27 +436,63 @@ def _render_one_page(
 
     # ---- title + subtitle ----
     title = title_for_metric(metric, market, lang)
-    title_fp = FontProperties(family="sans-serif", weight="bold")
+
+    # ✅ Title font selection must match actual render & measurement
+    title_fp = fontprops_for_text(title, market=market, payload=payload, weight="bold")
 
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
 
     if "\n" in title:
-        fig.text(0.5, 0.965, title, ha="center", va="top", fontsize=44, color="white", weight="bold", linespacing=1.1)
+        fig.text(
+            0.5,
+            0.965,
+            title,
+            ha="center",
+            va="top",
+            fontsize=44,
+            color="white",
+            weight="bold",
+            linespacing=1.1,
+            fontproperties=title_fp,  # ✅
+        )
         subtitle_y = 0.885
     else:
         title_fs = 56
         max_title_px = width * 0.92
         if text_px(fig, renderer, title, title_fp, title_fs) <= max_title_px:
-            fig.text(0.5, 0.965, title, ha="center", va="top", fontsize=title_fs, color="white", weight="bold")
+            fig.text(
+                0.5,
+                0.965,
+                title,
+                ha="center",
+                va="top",
+                fontsize=title_fs,
+                color="white",
+                weight="bold",
+                fontproperties=title_fp,  # ✅
+            )
             subtitle_y = 0.91
         else:
             cut = max(10, min(14, len(title) // 2))
             title2 = title[:cut] + "\n" + title[cut:]
-            fig.text(0.5, 0.965, title2, ha="center", va="top", fontsize=48, color="white", weight="bold", linespacing=1.1)
+            title2_fp = fontprops_for_text(title2, market=market, payload=payload, weight="bold")
+            fig.text(
+                0.5,
+                0.965,
+                title2,
+                ha="center",
+                va="top",
+                fontsize=48,
+                color="white",
+                weight="bold",
+                linespacing=1.1,
+                fontproperties=title2_fp,  # ✅
+            )
             subtitle_y = 0.885
 
     if subtitle:
+        subtitle_fp = fontprops_for_text(subtitle, market=market, payload=payload, weight="regular")
         fig.text(
             0.5,
             subtitle_y,
@@ -442,6 +503,7 @@ def _render_one_page(
             color="#aaa",
             style="italic",
             linespacing=1.25,
+            fontproperties=subtitle_fp,  # ✅
         )
 
     # ---- bottom footer ----
@@ -468,17 +530,78 @@ def _render_one_page(
     fs_center = fs_center_env if (fs_center_env and fs_center_env > 0) else fs_auto
     fs_disc_env = _env_int("OVERVIEW_FOOTER_DISCLAIMER_FS", 22)
 
+    footer_fp = fontprops_for_text(
+        " ".join([footer_center1 or "", footer_center2 or "", footer_center3 or "", footer_center4 or ""]).strip(),
+        market=market,
+        payload=payload,
+        weight="bold",
+    )
+    footer_disc_fp = fontprops_for_text(footer_center4 or "", market=market, payload=payload, weight="regular")
+    footer_right_fp = fontprops_for_text(footer_right or "", market=market, payload=payload, weight="regular")
+
     if footer_center1:
-        fig.text(0.5, y1, footer_center1, ha="center", va="center", fontsize=fs_center, color="#d9d9d9", weight="bold")
+        fig.text(
+            0.5,
+            y1,
+            footer_center1,
+            ha="center",
+            va="center",
+            fontsize=fs_center,
+            color="#d9d9d9",
+            weight="bold",
+            fontproperties=footer_fp,  # ✅
+        )
     if footer_center2:
-        fig.text(0.5, y2, footer_center2, ha="center", va="center", fontsize=fs_center, color="#d9d9d9", weight="bold", alpha=0.92)
+        fig.text(
+            0.5,
+            y2,
+            footer_center2,
+            ha="center",
+            va="center",
+            fontsize=fs_center,
+            color="#d9d9d9",
+            weight="bold",
+            alpha=0.92,
+            fontproperties=footer_fp,  # ✅
+        )
     if footer_center3:
-        fig.text(0.5, y3, footer_center3, ha="center", va="center", fontsize=fs_center, color="#d9d9d9", weight="bold", alpha=0.92)
+        fig.text(
+            0.5,
+            y3,
+            footer_center3,
+            ha="center",
+            va="center",
+            fontsize=fs_center,
+            color="#d9d9d9",
+            weight="bold",
+            alpha=0.92,
+            fontproperties=footer_fp,  # ✅
+        )
     if footer_center4:
-        fig.text(0.5, y4, footer_center4, ha="center", va="center", fontsize=fs_disc_env, color="#FFD54A", alpha=0.65)
+        fig.text(
+            0.5,
+            y4,
+            footer_center4,
+            ha="center",
+            va="center",
+            fontsize=fs_disc_env,
+            color="#FFD54A",
+            alpha=0.65,
+            fontproperties=footer_disc_fp,  # ✅
+        )
 
     if footer_right:
-        fig.text(0.98, 0.010, footer_right, ha="right", va="bottom", fontsize=22, color="#555", alpha=0.6)
+        fig.text(
+            0.98,
+            0.010,
+            footer_right,
+            ha="right",
+            va="bottom",
+            fontsize=22,
+            color="#555",
+            alpha=0.6,
+            fontproperties=footer_right_fp,  # ✅
+        )
 
     _ = footer_note_text  # intentionally unused
 
@@ -489,6 +612,7 @@ def _render_one_page(
 
 def _render_empty(
     *,
+    payload: Optional[Dict[str, Any]],
     out_path: Path,
     ymd: str,
     width: int,
@@ -496,6 +620,7 @@ def _render_empty(
     metric: str,
     lang: str,
     subtitle: str = "",
+    market: str = "",
 ) -> None:
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -505,11 +630,40 @@ def _render_empty(
         pass
 
     fig = plt.figure(figsize=(width / 100, height / 100), dpi=100, facecolor="#1a1a2e")
-    fig.text(0.5, 0.52, empty_text_for_metric(metric, lang), ha="center", va="center", fontsize=56, color="white", weight="bold")
+
+    main_text = empty_text_for_metric(metric, lang)
+    fp_main = fontprops_for_text(main_text, market=market, payload=payload, weight="bold")
+    fig.text(
+        0.5,
+        0.52,
+        main_text,
+        ha="center",
+        va="center",
+        fontsize=56,
+        color="white",
+        weight="bold",
+        fontproperties=fp_main,  # ✅
+    )
+
     if ymd:
-        fig.text(0.5, 0.42, ymd, ha="center", va="center", fontsize=36, color="#888")
+        fp_ymd = fontprops_for_text(ymd, market=market, payload=payload, weight="regular")
+        fig.text(0.5, 0.42, ymd, ha="center", va="center", fontsize=36, color="#888", fontproperties=fp_ymd)  # ✅
+
     if subtitle:
-        fig.text(0.5, 0.34, subtitle, ha="center", va="center", fontsize=30, color="#888", style="italic", linespacing=1.25)
+        fp_sub = fontprops_for_text(subtitle, market=market, payload=payload, weight="regular")
+        fig.text(
+            0.5,
+            0.34,
+            subtitle,
+            ha="center",
+            va="center",
+            fontsize=30,
+            color="#888",
+            style="italic",
+            linespacing=1.25,
+            fontproperties=fp_sub,  # ✅
+        )
+
     fig.savefig(out_path, dpi=100, facecolor="#1a1a2e", bbox_inches=None, pad_inches=0.0)
     plt.close(fig)
     print(f"✅ 已產生：{out_path}")
@@ -528,7 +682,9 @@ def render_overview_png(
     metric: str = "auto",
     bar_max_fill: float | None = None,
 ) -> List[Path]:
+    # ✅ must set rcParams font list first
     setup_cjk_font(payload)
+
     out_dir.mkdir(parents=True, exist_ok=True)
 
     sector_summary = payload.get("sector_summary", []) or []
@@ -593,13 +749,24 @@ def render_overview_png(
 
     if not sector_rows0:
         out_path = out_dir / f"overview_sectors_{metric_eff}_p1.png"
-        _render_empty(out_path=out_path, ymd=ymd_disp, width=width, height=height, metric=metric_eff, lang=lang, subtitle=subtitle)
+        _render_empty(
+            payload=payload,
+            out_path=out_path,
+            ymd=ymd_disp,
+            width=width,
+            height=height,
+            metric=metric_eff,
+            lang=lang,
+            subtitle=subtitle,
+            market=market,
+        )
         out_paths.append(out_path)
 
         if gain_rows:
             out_path2 = out_dir / f"overview_sectors_{metric_eff}_p2.png"
             c1, c2, c3, c4 = gainbins_footer_center_lines(payload, lang_bins)
             _render_one_page(
+                payload=payload,
                 sector_rows=gain_rows,
                 out_path=out_path2,
                 market=market,
@@ -639,7 +806,7 @@ def render_overview_png(
             print(f"{i:02d}. {rr.get('sector')} value={v}")
         print("=" * 96 + "\n")
 
-    pages: List[List[Dict[str, Any]]] = [sector_rows[i: i + page_size] for i in range(0, len(sector_rows), page_size)]
+    pages: List[List[Dict[str, Any]]] = [sector_rows[i : i + page_size] for i in range(0, len(sector_rows), page_size)]
     force_paging = should_force_paging(gain_rows)
 
     for idx, rows in enumerate(pages, start=1):
@@ -650,6 +817,7 @@ def render_overview_png(
 
         out_path = out_dir / fname
         _render_one_page(
+            payload=payload,  # ✅ NEW
             sector_rows=rows,
             out_path=out_path,
             market=market,
@@ -672,6 +840,7 @@ def render_overview_png(
         out_path2 = out_dir / f"overview_sectors_{metric_eff}_p{len(pages) + 1}.png"
         c1, c2, c3, c4 = gainbins_footer_center_lines(payload, lang_bins)
         _render_one_page(
+            payload=payload,  # ✅ NEW
             sector_rows=gain_rows,
             out_path=out_path2,
             market=market,
