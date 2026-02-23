@@ -27,7 +27,6 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.render_images_tw.pipeline import render_tw  # ✅ 絕對 import
 from scripts.render_images_tw.tw_rows import print_open_limit_watchlist, print_sector_top_rows
 
-
 DEFAULT_ROOT_FOLDER = (
     os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
     or "1wxOxKDRLZ15dwm-V2G25l_vjaHQ-f2aE"
