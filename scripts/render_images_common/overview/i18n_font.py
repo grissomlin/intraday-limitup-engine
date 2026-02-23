@@ -33,12 +33,7 @@ def has_hangul(text: str) -> bool:
 
 
 def has_kana(text: str) -> bool:
-    """
-    Hiragana + Katakana
-    - Hiragana: 3040-309F
-    - Katakana: 30A0-30FF
-    - Katakana Phonetic Extensions: 31F0-31FF
-    """
+    """Hiragana + Katakana (and extensions)."""
     if not text:
         return False
     for ch in text:
@@ -71,10 +66,7 @@ def has_thai(text: str) -> bool:
 
 
 def has_cjk(text: str) -> bool:
-    """
-    Backward-compat helper: Han + Hiragana/Katakana
-    (kept because some callers might still use it)
-    """
+    """Backward-compat helper: Han + Hiragana/Katakana."""
     if not text:
         return False
     for ch in text:
@@ -110,6 +102,7 @@ def normalize_market(m: str | None) -> str:
         "KOR": "KR",
         "KOREA": "KR",
         "KRX": "KR",
+        # CA/AU/UK
         "CAN": "CA",
         "CANADA": "CA",
         "TSX": "CA",
@@ -122,11 +115,12 @@ def normalize_market(m: str | None) -> str:
         "UNITED KINGDOM": "UK",
         "LSE": "UK",
         "LONDON": "UK",
+        # IN
         "IND": "IN",
         "INDIA": "IN",
         "NSE": "IN",
         "BSE": "IN",
-        # TH aliases
+        # TH
         "THA": "TH",
         "THAILAND": "TH",
         "SET": "TH",
@@ -177,14 +171,13 @@ def _debug_print_fonts(market: str, profile: str, font_list: List[str]) -> None:
 # =============================================================================
 def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """
-    Configure matplotlib fonts for CJK/KR/JP/TH rendering based on payload.market
-    and detected characters in sector_summary.
+    Configure matplotlib fonts for CJK/KR/JP/TH rendering.
 
-    Debug:
-      - set OVERVIEW_DEBUG_FONTS=1 to print selected font order and rcParams.
-
-    Optional profile:
-      - set OVERVIEW_FONT_PROFILE=TH to reuse TH font "feel" for non-TH markets.
+    IMPORTANT (why you saw tons of 'Glyph missing'):
+    - In CI, some code paths (especially bbox measurement) effectively uses the FIRST font
+      in rcParams['font.sans-serif'].
+    - Therefore we must put a Latin-capable font FIRST (Noto Sans / DejaVu Sans),
+      then Thai fonts, then CJK.
     """
     try:
         available = {f.name for f in fm.fontManager.ttflist}
@@ -206,56 +199,50 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
                         need_kr = True
                         break
 
-        # NOTE: On Ubuntu CI:
-        # - fonts-noto-cjk provides "Noto Sans CJK *"
-        # - fonts-noto-core/ui-core provides Thai families
+        # Prefer CJK family names that exist on Ubuntu CI (fonts-noto-cjk)
         primary_cn = ["Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", "SimHei", "WenQuanYi Zen Hei"]
         primary_tw = ["Noto Sans CJK TC", "Noto Sans TC", "Noto Sans HK", "Microsoft JhengHei", "PingFang TC"]
         primary_jp = ["Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "Meiryo"]
         primary_kr = ["Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic"]
 
-        # ✅ IMPORTANT:
-        # Put "Noto Sans Thai" FIRST because it usually includes Latin glyphs.
-        # Looped Thai is stylistic and sometimes misses Latin -> keep later.
+        # Thai families (Thai glyph coverage)
         primary_th = [
             "Noto Sans Thai",
             "Noto Sans Thai UI",
             "Noto Looped Thai",
             "Noto Looped Thai UI",
-            # Latin fallbacks (numbers/EN stable)
-            "Noto Sans",
-            "DejaVu Sans",
-            # Windows common (sometimes present)
             "Tahoma",
             "Leelawadee UI",
             "TH Sarabun New",
             "Angsana New",
         ]
 
+        # ✅ Put Latin FIRST to avoid missing glyph warnings for EN/nums/symbols
+        latin_first = ["Noto Sans", "DejaVu Sans", "Arial Unicode MS"]
+
         # General fallback
-        fallback = ["Arial Unicode MS", "DejaVu Sans", "Noto Sans"]
+        fallback = ["DejaVu Sans", "Noto Sans", "Arial Unicode MS"]
 
-        # Choose zh primary by market
         zh_primary = primary_cn if market == "CN" else primary_tw
-
         profile = _get_font_profile()
 
         # ---------------------------------------------------------------------
         # Font order strategy
         # ---------------------------------------------------------------------
         if profile == "TH" and market in {"US", "CA", "AU", "UK"}:
-            # Force TH-like feel into EN markets
-            order = primary_th + zh_primary + primary_kr + primary_jp + fallback
+            # TH "feel" for EN markets, but still keep Latin FIRST
+            order = latin_first + primary_th + zh_primary + primary_kr + primary_jp + fallback
         else:
             if market == "TH":
-                order = primary_th + zh_primary + primary_kr + primary_jp + fallback
+                # ✅ TH market: Latin FIRST -> Thai -> CJK
+                order = latin_first + primary_th + zh_primary + primary_kr + primary_jp + fallback
             elif need_kr:
-                order = primary_kr + zh_primary + primary_jp + fallback
+                order = latin_first + primary_kr + zh_primary + primary_jp + fallback
             else:
                 if market == "JP":
-                    order = primary_jp + zh_primary + primary_kr + fallback
+                    order = latin_first + primary_jp + zh_primary + primary_kr + fallback
                 else:
-                    order = zh_primary + primary_kr + primary_jp + fallback
+                    order = latin_first + zh_primary + primary_kr + primary_jp + fallback
 
         font_list: List[str] = []
         for n in order:
@@ -280,14 +267,10 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
 # Language resolution
 # =============================================================================
 def _get_payload_lang(payload: Dict[str, Any]) -> str:
-    """
-    Accept a few legacy tags to stay compatible with old payloads.
-    """
     try:
         v = (payload.get("lang") or (payload.get("meta") or {}).get("lang") or "")
         v = str(v).strip().lower()
         if v in {"en", "zh-tw", "zh-cn", "ja", "ko", "th", "zh_hant", "zh_hans"}:
-            # normalize underscores
             if v == "zh_hant":
                 return "zh-tw"
             if v == "zh_hans":
@@ -299,14 +282,6 @@ def _get_payload_lang(payload: Dict[str, Any]) -> str:
 
 
 def _infer_lang_from_sectors(payload: Dict[str, Any]) -> str:
-    """
-    Infer from sector text (best-effort):
-    - Thai => th
-    - Hangul => ko
-    - Kana => ja
-    - Han (no kana) => zh-tw
-    - else => en
-    """
     ss = payload.get("sector_summary", []) or []
     if isinstance(ss, list):
         for r in ss[:80]:
@@ -344,18 +319,10 @@ def _get_market_lang(market: str) -> str:
 
 
 def resolve_lang(payload: Dict[str, Any], market: str) -> str:
-    """
-    Public API expected by overview.render:
-      - prefer payload lang
-      - else market lang
-      - else infer from sector text
-    """
     v = _get_payload_lang(payload)
     if v:
         return v
-
     v = _get_market_lang(market)
     if v:
         return v
-
     return _infer_lang_from_sectors(payload)
