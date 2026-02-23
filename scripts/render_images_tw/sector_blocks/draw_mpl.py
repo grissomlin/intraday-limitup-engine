@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import matplotlib.pyplot as plt
 
@@ -20,7 +20,6 @@ from ._badge import (
     badge_is_generic_surge,
 )
 from ._textfit import TextFitter
-
 
 # =============================================================================
 # i18n (optional)
@@ -94,7 +93,7 @@ def _safe_int(x: Any, default: int = 0) -> int:
 
 
 # =============================================================================
-# Streak helpers (kept as fallback; tw_rows normally provides line2/badge_text)
+# Streak helpers (fallback)
 # =============================================================================
 _STREAK_TODAY_KEYS = (
     "streak_today",
@@ -153,15 +152,10 @@ def _format_streak_line2(row: Dict[str, Any], *, kind: str) -> str:
 
 
 def _peer_line2(r: Dict[str, Any]) -> str:
-    """
-    Peer 區第二行：優先使用 row['line2']（tw_rows 已算好）
-    若沒有才 fallback。
-    """
     s2 = _safe_str(r.get("line2") or "")
     if s2:
         return s2
 
-    # fallback from status_text/flags
     s = _safe_str(r.get("status_text") or "")
     if s:
         return s
@@ -219,7 +213,6 @@ def draw_block_table(
         line = "#cfd8e3"
         line2_color = "#444444"
 
-        # locked => red, fail => purple
         tag_theme = "#d32f2f"  # 漲停鎖死
         tag_fail = "#8e44ad"  # 漲停鎖死失敗
         tag_surge = "#2e7d32"
@@ -260,7 +253,7 @@ def draw_block_table(
         weight="bold",
     )
 
-    # ✅ subtitle now supports TWO lines (line2 uses the "blank line" space)
+    # ✅ subtitle supports TWO lines
     subtitle = (time_note or "").strip()
     if subtitle:
         lines = [s.strip() for s in subtitle.splitlines() if s.strip()]
@@ -272,12 +265,11 @@ def draw_block_table(
                 ha="center",
                 va="top",
                 fontsize=layout.subtitle_fs,
-                color="#cccccc",
+                color=sub,
                 weight="bold",
-                alpha=1.0,
+                alpha=0.90,
             )
         else:
-            # line1 at header_subtitle_y
             ax.text(
                 0.5,
                 layout.header_subtitle_y,
@@ -285,12 +277,10 @@ def draw_block_table(
                 ha="center",
                 va="top",
                 fontsize=layout.subtitle_fs,
-                color="#cccccc",
+                color=sub,
                 weight="bold",
-                alpha=1.0,
+                alpha=0.90,
             )
-            # line2 slightly lower (use the spare blank line area)
-            # 如果你覺得太近/太遠，只要調這個 delta 即可
             delta = 0.040
             ax.text(
                 0.5,
@@ -299,9 +289,9 @@ def draw_block_table(
                 ha="center",
                 va="top",
                 fontsize=layout.subtitle_fs,
-                color="#cccccc",
+                color=sub,
                 weight="bold",
-                alpha=1.0,
+                alpha=0.90,
             )
 
     if page_total > 1:
@@ -324,8 +314,8 @@ def draw_block_table(
         ha="left",
         va="bottom",
         fontsize=layout.footer_fs_2,
-        color="#aaaaaa",
-        alpha=1.0,
+        color=sub,
+        alpha=0.85,
     )
 
     # -------------------------
