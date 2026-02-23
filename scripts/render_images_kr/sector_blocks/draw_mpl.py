@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
@@ -16,27 +17,115 @@ EPS = 1e-12
 # =============================================================================
 # Font (KR + Han safe)
 # =============================================================================
+
+# On some CI images, Matplotlib's fontManager doesn't properly register TTC faces
+# (fc-list sees them, but fm.fontManager.ttflist misses KR/TC/SC). Force-add.
+_CJK_TTC_PATHS = [
+    # Sans CJK (most important)
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Light.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-DemiLight.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Thin.ttc",
+    # Serif CJK (optional fallback)
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
+]
+
+
+def _env_on(name: str) -> bool:
+    v = (os.getenv(name) or "").strip().lower()
+    return v in {"1", "true", "yes", "y", "on"}
+
+
+def _try_add_noto_cjk_ttc() -> None:
+    """
+    Force-register Noto CJK TTC faces with Matplotlib, so family names like
+    "Noto Sans CJK KR/TC/SC" become visible in fm.fontManager.ttflist.
+    Safe / idempotent.
+    """
+    try:
+        for p in _CJK_TTC_PATHS:
+            if os.path.exists(p):
+                try:
+                    fm.fontManager.addfont(p)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _available_font_names() -> set[str]:
+    _try_add_noto_cjk_ttc()
+    return {f.name for f in fm.fontManager.ttflist}
+
+
 def setup_korean_font() -> str | None:
     """
     목표: 한국어 + 한자권(간체/번체)까지 안전하게 표시.
     최선: Noto Sans CJK KR (Hangul + Han 포함)
+
+    CI(GitHub runner)에서:
+      - fc-list에는 KR/TC/SC가 있는데
+      - Matplotlib fontManager는 JP만 보이는 경우가 있음
+    => addfont()로 TTC를 강제 등록 후, rcParams에 fallback 리스트를 설정.
     """
-    font_candidates = [
+    _try_add_noto_cjk_ttc()
+    available = _available_font_names()
+
+    # KR first, then CJK fallbacks, then Latin fallbacks
+    order = [
+        # Korean
         "Noto Sans CJK KR",
-        "Noto Sans CJK TC",
+        "Noto Sans KR",
         "Malgun Gothic",
         "AppleGothic",
         "NanumGothic",
+        # Traditional / Simplified (in case payload has Han mixed)
+        "Noto Sans CJK TC",
+        "Noto Sans TC",
+        "Noto Sans CJK SC",
+        "Noto Sans SC",
+        "Noto Sans CJK HK",
+        "Noto Sans HK",
+        # Japanese (some runners only expose JP unless TTC is added)
+        "Noto Sans CJK JP",
+        "Noto Sans JP",
+        # Common Latin fallback
+        "Noto Sans",
+        "DejaVu Sans",
         "Arial Unicode MS",
-        "Microsoft JhengHei",
+        "Liberation Sans",
     ]
-    available = {f.name for f in fm.fontManager.ttflist}
-    for f in font_candidates:
-        if f in available:
-            plt.rcParams["font.sans-serif"] = [f]
-            plt.rcParams["axes.unicode_minus"] = False
-            return f
-    return None
+
+    font_list: List[str] = []
+    for f in order:
+        if f in available and f not in font_list:
+            font_list.append(f)
+
+    if not font_list:
+        return None
+
+    # IMPORTANT: set family + a fallback list (not a single font)
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = font_list
+    plt.rcParams["axes.unicode_minus"] = False
+
+    chosen = font_list[0]
+
+    if _env_on("OVERVIEW_DEBUG_FONTS"):
+        try:
+            print("[KR_FONT_DEBUG]")
+            print("  chosen_primary =", chosen)
+            print("  selected_font_list =", font_list[:20], ("... (len=%d)" % len(font_list) if len(font_list) > 20 else ""))
+            print("  rcParams.font.family =", plt.rcParams.get("font.family"))
+            print("  rcParams.font.sans-serif (head) =", (plt.rcParams.get("font.sans-serif") or [])[:15])
+        except Exception:
+            pass
+
+    return chosen
 
 
 # =============================================================================
