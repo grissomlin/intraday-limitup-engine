@@ -18,29 +18,39 @@ def setup_thai_font() -> str | None:
     """
     Goal:
     - Thai (TH) must render correctly (no tofu)
+    - Keep Latin/EN safe (avoid glyph-missing warnings)
     - Keep mixed footer (EN/CN/JP) "not too broken" via fallback stack
 
     Strategy:
-    - Put Thai fonts FIRST (including Ubuntu/GHA common ones)
-    - Then Latin (Noto Sans) for numbers/EN stability
-    - Then CJK fallbacks
+    - Prefer Thai fonts that include Latin glyphs FIRST (Noto Sans Thai/UI)
+    - Keep Looped Thai later (stylistic; may miss Latin on some builds)
+    - Then Latin fallback
+    - Then Windows fallbacks
+    - Then CJK fallbacks (in case mixed CN/JP appears)
     """
-    # ✅ Thai first (include GitHub Actions/Ubuntu common Looped Thai family)
-    font_candidates = [
-        # Common on ubuntu-latest if fonts-noto-* installed
-        "Noto Looped Thai",
-        "Noto Looped Thai UI",
-        # Common Thai families
+    available = {f.name for f in fm.fontManager.ttflist}
+
+    # ✅ Prefer fonts that include Latin glyphs
+    order = [
+        # Thai first (Sans Thai usually includes Latin)
         "Noto Sans Thai",
         "Noto Sans Thai UI",
-        # Latin for stability (numbers/EN)
+
+        # Looped Thai is stylistic; may miss Latin -> keep later
+        "Noto Looped Thai",
+        "Noto Looped Thai UI",
+
+        # Generic Latin fallbacks
         "Noto Sans",
-        # Windows common
+        "DejaVu Sans",
+
+        # Windows common fallbacks (sometimes present)
         "Tahoma",
         "Leelawadee UI",
         "TH Sarabun New",
         "Angsana New",
-        # CJK fallbacks (in case your UI still has Chinese/JP)
+
+        # CJK fallbacks (if you have mixed CN/JP in footer)
         "Noto Sans CJK TC",
         "Noto Sans CJK SC",
         "Noto Sans CJK JP",
@@ -48,24 +58,20 @@ def setup_thai_font() -> str | None:
         "Microsoft JhengHei",
         "Microsoft YaHei",
         "Arial Unicode MS",
-        "DejaVu Sans",
     ]
 
-    available = {f.name for f in fm.fontManager.ttflist}
-
-    # Build a real fallback stack, not just a single font
     font_list: List[str] = []
-    for f in font_candidates:
+    for f in order:
         if f in available and f not in font_list:
             font_list.append(f)
 
     if not font_list:
         return None
 
+    # ✅ IMPORTANT: set a list, not a single font, so fallback works
     plt.rcParams["font.family"] = "sans-serif"
     plt.rcParams["font.sans-serif"] = font_list
     plt.rcParams["axes.unicode_minus"] = False
-
     return font_list[0]
 
 
@@ -94,7 +100,6 @@ def _format_produced_time_note(payload: Dict[str, Any]) -> str:
 
     produced_at = _safe_str(t.get("market_finished_at"))
 
-    # ✅ time_builders provides offset fields, not "market_tz" = "UTC+07:00"
     off = _safe_str(t.get("market_tz_offset") or t.get("market_utc_offset"))
     tz_label = f"UTC{off}" if off else ""
 
@@ -123,7 +128,6 @@ def get_market_time_info(payload: Dict[str, Any]) -> Tuple[str, str]:
 # Colors
 # =============================================================================
 def get_ret_color(ret: float, theme: str = "light") -> str:
-    # Same palette you used
     if ret >= 1.00:
         return "#1565c0" if theme == "light" else "#1e88e5"
     elif ret >= 0.50:
@@ -164,7 +168,6 @@ def draw_block_table(
     touch_total: Optional[int] = None,
     locked_shown: Optional[int] = None,
     locked_total: Optional[int] = None,
-    # ✅ New: ceiling pct (so UI can say "สูงสุด +30%" without reading DB)
     ceiling_pct: float = 0.30,
 ):
     setup_thai_font()
@@ -178,18 +181,16 @@ def draw_block_table(
         line2_color = "#444444"
         down_color = "#c62828"
 
-        # ✅ Badge colors (different for Strong / Surge / Lock / Touch)
-        tag_strong = "#7b1fa2"  # purple
-        tag_surge = "#d81b60"   # pink/red
-        tag_lock = "#6a1b9a"    # deep purple
-        tag_touch = "#8e24aa"   # purple-magenta
+        tag_strong = "#7b1fa2"
+        tag_surge = "#d81b60"
+        tag_lock = "#6a1b9a"
+        tag_touch = "#8e24aa"
     else:
         bg, fg, sub = "#0f0f1e", "#ffffff", "#999999"
         box, line = "#1a1a2e", "#2d2d44"
         line2_color = "#cfcfcf"
         down_color = "#ef5350"
 
-        # ✅ Badge colors (different for Strong / Surge / Lock / Touch)
         tag_strong = "#9c27b0"
         tag_surge = "#ec407a"
         tag_lock = "#7b1fa2"
@@ -316,10 +317,6 @@ def draw_block_table(
         min_fs: int,
         weight: str = "bold",
     ) -> Tuple[str, int]:
-        """
-        Auto shrink fontsize to fit width; if still too long, ellipsis.
-        Returns (text_to_draw, fontsize)
-        """
         _ensure_renderer()
         text = _safe_str(text)
         if not text:
@@ -358,7 +355,6 @@ def draw_block_table(
         weight="bold",
     )
 
-    # page indicator
     if page_total > 1:
         ax.text(
             0.97,
@@ -412,7 +408,6 @@ def draw_block_table(
 
     # -------------------------
     # Top-box title = counts line
-    #   ✅ add: แตะเพดาน (สูงสุด +30%)
     # -------------------------
     sep = " | "
     touch_title = f"แตะเพดาน ({_ceil_label()})"
@@ -494,10 +489,6 @@ def draw_block_table(
         return False
 
     def _badge_kind(r: Dict[str, Any]) -> str:
-        """
-        Prefer cli-provided badge_kind for stable coloring.
-        Expected: 'locked' | 'touch' | 'surge' | 'strong' (or '')
-        """
         bk = _safe_str(r.get("badge_kind") or "")
         if bk:
             return bk
@@ -507,9 +498,6 @@ def draw_block_table(
         return "strong"
 
     def _badge_text_th(r: Dict[str, Any]) -> str:
-        """
-        Prefer status->Thai mapping. Else use badge_text already in Thai from cli.
-        """
         st = _safe_str(r.get("limitup_status") or "")
         if st == "touch":
             return "แตะเพดาน"
@@ -554,7 +542,6 @@ def draw_block_table(
             ax.text(x_name, y1, fit1, ha="left", va="center", fontsize=layout.row_name_fs, color=fg, weight="medium")
             ax.text(x_name, y2, fit2, ha="left", va="center", fontsize=layout.row_line2_fs, color=line2_color, alpha=0.95)
 
-            # Right badges (top line)
             if kind == "limitup":
                 badge_show = _badge_text_th(r)
                 badge_color = _badge_color_for(r)
@@ -577,7 +564,6 @@ def draw_block_table(
                         ),
                     )
 
-            # Second line pill (Bloomberg rule)
             if kind == "limitup" and _is_touch_row(r):
                 ax.text(
                     x_tag,
