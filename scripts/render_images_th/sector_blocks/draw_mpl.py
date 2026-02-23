@@ -10,69 +10,51 @@ import matplotlib.font_manager as fm
 
 from .layout import LayoutSpec, calc_rows_layout
 
+# ✅ Use centralized font strategy (same as overview)
+try:
+    from scripts.render_images_common.overview.i18n_font import setup_cjk_font, fontprops_for_text
+except Exception:  # pragma: no cover
+    setup_cjk_font = None  # type: ignore
+    fontprops_for_text = None  # type: ignore
+
 
 # =============================================================================
-# Font (Thai + CJK safe)
+# Legacy Font helper (kept but no longer used by draw_block_table)
 # =============================================================================
 def setup_thai_font() -> str | None:
     """
-    Goal:
-    - Thai (TH) must render correctly (no tofu)
-    - Keep Latin/EN safe (avoid glyph-missing warnings)
-    - Keep mixed footer (EN/CN/JP) "not too broken" via fallback stack
+    Legacy:
+    Previously set rcParams["font.sans-serif"] to a SINGLE font.
+    This easily breaks mixed EN/TH strings on CI.
 
-    Strategy:
-    - Prefer Thai fonts that include Latin glyphs FIRST (Noto Sans Thai/UI)
-    - Keep Looped Thai later (stylistic; may miss Latin on some builds)
-    - Then Latin fallback
-    - Then Windows fallbacks
-    - Then CJK fallbacks (in case mixed CN/JP appears)
+    Kept for compatibility, but draw_block_table() now uses setup_cjk_font()
+    + fontprops_for_text() instead.
     """
-    available = {f.name for f in fm.fontManager.ttflist}
-
-    # ✅ Prefer fonts that include Latin glyphs
-    order = [
-        # Thai first (Sans Thai usually includes Latin)
+    font_candidates = [
+        "Noto Sans",  # ✅ Latin first
+        "DejaVu Sans",
+        # Thai
         "Noto Sans Thai",
         "Noto Sans Thai UI",
-
-        # Looped Thai is stylistic; may miss Latin -> keep later
         "Noto Looped Thai",
         "Noto Looped Thai UI",
-
-        # Generic Latin fallbacks
-        "Noto Sans",
-        "DejaVu Sans",
-
-        # Windows common fallbacks (sometimes present)
+        # Windows common
         "Tahoma",
         "Leelawadee UI",
         "TH Sarabun New",
-        "Angsana New",
-
-        # CJK fallbacks (if you have mixed CN/JP in footer)
+        # CJK fallbacks
         "Noto Sans CJK TC",
-        "Noto Sans CJK SC",
-        "Noto Sans CJK JP",
-        "Noto Sans CJK KR",
         "Microsoft JhengHei",
-        "Microsoft YaHei",
         "Arial Unicode MS",
     ]
-
-    font_list: List[str] = []
-    for f in order:
-        if f in available and f not in font_list:
-            font_list.append(f)
-
-    if not font_list:
-        return None
-
-    # ✅ IMPORTANT: set a list, not a single font, so fallback works
-    plt.rcParams["font.family"] = "sans-serif"
-    plt.rcParams["font.sans-serif"] = font_list
-    plt.rcParams["axes.unicode_minus"] = False
-    return font_list[0]
+    available = {f.name for f in fm.fontManager.ttflist}
+    for f in font_candidates:
+        if f in available:
+            plt.rcParams["font.family"] = "sans-serif"
+            plt.rcParams["font.sans-serif"] = [f]
+            plt.rcParams["axes.unicode_minus"] = False
+            return f
+    return None
 
 
 # =============================================================================
@@ -169,8 +151,18 @@ def draw_block_table(
     locked_shown: Optional[int] = None,
     locked_total: Optional[int] = None,
     ceiling_pct: float = 0.30,
+    # ✅ NEW (optional): provide payload so font resolver can look at content if desired
+    payload: Optional[Dict[str, Any]] = None,
 ):
-    setup_thai_font()
+    # ✅ Use overview's font pipeline (Latin-first + Thai fallback)
+    if setup_cjk_font is not None:
+        try:
+            setup_cjk_font(payload or {"market": "TH"})
+        except Exception:
+            pass
+    else:
+        # fallback to legacy (still Latin-first in candidates)
+        setup_thai_font()
 
     # -------------------------
     # Theme
@@ -180,7 +172,6 @@ def draw_block_table(
         box, line = "#f7f7f7", "#cfd8e3"
         line2_color = "#444444"
         down_color = "#c62828"
-
         tag_strong = "#7b1fa2"
         tag_surge = "#d81b60"
         tag_lock = "#6a1b9a"
@@ -190,7 +181,6 @@ def draw_block_table(
         box, line = "#1a1a2e", "#2d2d44"
         line2_color = "#cfcfcf"
         down_color = "#ef5350"
-
         tag_strong = "#9c27b0"
         tag_surge = "#ec407a"
         tag_lock = "#7b1fa2"
@@ -211,6 +201,20 @@ def draw_block_table(
             fig.canvas.draw()
             renderer = fig.canvas.get_renderer()
 
+    def _fp(s: str, weight: str = "regular"):
+        # central fontprops chooser (Thai-safe, bbox-safe)
+        if fontprops_for_text is None:
+            return None
+        try:
+            return fontprops_for_text(
+                s or "",
+                market="TH",
+                payload=payload or {"market": "TH"},
+                weight=weight,
+            )
+        except Exception:
+            return None
+
     def _text_width_px(
         s: str,
         x: float,
@@ -222,7 +226,18 @@ def draw_block_table(
         weight: str = "bold",
     ) -> float:
         _ensure_renderer()
-        t = ax.text(x, y, s, ha=ha, va=va, fontsize=fontsize, color=sub, weight=weight, alpha=0.0)
+        fp = _fp(s, weight=weight)
+        t = ax.text(
+            x,
+            y,
+            s,
+            ha=ha,
+            va=va,
+            fontsize=fontsize,
+            color=sub,
+            alpha=0.0,
+            fontproperties=fp,
+        )
         bb = t.get_window_extent(renderer=renderer)
         t.remove()
         return float(bb.width)
@@ -278,10 +293,23 @@ def draw_block_table(
         if not text:
             return ""
 
-        t = ax.text(x_left, y, text, ha="left", va="center", fontsize=fontsize, color=fg, weight=weight, alpha=0.0)
         avail = _avail_px(x_left, x_right, y)
 
+        fp = _fp(text, weight=weight)
+        t = ax.text(
+            x_left,
+            y,
+            text,
+            ha="left",
+            va="center",
+            fontsize=fontsize,
+            color=fg,
+            alpha=0.0,
+            fontproperties=fp,
+        )
+
         def ok(s: str) -> bool:
+            # keep same fp for bbox measurement
             t.set_text(s)
             bb = t.get_window_extent(renderer=renderer)
             return bb.width <= avail
@@ -352,19 +380,21 @@ def draw_block_table(
         va="top",
         fontsize=layout.title_fs,
         color=fg,
-        weight="bold",
+        fontproperties=_fp(sector_show, weight="bold"),
     )
 
+    # page indicator
     if page_total > 1:
+        pg = f"{page_idx}/{page_total}"
         ax.text(
             0.97,
             layout.header_title_y,
-            f"{page_idx}/{page_total}",
+            pg,
             ha="right",
             va="top",
             fontsize=layout.page_fs,
             color=sub,
-            weight="bold",
+            fontproperties=_fp(pg, weight="bold"),
         )
 
     # -------------------------
@@ -380,21 +410,23 @@ def draw_block_table(
             fontsize=layout.subtitle_fs,
             color=sub,
             alpha=0.9,
-            weight="bold",
+            fontproperties=_fp(time_note, weight="bold"),
         )
 
     # -------------------------
     # Footer
     # -------------------------
+    footer_text = "แหล่งข้อมูล: ข้อมูลตลาดสาธารณะ | เพื่อข้อมูลเท่านั้น ไม่ใช่คำแนะนำการลงทุน"
     ax.text(
         0.05,
         layout.footer_y2,
-        "แหล่งข้อมูล: ข้อมูลตลาดสาธารณะ | เพื่อข้อมูลเท่านั้น ไม่ใช่คำแนะนำการลงทุน",
+        footer_text,
         ha="left",
         va="bottom",
         fontsize=layout.footer_fs_2,
         color=sub,
         alpha=0.85,
+        fontproperties=_fp(footer_text, weight="regular"),
     )
 
     # -------------------------
@@ -449,14 +481,44 @@ def draw_block_table(
     bot_title_y = bot_y0 - 0.02
 
     top_title_fit, top_title_fs = _auto_fit_left(
-        top_title, 0.08, 0.92, top_title_y, layout.box_title_fs, min_fs=max(18, layout.box_title_fs - 12), weight="bold"
+        top_title,
+        0.08,
+        0.92,
+        top_title_y,
+        layout.box_title_fs,
+        min_fs=max(18, layout.box_title_fs - 12),
+        weight="bold",
     )
     bot_title_fit, bot_title_fs = _auto_fit_left(
-        bot_title, 0.08, 0.92, bot_title_y, layout.box_title_fs, min_fs=max(18, layout.box_title_fs - 10), weight="bold"
+        bot_title,
+        0.08,
+        0.92,
+        bot_title_y,
+        layout.box_title_fs,
+        min_fs=max(18, layout.box_title_fs - 10),
+        weight="bold",
     )
 
-    ax.text(0.08, top_title_y, top_title_fit, fontsize=top_title_fs, color=fg, weight="bold", ha="left", va="center")
-    ax.text(0.08, bot_title_y, bot_title_fit, fontsize=bot_title_fs, color=fg, weight="bold", ha="left", va="center")
+    ax.text(
+        0.08,
+        top_title_y,
+        top_title_fit,
+        fontsize=top_title_fs,
+        color=fg,
+        ha="left",
+        va="center",
+        fontproperties=_fp(top_title_fit, weight="bold"),
+    )
+    ax.text(
+        0.08,
+        bot_title_y,
+        bot_title_fit,
+        fontsize=bot_title_fs,
+        color=fg,
+        ha="left",
+        va="center",
+        fontproperties=_fp(bot_title_fit, weight="bold"),
+    )
 
     # -------------------------
     # Rows layout
@@ -476,7 +538,17 @@ def draw_block_table(
 
     def draw_empty_hint(y0: float, y1: float, text: str):
         cy = (y0 + y1) / 2
-        ax.text(0.5, cy, text, ha="center", va="center", fontsize=layout.empty_hint_fs, color=sub, alpha=0.55)
+        ax.text(
+            0.5,
+            cy,
+            text,
+            ha="center",
+            va="center",
+            fontsize=layout.empty_hint_fs,
+            color=sub,
+            alpha=0.55,
+            fontproperties=_fp(text, weight="regular"),
+        )
 
     def _is_touch_row(r: Dict[str, Any]) -> bool:
         st = _safe_str(r.get("limitup_status") or "")
@@ -537,11 +609,31 @@ def draw_block_table(
             y2 = y - row_h * LINE_SPREAD
 
             fit1 = _ellipsis_fit_left(line1, x_name, safe_right, y1, layout.row_name_fs, weight="medium")
-            fit2 = _ellipsis_fit_left(line2, x_name, safe_right, y2, layout.row_line2_fs, weight="normal")
+            fit2 = _ellipsis_fit_left(line2, x_name, safe_right, y2, layout.row_line2_fs, weight="regular")
 
-            ax.text(x_name, y1, fit1, ha="left", va="center", fontsize=layout.row_name_fs, color=fg, weight="medium")
-            ax.text(x_name, y2, fit2, ha="left", va="center", fontsize=layout.row_line2_fs, color=line2_color, alpha=0.95)
+            ax.text(
+                x_name,
+                y1,
+                fit1,
+                ha="left",
+                va="center",
+                fontsize=layout.row_name_fs,
+                color=fg,
+                fontproperties=_fp(fit1, weight="medium"),
+            )
+            ax.text(
+                x_name,
+                y2,
+                fit2,
+                ha="left",
+                va="center",
+                fontsize=layout.row_line2_fs,
+                color=line2_color,
+                alpha=0.95,
+                fontproperties=_fp(fit2, weight="regular"),
+            )
 
+            # Right badges (top line)
             if kind == "limitup":
                 badge_show = _badge_text_th(r)
                 badge_color = _badge_color_for(r)
@@ -555,7 +647,7 @@ def draw_block_table(
                         va="center",
                         fontsize=layout.row_tag_fs,
                         color="white",
-                        weight="bold",
+                        fontproperties=_fp(badge_show, weight="bold"),
                         bbox=dict(
                             boxstyle="round,pad=0.35",
                             facecolor=badge_color,
@@ -564,16 +656,18 @@ def draw_block_table(
                         ),
                     )
 
+            # Second line pill (Bloomberg rule)
             if kind == "limitup" and _is_touch_row(r):
+                ceil_txt = _ceil_label()
                 ax.text(
                     x_tag,
                     y2,
-                    _ceil_label(),
+                    ceil_txt,
                     ha="right",
                     va="center",
                     fontsize=layout.row_tag_fs,
                     color="white",
-                    weight="bold",
+                    fontproperties=_fp(ceil_txt, weight="bold"),
                     bbox=dict(
                         boxstyle="round,pad=0.30",
                         facecolor=tag_touch,
@@ -587,15 +681,16 @@ def draw_block_table(
                     ret_pct = ret_show * 100.0
                     color = get_ret_color(ret_show, theme) if ret_show > 0 else down_color
                     sign = "+" if ret_show > 0 else ""
+                    txt = f"{sign}{ret_pct:.1f}%"
                     ax.text(
                         x_tag,
                         y2,
-                        f"{sign}{ret_pct:.1f}%",
+                        txt,
                         ha="right",
                         va="center",
                         fontsize=layout.row_tag_fs,
                         color="white",
-                        weight="bold",
+                        fontproperties=_fp(txt, weight="bold"),
                         bbox=dict(
                             boxstyle="round,pad=0.30",
                             facecolor=color,
@@ -609,16 +704,17 @@ def draw_block_table(
 
         if kind == "peer" and has_more_peers:
             hint_y = (y_start - (min(len(rows), max_rows) - 1) * row_h) - row_h * 0.75
+            hint_txt = "(ยังมีรายการเพิ่มเติมที่ไม่แสดง)"
             ax.text(
                 0.5,
                 hint_y,
-                "(ยังมีรายการเพิ่มเติมที่ไม่แสดง)",
+                hint_txt,
                 ha="center",
                 va="top",
                 fontsize=max(layout.footer_fs_2 + 6, 26),
                 color=sub,
                 alpha=0.85,
-                weight="bold",
+                fontproperties=_fp(hint_txt, weight="bold"),
             )
 
     draw_rows(limitup_rows, y_top, h_top, "limitup", max_rows=MAX_TOP)
