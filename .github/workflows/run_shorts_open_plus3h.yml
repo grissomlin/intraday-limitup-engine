@@ -56,7 +56,6 @@ jobs:
 
           # -----------------------------
           # Inputs (works for schedule + workflow_dispatch)
-          # GitHub sets INPUT_* env vars for workflow_dispatch.
           # -----------------------------
           event_name = os.getenv("GITHUB_EVENT_NAME", "")
           in_slot = (os.getenv("INPUT_SLOT", "") or "").strip().lower()
@@ -69,6 +68,10 @@ jobs:
 
           # Canonical list (keep aligned with repo)
           ALL = ["cn","tw","jp","kr","th","us","ca","uk","au"]
+
+          # ✅ optional test-only switch (set env RUN_SHORTS_TEST_ONLY=1 to limit markets)
+          if (os.getenv("RUN_SHORTS_TEST_ONLY","").strip() in ("1","true","yes","y","on")):
+            ALL = ["us","ca","au"]
 
           # --- Market timezone mapping (IANA) ---
           MARKET_TZ = {
@@ -96,13 +99,13 @@ jobs:
             "ca": time(9, 30),
           }
 
-          # cron is every 10 min, allow some jitter
-          TOLERANCE_MIN = 9
+          # cron is every 10 min; runner start can be delayed
+          # ✅ test-friendly: 25 min window AFTER target time
+          TOLERANCE_MIN = 25
 
           now_utc = datetime.now(timezone.utc)
 
           def mk_matrix(markets):
-            # include market_date per entry to make concurrency safe (no map lookup in expressions)
             include = []
             for m in markets:
               tz = ZoneInfo(MARKET_TZ[m])
@@ -113,12 +116,8 @@ jobs:
           chosen = []
 
           if event_name == "workflow_dispatch":
-            # manual modes:
-            # - markets=auto : use the time-based picker
-            # - markets=all  : run all markets
-            # - markets=au,us: run selected list
             if markets_mode in ("", "auto"):
-              pass  # fall through to auto picker
+              pass
             elif markets_mode in ("all", "*"):
               chosen = ALL[:]
             else:
@@ -126,7 +125,6 @@ jobs:
               invalid = [p for p in parts if p not in ALL]
               if invalid:
                 raise SystemExit(f"Invalid market(s): {invalid}. Allowed: {ALL} or all/auto")
-              # de-dup preserve order
               seen = set()
               for p in parts:
                 if p not in seen:
@@ -147,8 +145,9 @@ jobs:
               open_dt = datetime.combine(local_now.date(), open_t, tzinfo=tz)
               target_dt = open_dt + timedelta(hours=3)
 
-              delta_min = abs((local_now - target_dt).total_seconds()) / 60.0
-              if delta_min <= TOLERANCE_MIN:
+              # ✅ only accept ticks AFTER target (prevents early duplicates)
+              delta_min = (local_now - target_dt).total_seconds() / 60.0
+              if 0 <= delta_min <= TOLERANCE_MIN:
                 chosen.append(m)
 
           matrix = mk_matrix(chosen)
@@ -160,10 +159,10 @@ jobs:
             "markets_mode": markets_mode,
             "chosen": chosen,
             "matrix": matrix,
+            "now_utc": now_utc.isoformat(timespec="seconds"),
           }
 
           print("PLAN_OUT=" + json.dumps(out, ensure_ascii=False))
-          # Emit minimal outputs as JSON (must be single-line)
           print("MATRIX_JSON=" + json.dumps(matrix))
           print("SHOULD_RUN=" + ("true" if len(chosen) > 0 else "false"))
           print("SLOT=" + slot)
@@ -191,12 +190,14 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix_json) }}
 
-    # ✅ de-dup: same market, same market-local date, keep only one run
     concurrency:
       group: run_shorts_open3h_${{ matrix.market }}_${{ matrix.market_date }}
       cancel-in-progress: true
 
     env:
+      # ✅ test-only: limit to US/CA/AU (set to "0" later)
+      RUN_SHORTS_TEST_ONLY: "1"
+
       # Google Drive
       GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
       GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
@@ -257,6 +258,7 @@ jobs:
             --market ${{ matrix.market }} \
             --slot "${{ needs.plan.outputs.slot }}" \
             --full \
+            --privacy private \
             --drive \
             --drive-parent-id "${GDRIVE_ROOT_FOLDER_ID}" \
             --drive-order after_youtube \
