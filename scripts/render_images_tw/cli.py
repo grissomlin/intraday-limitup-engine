@@ -26,6 +26,12 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.render_images_tw.pipeline import render_tw  # ✅ 絕對 import
 from scripts.render_images_tw.tw_rows import print_open_limit_watchlist, print_sector_top_rows
 
+# ✅ NEW: shared sector order + ordered list writer
+from scripts.render_images_common.sector_order import (  # noqa: E402
+    extract_overview_sector_order,
+    write_list_txt_from_overview_order,
+)
+
 
 # =============================================================================
 # IO helpers
@@ -50,7 +56,7 @@ def _payload_slot(payload: Dict[str, Any]) -> str:
 
 
 # =============================================================================
-# list.txt generator (unified with JP/KR)
+# list.txt generator (fallback; keep your original behavior)
 # =============================================================================
 def write_list_txt(
     outdir: Path,
@@ -177,16 +183,36 @@ def main() -> int:
     )
 
     # -------------------------------------------------------------------------
-    # Write list.txt for video concat (unified with JP/KR)
+    # Write list.txt for video concat
+    # - If overview exported sector order -> order sector pages accordingly
+    # - Else fallback to old sorting
     # -------------------------------------------------------------------------
     try:
-        list_path = write_list_txt(
-            outdir,
-            ext="png",
-            overview_prefix="overview_sectors_",
-            filename="list.txt",
-        )
-        print(f"[TW] wrote {list_path}")
+        keys = extract_overview_sector_order(payload)
+        print("[TW][DEBUG] raw _overview_sector_order exists?:", isinstance(payload.get("_overview_sector_order"), list))
+        print("[TW][DEBUG] raw overview order head:", (payload.get("_overview_sector_order", []) or [])[:20])
+        if keys:
+            met_eff = str(payload.get("_overview_metric_eff") or "").strip()
+            print(f"[TW] overview sector order loaded: n={len(keys)}" + (f" metric={met_eff}" if met_eff else ""))
+            print("[TW] normalized overview order head:", keys[:20])
+
+            # ✅ NEW: list.txt ordered by overview sector order
+            list_path = write_list_txt_from_overview_order(
+                outdir=outdir,
+                overview_prefix="overview_sectors_",
+                sector_page_glob="tw_*_p*.png",  # TW sector pages filename pattern (adjust if yours differs)
+                overview_sector_keys=keys,
+                list_filename="list.txt",
+            )
+            print(f"[TW] wrote {list_path} (ordered by overview sector order)")
+        else:
+            list_path = write_list_txt(
+                outdir,
+                ext="png",
+                overview_prefix="overview_sectors_",
+                filename="list.txt",
+            )
+            print(f"[TW] wrote {list_path} (fallback)")
     except Exception as e:
         print(f"[TW] list.txt generation failed (continue): {e}")
 
