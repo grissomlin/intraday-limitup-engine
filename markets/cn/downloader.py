@@ -42,6 +42,45 @@ from .cn_prices import (
 )
 
 # -----------------------------------------------------------------------------
+# SQLite robust helpers (CI-safe)
+# -----------------------------------------------------------------------------
+def _connect(db_path: str, *, timeout: float = 120) -> sqlite3.Connection:
+    """
+    Safer SQLite connect for CI:
+    - timeout: let sqlite wait for locks
+    - busy_timeout PRAGMA: effective waiting
+    - WAL: better concurrency behavior (esp. when subprocess touches same DB)
+    """
+    conn = sqlite3.connect(db_path, timeout=float(timeout))
+    try:
+        conn.execute("PRAGMA busy_timeout=30000")  # 30s
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+    except Exception:
+        pass
+    return conn
+
+
+def _with_retry_db_locked(fn, *, tries: int = 8, base_sleep: float = 0.40):
+    """
+    Retry wrapper for 'database is locked' / 'database table is locked'.
+    Exponential-ish backoff + jitter.
+    """
+    for i in range(int(tries)):
+        try:
+            return fn()
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if ("database is locked" not in msg) and ("database table is locked" not in msg):
+                raise
+            sleep = float(base_sleep) * (1.8 ** i) + random.random() * 0.15
+            log(f"⚠️ [CN][db] locked -> retry {i+1}/{tries} sleep={sleep:.2f}s")
+            time.sleep(sleep)
+    return fn()
+
+
+# -----------------------------------------------------------------------------
 # sector clean (保留你原本功能)
 # -----------------------------------------------------------------------------
 BAD_SECTOR_SQL = """
@@ -54,13 +93,34 @@ WHERE sector IS NULL
 
 
 def fix_sector_missing(db_path: str) -> int:
-    conn = sqlite3.connect(db_path)
-    try:
+    """
+    Backward compatible helper (opens its own connection).
+    Prefer calling fix_sector_missing_conn(conn) when you already have an open conn.
+    """
+    def _run_once() -> int:
+        conn = _connect(db_path, timeout=120)
+        try:
+            cur = conn.execute(BAD_SECTOR_SQL)
+            conn.commit()
+            return int(cur.rowcount or 0)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return int(_with_retry_db_locked(_run_once))
+
+
+def fix_sector_missing_conn(conn: sqlite3.Connection) -> int:
+    """
+    No-new-connection version to avoid self-lock (critical).
+    """
+    def _run_once() -> int:
         cur = conn.execute(BAD_SECTOR_SQL)
-        conn.commit()
         return int(cur.rowcount or 0)
-    finally:
-        conn.close()
+
+    return int(_with_retry_db_locked(_run_once))
 
 
 def _chunk_list(xs: List[str], n: int) -> List[List[str]]:
@@ -141,7 +201,9 @@ def run_sync(
             start_date = (datetime.now() - timedelta(days=fallback_rolling_cal_days())).strftime("%Y-%m-%d")
         end_excl_date = (pd.to_datetime(end_date) + timedelta(days=1)).strftime("%Y-%m-%d")
         mode = "cal_days"
-        log(f"⚠️ Trading-day window unavailable; fallback to cal-days | {start_date} ~ {end_date} (end_excl={end_excl_date})")
+        log(
+            f"⚠️ Trading-day window unavailable; fallback to cal-days | {start_date} ~ {end_date} (end_excl={end_excl_date})"
+        )
 
     log(f"📦 CN DB = {db_path}")
     log(f"🚀 CN run_sync | window: {start_date} ~ {end_date} | refresh_list={refresh_list}")
@@ -180,9 +242,9 @@ def run_sync(
         log(f"🧪 SAMPLE MODE: {mode_s} | symbols={len(items)}")
 
     # 3) rolling delete (avoid DB growing)
-    conn = sqlite3.connect(db_path, timeout=120)
+    conn = _connect(db_path, timeout=120)
     try:
-        conn.execute("DELETE FROM stock_prices WHERE date >= ?", (start_date,))
+        _with_retry_db_locked(lambda: conn.execute("DELETE FROM stock_prices WHERE date >= ?", (start_date,)))
         conn.commit()
     finally:
         conn.close()
@@ -202,7 +264,10 @@ def run_sync(
 
     final_failed: Dict[str, str] = {}
 
-    conn = sqlite3.connect(db_path, timeout=120)
+    # IMPORTANT:
+    # - We DO NOT run external subprocess touching the DB while this connection is open.
+    # - Otherwise you can hit "database is locked" on CI.
+    conn = _connect(db_path, timeout=120)
     try:
         batches = _chunk_list(all_syms, bs)
         pbar = tqdm(batches, desc="CN同步(batch)", unit="批")
@@ -259,48 +324,61 @@ def run_sync(
 
         # 先把 sector 空/壞值整理成「未分類」
         if fix_sector_flag():
-            affected = fix_sector_missing(db_path)
+            # ✅ use SAME conn to avoid self-lock
+            affected = fix_sector_missing_conn(conn)
+            conn.commit()
             log(f"🏷️ sector 缺失/壞值 → 未分類：{affected} 筆")
 
-        # ✅ SW industry：FAST PATH 優先用 cache；失敗才 fallback 慢版（依 flag）
-        did_fast = _sync_sw_from_cache(db_path)
+        # --- IMPORTANT: close DB before running subprocesses that touch the SAME DB ---
+        conn.commit()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
-        if (not did_fast) and sync_sw_industry_flag():
-            # fallback slow sync
-            try:
-                script_path = os.path.join(os.path.dirname(__file__), "sw_industry_sync.py")
-                timeout_s = sw_sync_timeout()
-                only_missing = sw_only_missing()
-                max_ind = sw_max_industries()
-                level = sw_sector_level()
+    # ✅ SW industry：FAST PATH 優先用 cache；失敗才 fallback 慢版（依 flag）
+    did_fast = _sync_sw_from_cache(db_path)
 
-                cmd = ["python", script_path, "--db", db_path, "--sector-level", level]
-                if only_missing:
-                    cmd.append("--only-missing")
-                if max_ind:
-                    cmd += ["--max-industries", max_ind]
+    if (not did_fast) and sync_sw_industry_flag():
+        # fallback slow sync
+        try:
+            script_path = os.path.join(os.path.dirname(__file__), "sw_industry_sync.py")
+            timeout_s = sw_sync_timeout()
+            only_missing = sw_only_missing()
+            max_ind = sw_max_industries()
+            level = sw_sector_level()
 
-                log(f"🏷️ SW industry sync (SLOW) ... ({'only-missing' if only_missing else 'full'}) | sector_level={level}")
-                subprocess.run(cmd, check=True, timeout=timeout_s)
-                log("✅ SW industry sync done.")
-            except subprocess.TimeoutExpired:
-                log("⚠️ SW industry sync timeout (continue).")
-            except Exception as e:
-                log(f"⚠️ SW industry sync failed (continue): {e}")
+            cmd = ["python", script_path, "--db", db_path, "--sector-level", level]
+            if only_missing:
+                cmd.append("--only-missing")
+            if max_ind:
+                cmd += ["--max-industries", max_ind]
+
+            log(f"🏷️ SW industry sync (SLOW) ... ({'only-missing' if only_missing else 'full'}) | sector_level={level}")
+            subprocess.run(cmd, check=True, timeout=timeout_s)
+            log("✅ SW industry sync done.")
+        except subprocess.TimeoutExpired:
+            log("⚠️ SW industry sync timeout (continue).")
+        except Exception as e:
+            log(f"⚠️ SW industry sync failed (continue): {e}")
+    else:
+        if did_fast:
+            log("🚀 SW industry: used FAST cache sync; skip slow sync.")
         else:
-            if did_fast:
-                log("🚀 SW industry: used FAST cache sync; skip slow sync.")
-            else:
-                log("🏷️ SW industry: slow sync disabled by flag; skip.")
+            log("🏷️ SW industry: slow sync disabled by flag; skip.")
 
+    # post steps (VACUUM / total) on a fresh connection
+    conn2 = _connect(db_path, timeout=120)
+    try:
         if db_vacuum():
             log("🧹 VACUUM...")
-            conn.execute("VACUUM")
-            conn.commit()
+            _with_retry_db_locked(lambda: conn2.execute("VACUUM"))
+            conn2.commit()
 
-        total = conn.execute("SELECT COUNT(DISTINCT symbol) FROM stock_info").fetchone()[0]
+        total = conn2.execute("SELECT COUNT(DISTINCT symbol) FROM stock_info").fetchone()[0]
     finally:
-        conn.close()
+        conn2.close()
 
     if final_failed:
         failed = len(final_failed)
@@ -330,4 +408,5 @@ def run_sync(
 def run_intraday(*, slot: str, asof: str, ymd: str) -> Dict[str, Any]:
     # ✅ 修正 ImportError：snapshot_builder 對外是 run_intraday，不是 build_snapshot_payload
     from .snapshot_builder import run_intraday as _run_intraday
+
     return _run_intraday(slot=slot, asof=asof, ymd=ymd)
