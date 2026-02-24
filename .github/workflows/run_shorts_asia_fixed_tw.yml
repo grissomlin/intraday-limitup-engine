@@ -1,0 +1,226 @@
+name: Run Shorts (Asia fixed TW time, private)
+
+on:
+  schedule:
+    # GitHub Actions cron uses UTC.
+    # JP/KR @ 10:00 TW => 02:00 UTC
+    - cron: "0 2 * * 1-5"
+    # CN @ 11:00 TW => 03:00 UTC
+    - cron: "0 3 * * 1-5"
+    # TH @ 13:00 TW => 05:00 UTC
+    - cron: "0 5 * * 1-5"
+
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "slot (open/midday/close)"
+        required: true
+        default: "midday"
+        type: choice
+        options: [open, midday, close]
+      images_ymd:
+        description: "images ymd (latest | YYYY-MM-DD)"
+        required: true
+        default: "latest"
+        type: string
+      markets:
+        description: "markets: jp,kr,cn,th or all"
+        required: false
+        default: "all"
+        type: string
+
+concurrency:
+  group: run_shorts_asia_fixed_${{ github.ref }}_${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix_json: ${{ steps.plan.outputs.matrix_json }}
+      slot: ${{ steps.plan.outputs.slot }}
+      images_ymd: ${{ steps.plan.outputs.images_ymd }}
+    steps:
+      - id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+
+          event = os.getenv("GITHUB_EVENT_NAME","")
+          in_slot = (os.getenv("INPUT_SLOT","") or "").strip().lower()
+          in_images_ymd = (os.getenv("INPUT_IMAGES_YMD","") or "").strip()
+          in_markets = (os.getenv("INPUT_MARKETS","") or "").strip().lower().replace(" ","")
+
+          slot = in_slot if (event=="workflow_dispatch" and in_slot) else "midday"
+          images_ymd = in_images_ymd if (event=="workflow_dispatch" and in_images_ymd) else "latest"
+
+          ALL = ["jp","kr","cn","th"]
+
+          now_utc = datetime.now(timezone.utc)
+          # Which cron fired (UTC hour)
+          h = now_utc.hour
+          m = now_utc.minute
+
+          # Mapping: UTC time -> markets
+          # 02:00 UTC => jp,kr
+          # 03:00 UTC => cn
+          # 05:00 UTC => th
+          chosen = []
+          if event == "workflow_dispatch":
+            if (not in_markets) or in_markets in ("all","*"):
+              chosen = ALL[:]
+            else:
+              parts = [p for p in in_markets.split(",") if p]
+              chosen = [p for p in parts if p in ALL]
+              bad = [p for p in parts if p not in ALL]
+              if bad:
+                raise SystemExit(f"Invalid market(s): {bad}. Allowed: {ALL} or all")
+          else:
+            if (h,m) == (2,0):
+              chosen = ["jp","kr"]
+            elif (h,m) == (3,0):
+              chosen = ["cn"]
+            elif (h,m) == (5,0):
+              chosen = ["th"]
+            else:
+              chosen = []
+
+          matrix = {"include":[{"market":x} for x in chosen]}
+          print("MATRIX_JSON=" + json.dumps(matrix))
+          print("SLOT=" + slot)
+          print("IMAGES_YMD=" + images_ymd)
+          PY | tee plan.log
+
+          MATRIX_JSON="$(grep '^MATRIX_JSON=' plan.log | head -n1 | sed 's/^MATRIX_JSON=//')"
+          SLOT="$(grep '^SLOT=' plan.log | head -n1 | sed 's/^SLOT=//')"
+          IMAGES_YMD="$(grep '^IMAGES_YMD=' plan.log | head -n1 | sed 's/^IMAGES_YMD=//')"
+
+          echo "matrix_json=${MATRIX_JSON}" >> "$GITHUB_OUTPUT"
+          echo "slot=${SLOT}" >> "$GITHUB_OUTPUT"
+          echo "images_ymd=${IMAGES_YMD}" >> "$GITHUB_OUTPUT"
+
+  run:
+    needs: plan
+    if: ${{ fromJSON(needs.plan.outputs.matrix_json).include[0] != null }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix_json) }}
+
+    env:
+      MPLBACKEND: Agg
+      MPLCONFIGDIR: $RUNNER_TEMP/mpl-${{ matrix.market }}
+
+      RUN_SHORTS_DEBUG_TREE: "1"
+      OVERVIEW_DEBUG_FONTS: "1"
+      OVERVIEW_DEBUG_FOOTER: "1"
+
+      # Google Drive
+      GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+      GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
+      GDRIVE_CLIENT_SECRET_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_B64 }}
+      GDRIVE_ALLOW_INTERACTIVE: "0"
+
+      # YouTube
+      YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+      YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Echo schedule info
+        shell: bash
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "market=${{ matrix.market }}"
+          echo "slot=${{ needs.plan.outputs.slot }}"
+          echo "images_ymd=${{ needs.plan.outputs.images_ymd }}"
+          echo "now_utc=$(date -u '+%F %T %Z')"
+          TZ=Asia/Taipei date '+now_tw=%F %T %Z' || true
+          echo "MPLCONFIGDIR=${MPLCONFIGDIR}"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system deps (FULL FONT STACK)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+
+          sudo apt-get install -y ffmpeg fontconfig
+          sudo apt-get install -y fonts-dejavu-core fonts-dejavu-extra
+          sudo apt-get install -y fonts-noto-cjk fonts-noto-core || true
+          sudo apt-get install -y fonts-noto-color-emoji || true
+          sudo apt-get install -y fonts-noto-extra fonts-noto-ui-core fonts-noto-unhinted || true
+          sudo apt-get install -y fonts-noto-cjk-extra || true
+
+          sudo fc-cache -f -v
+
+          rm -rf ~/.cache/matplotlib ~/.config/matplotlib || true
+          rm -rf "${MPLCONFIGDIR}" || true
+          mkdir -p "${MPLCONFIGDIR}"
+
+      - name: Install python deps
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements-ci.txt ]; then
+            pip install -r requirements-ci.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      - name: Rebuild matplotlib font manager (verify)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import os, matplotlib
+          matplotlib.use("Agg")
+          from matplotlib import font_manager as fm
+          fm._load_fontmanager(try_read_cache=False)
+          print("MPLCONFIGDIR:", os.environ.get("MPLCONFIGDIR"))
+          print("Fonts:", len({f.name for f in fm.fontManager.ttflist}))
+          PY
+
+      - name: Ensure output directories
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p media/images media/videos outputs
+
+      - name: Run shorts (private)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python scripts/run_shorts.py \
+            --market ${{ matrix.market }} \
+            --slot "${{ needs.plan.outputs.slot }}" \
+            --full \
+            --privacy private \
+            --drive \
+            --drive-parent-id "${GDRIVE_ROOT_FOLDER_ID}" \
+            --drive-order after_youtube \
+            --drive-upload both \
+            --drive-images-mode zip \
+            --images-ymd "${{ needs.plan.outputs.images_ymd }}"
+
+      - name: Upload artifacts (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts_${{ matrix.market }}_${{ github.run_id }}
+          path: |
+            outputs/**
+            media/videos/**
+            media/images/**/list_video.txt
+          if-no-files-found: ignore
