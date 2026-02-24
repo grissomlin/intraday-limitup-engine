@@ -1,0 +1,29 @@
+name: China Stock List Sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 11 * * *' # 每天執行一次
+
+jobs:
+  download_china_job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          # 這裡必須安裝 akshare 才能抓到大陸清單
+          pip install requests google-api-python-client google-auth pandas akshare
+
+      - name: Execute China Download Script
+        env:
+          GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
+          CN_STOCKLIST: ${{ secrets.CN_STOCKLIST }} # 指向大陸專用的資料夾 ID
+        run: python stocksymboldownload/download_cn.py
