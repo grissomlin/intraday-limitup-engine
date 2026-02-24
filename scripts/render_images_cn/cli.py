@@ -37,29 +37,18 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 # CN sector pages
-from scripts.render_images_cn.sector_blocks.draw_mpl import draw_block_table
-from scripts.render_images_cn.sector_blocks.layout import get_layout
+from scripts.render_images_cn.sector_blocks.draw_mpl import draw_block_table  # noqa: E402
+from scripts.render_images_cn.sector_blocks.layout import get_layout  # noqa: E402
 
 # ✅ common header/time helper
-from scripts.render_images_common.header_mpl import get_market_time_info
+from scripts.render_images_common.header_mpl import get_market_time_info  # noqa: E402
 
 # overview (common)
-from scripts.render_images_common.overview_mpl import render_overview_png
+from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
 
 # aggregator (no re-download, just compute from payload snapshot_main)
-from markets.cn.aggregator import aggregate as cn_aggregate
+from markets.cn.aggregator import aggregate as cn_aggregate  # noqa: E402
 
-# ✅ Drive uploader (env-first / b64 supported by drive_uploader) —— US規格
-from scripts.utils.drive_uploader import (
-    ensure_folder,
-    get_drive_service,
-    upload_dir,
-)
-
-DEFAULT_ROOT_FOLDER = (
-    os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
-    or "1wxOxKDRLZ15dwm-V2G25l_vjaHQ-f2aE"
-)
 
 # =============================================================================
 # Small utils
@@ -237,49 +226,6 @@ def write_list_txt(
     list_path = outdir / filename
     list_path.write_text("\n".join(rel_lines) + ("\n" if rel_lines else ""), encoding="utf-8")
     return list_path
-
-
-# =============================================================================
-# Drive subfolder helpers (US規格)
-# =============================================================================
-def _first_ymd(payload: Dict[str, Any]) -> Optional[str]:
-    for k in ("bar_date", "ymd", "ymd_effective", "date"):
-        v = str(payload.get(k) or "").strip()
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", v):
-            return v
-
-    for k in ("asof", "slot"):
-        v = str(payload.get(k) or "").strip()
-        m = re.search(r"(\d{4}-\d{2}-\d{2})", v)
-        if m:
-            return m.group(1)
-    return None
-
-
-def _infer_run_tag(payload: Dict[str, Any]) -> str:
-    s = str(payload.get("slot") or payload.get("asof") or "").lower()
-    if "open" in s:
-        return "open"
-    if "midday" in s or "noon" in s:
-        return "midday"
-    if "close" in s:
-        return "close"
-
-    m = re.search(r"(\d{1,2}):(\d{2})", s)
-    if m:
-        hh = int(m.group(1))
-        mm = int(m.group(2))
-        return f"{hh:02d}{mm:02d}"
-    return "run"
-
-
-def make_drive_subfolder_name(payload: Dict[str, Any], market: str) -> str:
-    ymd = _first_ymd(payload)
-    tag = _infer_run_tag(payload)
-    if ymd:
-        return f"{market}_{ymd}_{tag}"
-    now = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    return f"{market}_{now}"
 
 
 # =============================================================================
@@ -555,23 +501,6 @@ def main() -> int:
     # ✅ DEBUG: default ON, allow opt-out
     ap.add_argument("--no-debug", action="store_true", help="overview/footer debug を無効化")
 
-    # ✅ Upload is DEFAULT ON (統一規格)
-    ap.add_argument("--no-upload-drive", action="store_true", help="生成後不上傳 Drive")
-    ap.add_argument("--drive-root-folder-id", default=DEFAULT_ROOT_FOLDER)
-    ap.add_argument("--drive-market", default="CN")
-    ap.add_argument("--drive-client-secret", default=None)
-    ap.add_argument("--drive-token", default=None)
-
-    # ✅ Subfolder default AUTO ON (recommended)
-    ap.add_argument("--drive-subfolder", default=None)
-    ap.add_argument("--drive-subfolder-auto", action="store_true", default=True)
-
-    # ✅ Upload tuning: faster by default
-    ap.add_argument("--drive-workers", type=int, default=16)
-    ap.add_argument("--drive-no-concurrent", action="store_true")
-    ap.add_argument("--drive-no-overwrite", action="store_true")
-    ap.add_argument("--drive-quiet", action="store_true")
-
     args = ap.parse_args()
 
     # If user explicitly disables debug, override envs to 0
@@ -747,47 +676,7 @@ def main() -> int:
     except Exception as e:
         print(f"[CN] list.txt generation failed (continue): {e}")
 
-    print("\n✅ CN render finished.")
-
-    # -------------------------------------------------------------------------
-    # 2) Drive upload (DEFAULT ON) —— US規格
-    # -------------------------------------------------------------------------
-    if not args.no_upload_drive:
-        print("\n🚀 Uploading PNGs to Google Drive...")
-
-        svc = get_drive_service(
-            client_secret_file=args.drive_client_secret,
-            token_file=args.drive_token,
-        )
-
-        root_id = str(args.drive_root_folder_id).strip()
-        market_name = str(args.drive_market or "CN").strip().upper()
-
-        market_folder_id = ensure_folder(svc, root_id, market_name)
-
-        subfolder: Optional[str] = None
-        if args.drive_subfolder:
-            subfolder = str(args.drive_subfolder).strip()
-        else:
-            subfolder = make_drive_subfolder_name(payload, market=market_name)
-
-        print(f"📁 Target Drive folder: root/{market_name}/{subfolder}/")
-
-        uploaded = upload_dir(
-            svc,
-            market_folder_id,
-            outdir,
-            pattern="*.png",
-            recursive=False,
-            overwrite=(not args.drive_no_overwrite),
-            verbose=(not args.drive_quiet),
-            concurrent=(not args.drive_no_concurrent),
-            workers=int(args.drive_workers),
-            subfolder_name=subfolder,
-        )
-
-        print(f"✅ Uploaded {uploaded} png(s)")
-
+    print("\n✅ CN render finished. (Drive upload removed)")
     return 0
 
 
