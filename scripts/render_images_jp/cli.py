@@ -19,32 +19,25 @@ os.environ.setdefault("OVERVIEW_DEBUG_FOOTER", "1")
 os.environ.setdefault("OVERVIEW_DEBUG_FONTS", "1")
 os.environ.setdefault("OVERVIEW_DEBUG", "1")
 
-import re
-import sys
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional
+import re  # noqa: E402
+import sys  # noqa: E402
+from datetime import datetime  # noqa: E402
+from pathlib import Path  # noqa: E402
+from typing import Any, Dict, List, Tuple, Optional  # noqa: E402
 
 THIS = Path(__file__).resolve()
 REPO_ROOT = THIS.parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.render_images_jp.sector_blocks.draw_mpl import (
+from scripts.render_images_jp.sector_blocks.draw_mpl import (  # noqa: E402
     draw_block_table,
     parse_cutoff,
     get_market_time_info,
 )
-from scripts.render_images_jp.sector_blocks.layout import get_layout
+from scripts.render_images_jp.sector_blocks.layout import get_layout  # noqa: E402
 
-from scripts.render_images_common.overview_mpl import render_overview_png
-
-# ✅ Drive uploader (env-first / b64 supported by drive_uploader)  —— US規格
-from scripts.utils.drive_uploader import (
-    get_drive_service,
-    ensure_folder,
-    upload_dir,
-)
+from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
 
 DEFAULT_ROOT_FOLDER = (
     os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
@@ -136,7 +129,7 @@ def _market_from_payload(payload: Dict[str, Any]) -> str:
 
 def chunk(lst: List[Any], n: int) -> List[List[Any]]:
     n = max(1, int(n))
-    return [lst[i: i + n] for i in range(0, len(lst), n)]
+    return [lst[i : i + n] for i in range(0, len(lst), n)]
 
 
 # =============================================================================
@@ -165,7 +158,6 @@ def write_list_txt(
 
     items: List[Path] = []
 
-    # 1) overview paged
     paged = sorted(outdir.glob(f"{overview_prefix}*_p*.{ext}"), key=lambda p: p.name)
     if paged:
         items.extend(paged)
@@ -173,12 +165,10 @@ def write_list_txt(
         single_or_any = sorted(outdir.glob(f"{overview_prefix}*.{ext}"), key=lambda p: p.name)
         items.extend(single_or_any)
 
-    # 2) others (exclude overview_prefix)
     others = sorted(outdir.glob(f"*.{ext}"), key=lambda p: p.name)
     others = [p for p in others if not p.name.startswith(overview_prefix)]
     items.extend(others)
 
-    # dedupe just in case
     seen = set()
     rel_lines: List[str] = []
     for p in items:
@@ -289,7 +279,7 @@ def build_limitup_by_sector_jp(universe: List[Dict[str, Any]]) -> Dict[str, List
                 "line1": line1,
                 "line2": line2,
                 "market_detail": _safe_str(r.get("market_detail") or ""),
-                "limitup_status": status,  # hit / touch / surge
+                "limitup_status": status,
                 "is_true_limitup": bool(is_true),
                 "is_surge_ge10": bool(is_surge),
             }
@@ -376,7 +366,7 @@ def count_hit_touch_surge(rows: List[Dict[str, Any]]) -> Tuple[int, int, int]:
 
 
 # =============================================================================
-# Drive subfolder helpers (US規格)
+# Drive subfolder helpers (US規格)  (kept; upload is optional)
 # =============================================================================
 def _first_ymd(payload: Dict[str, Any]) -> Optional[str]:
     for k in ("bar_date", "ymd", "ymd_effective", "date"):
@@ -441,19 +431,18 @@ def main() -> int:
     # ✅ DEBUG: default ON, allow opt-out
     ap.add_argument("--no-debug", action="store_true", help="overview/footer debug を無効化")
 
-    # ✅ Upload is DEFAULT ON (統一規格)
-    ap.add_argument("--no-upload-drive", action="store_true", help="生成後不上傳 Drive")
+    # ✅ CHANGE: Drive upload is DEFAULT OFF.
+    # Enable explicitly with --upload-drive (so CI won't fail without creds).
+    ap.add_argument("--upload-drive", action="store_true", help="生成後 Drive へアップロード (default: off)")
 
     ap.add_argument("--drive-root-folder-id", default=DEFAULT_ROOT_FOLDER)
     ap.add_argument("--drive-market", default="JP")
     ap.add_argument("--drive-client-secret", default=None)
     ap.add_argument("--drive-token", default=None)
 
-    # ✅ Subfolder default AUTO ON (recommended)
     ap.add_argument("--drive-subfolder", default=None)
     ap.add_argument("--drive-subfolder-auto", action="store_true", default=True)
 
-    # ✅ Upload tuning: faster by default
     ap.add_argument("--drive-workers", type=int, default=16)
     ap.add_argument("--drive-no-concurrent", action="store_true")
     ap.add_argument("--drive-no-overwrite", action="store_true")
@@ -461,7 +450,6 @@ def main() -> int:
 
     args = ap.parse_args()
 
-    # If user explicitly disables debug, override envs to 0
     if args.no_debug:
         os.environ["OVERVIEW_DEBUG_FOOTER"] = "0"
         os.environ["OVERVIEW_DEBUG_FONTS"] = "0"
@@ -509,9 +497,7 @@ def main() -> int:
             payload_for_overview["market"] = market
             payload_for_overview.setdefault(
                 "asof",
-                payload_for_overview.get("asof")
-                or payload_for_overview.get("slot")
-                or "",
+                payload_for_overview.get("asof") or payload_for_overview.get("slot") or "",
             )
 
             overview_paths = render_overview_png(
@@ -544,9 +530,7 @@ def main() -> int:
                 return -1e9
             return max(float(x.get("ret", 0.0) or 0.0) for x in rr)
 
-        sector_keys = sorted(peers.keys(), key=_sec_key, reverse=True)[
-            : max(1, int(args.max_sectors))
-        ]
+        sector_keys = sorted(peers.keys(), key=_sec_key, reverse=True)[: max(1, int(args.max_sectors))]
         print(f"[JP] fallback: top rows empty; use peers top {len(sector_keys)} sectors")
 
     for sector in sector_keys:
@@ -571,7 +555,6 @@ def main() -> int:
         hit_total, touch_total, surge_total = count_hit_touch_surge(L_total)
         hit_shown, touch_shown, surge_shown = count_hit_touch_surge(L_show)
 
-        # ✅ 業種内%（產業內強勢占比）：Top / (Top + Peers)
         denom_sector = max(1, (len(L_total) + len(P_all)))
         sector_share = float(len(L_total)) / float(denom_sector)
 
@@ -590,16 +573,16 @@ def main() -> int:
                 layout=layout,
                 sector=sector,
                 cutoff=cutoff,
-                locked_cnt=hit_total,  # legacy name
-                touch_cnt=touch_total,  # legacy name
-                theme_cnt=surge_total,  # legacy name
+                locked_cnt=hit_total,
+                touch_cnt=touch_total,
+                theme_cnt=surge_total,
                 hit_shown=hit_shown,
                 hit_total=hit_total,
                 touch_shown=touch_shown,
                 touch_total=touch_total,
                 surge_shown=surge_shown,
                 surge_total=surge_total,
-                sector_share=sector_share,  # ✅ FIXED
+                sector_share=sector_share,
                 limitup_rows=limitup_rows,
                 peer_rows=peer_rows,
                 page_idx=i + 1,
@@ -614,7 +597,7 @@ def main() -> int:
             print(f"[JP] wrote {out_path}")
 
     # -------------------------------------------------------------------------
-    # 1.5) Write list.txt (unified)  ✅ NEW
+    # 1.5) Write list.txt (unified)
     # -------------------------------------------------------------------------
     try:
         list_path = write_list_txt(
@@ -628,43 +611,52 @@ def main() -> int:
         print(f"[JP] list.txt generation failed (continue): {e}")
 
     # -------------------------------------------------------------------------
-    # 2) Drive upload (DEFAULT ON) —— US規格
+    # 2) Drive upload (DEFAULT OFF) — best-effort
     # -------------------------------------------------------------------------
-    if not args.no_upload_drive:
-        print("\n🚀 Uploading PNGs to Google Drive...")
+    if args.upload_drive:
+        print("\n🚀 Uploading PNGs to Google Drive...", flush=True)
+        try:
+            from scripts.utils.drive_uploader import (  # type: ignore
+                get_drive_service,
+                ensure_folder,
+                upload_dir,
+            )
 
-        svc = get_drive_service(
-            client_secret_file=args.drive_client_secret,
-            token_file=args.drive_token,
-        )
+            svc = get_drive_service(
+                client_secret_file=args.drive_client_secret,
+                token_file=args.drive_token,
+            )
 
-        root_id = str(args.drive_root_folder_id).strip()
-        market_name = str(args.drive_market or "JP").strip().upper()
+            root_id = str(args.drive_root_folder_id).strip()
+            market_name = str(args.drive_market or "JP").strip().upper()
 
-        market_folder_id = ensure_folder(svc, root_id, market_name)
+            market_folder_id = ensure_folder(svc, root_id, market_name)
 
-        subfolder: Optional[str] = None
-        if args.drive_subfolder:
-            subfolder = str(args.drive_subfolder).strip()
-        else:
-            subfolder = make_drive_subfolder_name(payload, market=market_name)
+            if args.drive_subfolder:
+                subfolder = str(args.drive_subfolder).strip()
+            else:
+                subfolder = make_drive_subfolder_name(payload, market=market_name)
 
-        print(f"📁 Target Drive folder: root/{market_name}/{subfolder}/")
+            print(f"📁 Target Drive folder: root/{market_name}/{subfolder}/", flush=True)
 
-        uploaded = upload_dir(
-            svc,
-            market_folder_id,
-            outdir,
-            pattern="*.png",
-            recursive=False,
-            overwrite=(not args.drive_no_overwrite),
-            verbose=(not args.drive_quiet),
-            concurrent=(not args.drive_no_concurrent),
-            workers=int(args.drive_workers),
-            subfolder_name=subfolder,
-        )
+            uploaded = upload_dir(
+                svc,
+                market_folder_id,
+                outdir,
+                pattern="*.png",
+                recursive=False,
+                overwrite=(not args.drive_no_overwrite),
+                verbose=(not args.drive_quiet),
+                concurrent=(not args.drive_no_concurrent),
+                workers=int(args.drive_workers),
+                subfolder_name=subfolder,
+            )
 
-        print(f"✅ Uploaded {uploaded} png(s)")
+            print(f"✅ Uploaded {uploaded} png(s)", flush=True)
+        except Exception as e:
+            print(f"[WARN] Drive upload failed (best-effort, continue): {e}", flush=True)
+    else:
+        print("\n[drive] upload skipped (default off).", flush=True)
 
     print("\n✅ JP render finished.")
     return 0
