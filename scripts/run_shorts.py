@@ -5,12 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
 import sys
 import zipfile
-import platform
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
@@ -25,6 +25,7 @@ def _import_timekit():
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
     from markets.timekit import market_today_ymd, market_now_hhmm  # type: ignore
+
     return market_today_ymd, market_now_hhmm
 
 
@@ -269,6 +270,7 @@ def _import_build_video():
         if str(REPO_ROOT) not in sys.path:
             sys.path.insert(0, str(REPO_ROOT))
         from scripts.render_video import build_video_from_images  # type: ignore
+
         return build_video_from_images
     except Exception as e:
         raise RuntimeError(
@@ -355,7 +357,7 @@ def _tree(
 
 
 # =============================================================================
-# Google Drive helpers (using scripts/utils/drive_uploader.py)
+# Google Drive helpers (kept for backward compatibility, but DISABLED by default)
 # =============================================================================
 def _zip_dir_to(zip_path: Path, src_dir: Path) -> Path:
     """
@@ -400,6 +402,10 @@ def _drive_upload(
             <SLOT>/
               video.mp4
               images.zip OR images/*.png
+
+    NOTE:
+      This function is kept for compatibility, but the pipeline can be forced
+      to disable Drive uploads (see main()).
     """
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
@@ -549,7 +555,7 @@ def main() -> int:
         help="Force refresh: delete existing payload/done/images/video for the resolved ymd before running.",
     )
 
-    # Google Drive upload switches
+    # Google Drive upload switches (kept for backward compatibility)
     ap.add_argument("--drive", action="store_true", help="Upload artifacts to Google Drive (default: off)")
     ap.add_argument("--drive-parent-id", default="", help="Google Drive folder id to store outputs (required if --drive)")
     ap.add_argument(
@@ -578,6 +584,15 @@ def main() -> int:
     ap.add_argument("--debug-tree-max", type=int, default=250)
 
     args = ap.parse_args()
+
+    # =============================================================================
+    # ✅ Force-disable Google Drive upload (no-op even if --drive is passed)
+    # - Keeps CLI args for backward compatibility (workflows won't break)
+    # - Prevents any import/credential check of drive_uploader.py
+    # =============================================================================
+    if getattr(args, "drive", False):
+        print("[WARN] Google Drive upload is disabled in run_shorts.py (ignoring --drive flags).", flush=True)
+        args.drive = False
 
     debug_tree = (not args.no_debug_tree) and _env_bool("RUN_SHORTS_DEBUG_TREE", "1")
 
@@ -611,9 +626,7 @@ def main() -> int:
     # materialize env json to files (GitHub Actions)
     if is_gha:
         token_path = _ensure_json_file_from_env("YOUTUBE_TOKEN_JSON", REPO_ROOT / args.token)
-        playlist_map_path = _ensure_json_file_from_env(
-            "YOUTUBE_PLAYLIST_MAP_JSON", REPO_ROOT / args.playlist_map
-        )
+        playlist_map_path = _ensure_json_file_from_env("YOUTUBE_PLAYLIST_MAP_JSON", REPO_ROOT / args.playlist_map)
     else:
         token_path = (REPO_ROOT / args.token).expanduser().resolve()
         playlist_map_path = (REPO_ROOT / args.playlist_map).expanduser().resolve()
@@ -639,7 +652,12 @@ def main() -> int:
     if not payload.exists():
         print("[WARN] payload not found at expected path.")
         if debug_tree:
-            _tree(REPO_ROOT / "data" / "cache" / market_lower, enabled=True, max_depth=args.debug_tree_depth, max_items=args.debug_tree_max)
+            _tree(
+                REPO_ROOT / "data" / "cache" / market_lower,
+                enabled=True,
+                max_depth=args.debug_tree_depth,
+                max_items=args.debug_tree_max,
+            )
 
         fb = _latest_payload_fallback(market_lower, slot)
         if fb is None:
@@ -664,7 +682,12 @@ def main() -> int:
 
             if not payload.exists():
                 if debug_tree:
-                    _tree(REPO_ROOT / "data" / "cache" / market_lower, enabled=True, max_depth=args.debug_tree_depth, max_items=args.debug_tree_max)
+                    _tree(
+                        REPO_ROOT / "data" / "cache" / market_lower,
+                        enabled=True,
+                        max_depth=args.debug_tree_depth,
+                        max_items=args.debug_tree_max,
+                    )
                 raise FileNotFoundError(f"payload not found after force rebuild: {payload}")
 
     # 2) Resolve images_dir BEFORE running render_images (for logs)
@@ -709,7 +732,12 @@ def main() -> int:
 
     if not images_dir.exists():
         if debug_tree:
-            _tree(REPO_ROOT / "media" / "images" / market_lower, enabled=True, max_depth=args.debug_tree_depth, max_items=args.debug_tree_max)
+            _tree(
+                REPO_ROOT / "media" / "images" / market_lower,
+                enabled=True,
+                max_depth=args.debug_tree_depth,
+                max_items=args.debug_tree_max,
+            )
         raise FileNotFoundError(f"images_dir not found: {images_dir}")
 
     # 4) render_video
@@ -733,19 +761,7 @@ def main() -> int:
         if not out_mp4.exists():
             raise FileNotFoundError(f"video not generated: {out_mp4}")
 
-        if args.drive and args.drive_order == "after_video":
-            _drive_upload(
-                drive_parent_id=str(args.drive_parent_id),
-                market_upper=market_upper,
-                ymd=ymd,
-                slot=slot,
-                out_mp4=out_mp4,
-                images_dir=images_dir,
-                upload_mode=str(args.drive_upload),
-                images_mode=str(args.drive_images_mode),
-                drive_subdir_policy="market/ymd/slot",
-                workers=int(args.drive_workers),
-            )
+        # Drive upload is disabled (args.drive already forced False above)
 
     # 5) YouTube upload + playlist
     if not args.skip_upload:
@@ -774,33 +790,9 @@ def main() -> int:
             cmd += ["--skip-playlist"]
         _run(cmd, cwd=REPO_ROOT)
 
-        if args.drive and args.drive_order == "after_youtube":
-            _drive_upload(
-                drive_parent_id=str(args.drive_parent_id),
-                market_upper=market_upper,
-                ymd=ymd,
-                slot=slot,
-                out_mp4=out_mp4,
-                images_dir=images_dir,
-                upload_mode=str(args.drive_upload),
-                images_mode=str(args.drive_images_mode),
-                drive_subdir_policy="market/ymd/slot",
-                workers=int(args.drive_workers),
-            )
+        # Drive upload is disabled (args.drive already forced False above)
 
-    if args.drive and args.drive_order == "end":
-        _drive_upload(
-            drive_parent_id=str(args.drive_parent_id),
-            market_upper=market_upper,
-            ymd=ymd,
-            slot=slot,
-            out_mp4=(out_mp4 if out_mp4.exists() else None),
-            images_dir=images_dir,
-            upload_mode=str(args.drive_upload),
-            images_mode=str(args.drive_images_mode),
-            drive_subdir_policy="market/ymd/slot",
-            workers=int(args.drive_workers),
-        )
+    # Drive upload end is disabled (args.drive already forced False above)
 
     print("\n[OK] All done.")
     print("platform:", platform.platform())
@@ -814,10 +806,7 @@ def main() -> int:
         print("upload  : done")
     else:
         print("upload  : (skipped)")
-    if args.drive:
-        print(f"drive   : {args.drive_order} upload={args.drive_upload} images_mode={args.drive_images_mode}")
-    else:
-        print("drive   : (skipped)")
+    print("drive   : (disabled)")
 
     if debug_tree:
         # Show the exact locations that matter when debugging missing payload/images
