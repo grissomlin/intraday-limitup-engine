@@ -525,20 +525,36 @@ def main() -> int:
     if not args.no_overview:
         try:
             from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
-
+    
             render_overview_png(payload, outdir)
-
+    
+            # ✅ DEBUG: inspect payload after overview render
+            raw_order = payload.get("_overview_sector_order", [])
+            print("[TH][DEBUG] raw _overview_sector_order exists?:", "_overview_sector_order" in payload)
+            print("[TH][DEBUG] raw overview order head:", (raw_order or [])[:20])
+    
             # ✅ NEW: read sector order exported by overview renderer (if present)
             overview_order_keys = _extract_overview_sector_order(payload)
+    
             if overview_order_keys:
                 met_eff = str(payload.get("_overview_metric_eff") or "").strip()
                 print(
                     f"[TH] overview sector order loaded: n={len(overview_order_keys)}"
                     + (f" metric={met_eff}" if met_eff else "")
                 )
+                print("[TH] normalized overview order head:", overview_order_keys[:20])
+            else:
+                print("[TH][WARN] overview order empty after normalization")
+    
         except Exception as e:
             print(f"[TH][WARN] overview skipped due to import/render error: {e}", flush=True)
 
+
+
+
+
+
+    
     width, height = 1080, 1920
     rows_top = max(1, int(args.rows_per_box))
     rows_peer = rows_top + 1
