@@ -40,6 +40,13 @@ from scripts.render_images_kr.sector_blocks.layout import get_layout  # noqa: E4
 # ✅ Common overview (optional)
 from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
 
+# ✅ shared ordering helpers (NO local duplicate funcs)
+from scripts.render_images_common.sector_order import (  # noqa: E402
+    normalize_sector_key,
+    extract_overview_sector_order,
+    reorder_keys_by_overview,
+)
+
 DEFAULT_ROOT_FOLDER = (
     os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
     or "1wxOxKDRLZ15dwm-V2G25l_vjaHQ-f2aE"
@@ -128,7 +135,7 @@ def chunk(lst: List[Any], n: int) -> List[List[Any]]:
 
 
 # =============================================================================
-# New: list.txt generator (unified, JP/US compatible)
+# list.txt generator (unified, JP/US compatible)
 # =============================================================================
 def write_list_txt(
     outdir: Path,
@@ -153,7 +160,6 @@ def write_list_txt(
 
     items: List[Path] = []
 
-    # 1) overview paged
     paged = sorted(outdir.glob(f"{overview_prefix}*_p*.{ext}"), key=lambda p: p.name)
     if paged:
         items.extend(paged)
@@ -161,12 +167,10 @@ def write_list_txt(
         single_or_any = sorted(outdir.glob(f"{overview_prefix}*.{ext}"), key=lambda p: p.name)
         items.extend(single_or_any)
 
-    # 2) others (exclude overview_prefix)
     others = sorted(outdir.glob(f"*.{ext}"), key=lambda p: p.name)
     others = [p for p in others if not p.name.startswith(overview_prefix)]
     items.extend(others)
 
-    # dedupe just in case
     seen = set()
     rel_lines: List[str] = []
     for p in items:
@@ -524,57 +528,6 @@ def _apply_kr_overview_copy(payload: Dict[str, Any]) -> None:
 
 
 # =============================================================================
-# NEW: sector sort (follow overview order if possible)
-# =============================================================================
-def _extract_sector_order_from_sector_summary(payload: Dict[str, Any]) -> List[str]:
-    """
-    Prefer payload['sector_summary'] order (overview uses this).
-    Return list of sector names in desired order.
-    """
-    ss = payload.get("sector_summary")
-    if not isinstance(ss, list) or not ss:
-        return []
-    out: List[str] = []
-    for r in ss:
-        if not isinstance(r, dict):
-            continue
-        sec = clean_sector_name(r.get("sector"))
-        if sec and sec not in out:
-            out.append(sec)
-    return out
-
-
-def _sorted_sector_items(
-    payload: Dict[str, Any],
-    events: Dict[str, List[Dict[str, Any]]],
-    peers: Dict[str, List[Dict[str, Any]]],
-) -> List[Tuple[str, List[Dict[str, Any]]]]:
-    """
-    Return (sector, events_list) items ordered by:
-    1) overview sector_summary order (if available)
-    2) fallback: event count desc, then sector name asc
-    """
-    items = [(s, rows) for s, rows in (events or {}).items()]
-    if not items:
-        return []
-
-    order = _extract_sector_order_from_sector_summary(payload)
-    rank = {s: i for i, s in enumerate(order)}
-
-    def key_fn(it: Tuple[str, List[Dict[str, Any]]]) -> Tuple[int, int, str]:
-        s, rows = it
-        # sectors not in overview go to bottom
-        r = rank.get(s, 10**9)
-        # fallback tiebreakers
-        e_cnt = len(rows or [])
-        # keep stable + readable
-        return (r, -e_cnt, s)
-
-    items.sort(key=key_fn)
-    return items
-
-
-# =============================================================================
 # Main
 # =============================================================================
 def main() -> int:
@@ -591,12 +544,14 @@ def main() -> int:
     ap.add_argument("--peer-ret-min", type=float, default=0.05)
     ap.add_argument("--peer-max-per-sector", type=int, default=10)
 
+    # Overview
     ap.add_argument("--no-overview", action="store_true")
+    ap.add_argument("--overview-metric", default="auto")
+    ap.add_argument("--overview-page-size", type=int, default=15)
 
     ap.add_argument("--no-debug", action="store_true", help="overview/footer debug 비활성화")
 
     # ✅ CHANGE: Drive upload is DEFAULT OFF.
-    # Enable explicitly with --upload-drive (so CI won't fail without creds).
     ap.add_argument("--upload-drive", action="store_true", help="생성 후 Drive 업로드 (default: off)")
     ap.add_argument("--drive-root-folder-id", default=DEFAULT_ROOT_FOLDER)
     ap.add_argument("--drive-market", default="KR")
@@ -655,6 +610,7 @@ def main() -> int:
     )
 
     payload.setdefault("market", "KR")
+    payload.setdefault("asof", payload.get("asof") or payload.get("slot") or "")
 
     payload["sector_summary_events"] = _build_sector_summary_from_events(events)
     if not _sector_summary_is_overview_ready(payload):
@@ -662,82 +618,157 @@ def main() -> int:
 
     _apply_kr_overview_copy(payload)
 
-    # 0) Overview first (align with JP flow)
+    # -------------------------------------------------------------------------
+    # 0) Overview first + capture _overview_sector_order (preferred)
+    # -------------------------------------------------------------------------
+    overview_sector_keys: List[str] = []
     if not args.no_overview:
         try:
-            render_overview_png(payload, outdir)
+            payload_for_overview = dict(payload)
+
+            overview_paths = render_overview_png(
+                payload_for_overview,
+                outdir,
+                width=1080,
+                height=1920,
+                page_size=int(args.overview_page_size),
+                metric=str(args.overview_metric or "auto"),
+            )
+            for p in (overview_paths or []):
+                print(f"[KR] wrote {p}")
+
+            # ✅ IMPORTANT: overview exports order into payload_for_overview
+            overview_sector_keys = extract_overview_sector_order(payload_for_overview)
+
+            print(
+                "[KR][DEBUG] raw _overview_sector_order exists?:",
+                isinstance(payload_for_overview.get("_overview_sector_order"), list),
+            )
+            print(
+                "[KR][DEBUG] raw overview order head:",
+                (payload_for_overview.get("_overview_sector_order", []) or [])[:20],
+            )
+            if overview_sector_keys:
+                met_eff = str(payload_for_overview.get("_overview_metric_eff") or "").strip()
+                print(
+                    f"[KR] overview sector order loaded: n={len(overview_sector_keys)}"
+                    + (f" metric={met_eff}" if met_eff else "")
+                )
+                print("[KR] normalized overview order head:", overview_sector_keys[:20])
+            else:
+                print("[KR][WARN] overview order empty after normalization", flush=True)
+
         except Exception as e:
             print(f"[KR] overview failed: {e}")
 
-    # 1) Sector pages — ✅ now ordered like overview
+    # -------------------------------------------------------------------------
+    # 1) Sector pages — ✅ order by overview keys first, then remaining
+    # -------------------------------------------------------------------------
     width, height = 1080, 1920
     rows_top = max(1, int(args.rows_per_box))
     rows_peer = rows_top + 1
     CAP_PAGES = 5
 
-    sector_items = _sorted_sector_items(payload, events, peers)
+    # Base sector list: sectors that have events (top box)
+    sectors_raw: List[str] = list((events or {}).keys())
+    if not sectors_raw:
+        print("[KR] no event sectors; nothing to render.")
+    else:
+        # Build normalized map
+        norm_to_sector: Dict[str, str] = {}
+        existing_norm_keys: List[str] = []
+        for sec in sectors_raw:
+            k = normalize_sector_key(sec)
+            if not k:
+                continue
+            existing_norm_keys.append(k)
+            if k not in norm_to_sector:
+                norm_to_sector[k] = sec
 
-    for sector, E_total in sector_items:
-        P_total = peers.get(sector, [])
+        if overview_sector_keys:
+            ordered_norm = reorder_keys_by_overview(existing_keys=existing_norm_keys, overview_keys=overview_sector_keys)
+        else:
+            ordered_norm = existing_norm_keys
 
-        E_show = (E_total or [])[: CAP_PAGES * rows_top]
-        P_show = P_total or []
+        # Resolve back to sector names (dedup)
+        sector_keys: List[str] = []
+        seen = set()
+        for k in ordered_norm:
+            sec = norm_to_sector.get(k)
+            if not sec or sec in seen:
+                continue
+            sector_keys.append(sec)
+            seen.add(sec)
 
-        E_pages = chunk(E_show, rows_top) if E_show else [[]]
-        P_pages = chunk(P_show, rows_peer)
+        for sector in sector_keys:
+            E_total = (events or {}).get(sector, []) or []
+            P_total = (peers or {}).get(sector, []) or []
 
-        total_pages = len(E_pages)
-        if len(P_pages) > total_pages:
-            total_pages += 1
-        total_pages = min(CAP_PAGES, max(1, total_pages))
+            E_show = E_total[: CAP_PAGES * rows_top]
+            E_pages = chunk(E_show, rows_top) if E_show else [[]]
+            P_pages_all = chunk(P_total, rows_peer) if P_total else [[]]
 
-        locked_total = sum(1 for r in (E_total or []) if r.get("limitup_status") == "locked")
-        touch_total = sum(1 for r in (E_total or []) if r.get("limitup_status") == "touch")
-        hit_total = len(E_total or [])
+            top_pages = len(E_pages)
+            peer_pages = len(P_pages_all)
 
-        locked_shown = sum(1 for r in (E_show or []) if r.get("limitup_status") == "locked")
-        touch_shown = sum(1 for r in (E_show or []) if r.get("limitup_status") == "touch")
-        hit_shown = len(E_show or [])
+            total_pages = top_pages
+            if peer_pages > top_pages:
+                total_pages = top_pages + 1
+            total_pages = min(CAP_PAGES, max(1, total_pages))
 
-        sector_fn = _sanitize_filename(sector)
+            locked_total = sum(1 for r in E_total if str(r.get("limitup_status")) == "locked")
+            touch_total = sum(1 for r in E_total if str(r.get("limitup_status")) == "touch")
+            hit_total = len(E_total)
 
-        for i in range(total_pages):
-            limitup_rows = E_pages[i] if i < len(E_pages) else []
-            peer_rows = P_pages[i] if i < len(P_pages) else []
-            has_more_peers = (len(P_pages) > total_pages) and (i == total_pages - 1)
+            # "shown" counts use prefix of E_show per page
+            sector_fn = _sanitize_filename(sector)
 
-            out_path = outdir / f"kr_{sector_fn}_p{i+1}.png"
+            for i in range(total_pages):
+                limitup_rows = E_pages[i] if i < len(E_pages) else []
+                peer_rows = P_pages_all[i] if i < len(P_pages_all) else []
 
-            draw_block_table(
-                out_path=out_path,
-                layout=layout,
-                sector=sector,
-                cutoff=cutoff,
-                locked_cnt=int(locked_total),
-                touch_cnt=int(touch_total),
-                theme_cnt=int(hit_total),
-                limitup_rows=limitup_rows,
-                peer_rows=peer_rows,
-                page_idx=i + 1,
-                page_total=total_pages,
-                width=width,
-                height=height,
-                rows_per_page=rows_top,
-                theme=args.theme,
-                time_note=time_note,
-                has_more_peers=has_more_peers,
-                hit_shown=hit_shown,
-                hit_total=hit_total,
-                touch_shown=touch_shown,
-                touch_total=touch_total,
-                locked_shown=locked_shown,
-                locked_total=locked_total,
-            )
-            print(f"[KR] wrote {out_path}")
+                prefix_n = min(len(E_show), (i + 1) * rows_top)
+                prefix_rows = E_show[:prefix_n]
+                locked_shown_i = sum(1 for r in prefix_rows if str(r.get("limitup_status")) == "locked")
+                touch_shown_i = sum(1 for r in prefix_rows if str(r.get("limitup_status")) == "touch")
+                hit_shown_i = len(prefix_rows)
+
+                has_more_peers = (peer_pages > total_pages) and (i == total_pages - 1)
+
+                out_path = outdir / f"kr_{sector_fn}_p{i+1}.png"
+
+                draw_block_table(
+                    out_path=out_path,
+                    layout=layout,
+                    sector=sector,
+                    cutoff=cutoff,
+                    locked_cnt=int(locked_total),
+                    touch_cnt=int(touch_total),
+                    theme_cnt=int(hit_total),
+                    hit_shown=int(hit_shown_i),
+                    hit_total=int(hit_total),
+                    touch_shown=int(touch_shown_i),
+                    touch_total=int(touch_total),
+                    locked_shown=int(locked_shown_i),
+                    locked_total=int(locked_total),
+                    limitup_rows=limitup_rows,
+                    peer_rows=peer_rows,
+                    page_idx=i + 1,
+                    page_total=total_pages,
+                    width=width,
+                    height=height,
+                    rows_per_page=rows_top,
+                    theme=args.theme,
+                    time_note=time_note,
+                    has_more_peers=has_more_peers,
+                )
+                print(f"[KR] wrote {out_path}")
 
     print("✅ KR render finished.")
 
+    # -------------------------------------------------------------------------
     # 1.5) Write list.txt (unified)
+    # -------------------------------------------------------------------------
     try:
         list_path = write_list_txt(
             outdir,
@@ -749,7 +780,9 @@ def main() -> int:
     except Exception as e:
         print(f"[KR] list.txt generation failed (continue): {e}")
 
+    # -------------------------------------------------------------------------
     # 2) Drive upload (DEFAULT OFF) — best-effort
+    # -------------------------------------------------------------------------
     if args.upload_drive:
         print("\n🚀 Uploading PNGs to Google Drive...", flush=True)
         try:
