@@ -22,7 +22,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 THIS = Path(__file__).resolve()
 REPO_ROOT = THIS.parents[2]
@@ -160,6 +160,65 @@ def write_list_txt(outdir: Path, market: str) -> Path:
     list_path.write_text("\n".join([p.name for p in ordered]) + ("\n" if ordered else ""), encoding="utf-8")
     print(f"🧾 list.txt written: {list_path} (items={len(ordered)})")
     return list_path
+
+
+# =============================================================================
+# NEW: Overview sector-order helpers (for sorting TH sector pages)
+# =============================================================================
+def _normalize_sector_key(s: Any) -> str:
+    """
+    Normalize sector names so overview order matches TH grouping as much as possible.
+    - uses clean_sector_name behavior
+    - lowercased for stable matching
+    """
+    return clean_sector_name(s).strip().lower()
+
+
+def _extract_overview_sector_order(payload: Dict[str, Any]) -> List[str]:
+    """
+    Read overview-exported sector order (added in overview/render.py):
+      payload["_overview_sector_order"] = ["Energy", "Banking", ...]
+    Return normalized keys list for matching.
+    """
+    order = payload.get("_overview_sector_order", [])
+    if not isinstance(order, list):
+        return []
+    out: List[str] = []
+    for x in order:
+        k = _normalize_sector_key(x)
+        if k:
+            out.append(k)
+    # de-dup preserve order
+    seen = set()
+    uniq: List[str] = []
+    for k in out:
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(k)
+    return uniq
+
+
+def _sort_sectors_by_overview(
+    sectors: List[str],
+    overview_order_keys: List[str],
+) -> List[str]:
+    """
+    Sort sectors to follow overview order first; anything not in overview order goes after,
+    sorted by name (stable) to keep deterministic output.
+    """
+    if not sectors:
+        return []
+
+    rank = {k: i for i, k in enumerate(overview_order_keys or [])}
+
+    def key_fn(sec: str) -> Tuple[int, int, str]:
+        k = _normalize_sector_key(sec)
+        if k in rank:
+            return (0, rank[k], k)
+        return (1, 10**9, k)
+
+    return sorted(sectors, key=key_fn)
 
 
 # =============================================================================
@@ -462,11 +521,21 @@ def main() -> int:
     _apply_th_overview_copy(payload)
 
     # ✅ overview import moved INSIDE main + protected
+    overview_order_keys: List[str] = []
     if not args.no_overview:
         try:
             from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
 
             render_overview_png(payload, outdir)
+
+            # ✅ NEW: read sector order exported by overview renderer (if present)
+            overview_order_keys = _extract_overview_sector_order(payload)
+            if overview_order_keys:
+                met_eff = str(payload.get("_overview_metric_eff") or "").strip()
+                print(
+                    f"[TH] overview sector order loaded: n={len(overview_order_keys)}"
+                    + (f" metric={met_eff}" if met_eff else "")
+                )
         except Exception as e:
             print(f"[TH][WARN] overview skipped due to import/render error: {e}", flush=True)
 
@@ -475,7 +544,16 @@ def main() -> int:
     rows_peer = rows_top + 1
     CAP_PAGES = 5
 
-    for sector, E_total in (events or {}).items():
+    # =============================================================================
+    # ✅ NEW: sector page ordering follows overview sector_rows order (when available)
+    # - If overview wasn't rendered / no exported order: fallback to original dict iteration order
+    # =============================================================================
+    sector_keys = list((events or {}).keys())
+    if overview_order_keys:
+        sector_keys = _sort_sectors_by_overview(sector_keys, overview_order_keys)
+
+    for sector in sector_keys:
+        E_total = (events or {}).get(sector, [])
         P_total = peers.get(sector, [])
 
         E_show = E_total[: CAP_PAGES * rows_top]
