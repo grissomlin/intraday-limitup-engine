@@ -1,4 +1,4 @@
-name: Run Shorts (TW @ 10:00 TW, private)
+name: Run Shorts (TW @ 10:00 TW, public)
 
 on:
   schedule:
@@ -179,7 +179,7 @@ jobs:
           set -euxo pipefail
           mkdir -p media/images media/videos outputs
 
-      - name: Run shorts (TW, private)
+      - name: Run shorts (TW, public)
         shell: bash
         run: |
           set -euxo pipefail
@@ -187,7 +187,7 @@ jobs:
             --market tw \
             --slot "${{ github.event.inputs.slot || 'midday' }}" \
             --full \
-            --privacy private \
+            --privacy public \
             --drive \
             --drive-parent-id "${GDRIVE_ROOT_FOLDER_ID}" \
             --drive-order after_youtube \
