@@ -11,9 +11,6 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 # =============================================================================
 # ✅ DEFAULT DEBUG ON (overview + footer) — align JP/KR/TW/TH
-# - OVERVIEW_DEBUG_FOOTER: print footer layout/text positions/lines
-# - OVERVIEW_DEBUG_FONTS : print i18n_font debug (incl. rcParams['font.sans-serif'] order)
-# - OVERVIEW_DEBUG        : repo-level master switch (if exists)
 # =============================================================================
 os.environ.setdefault("OVERVIEW_DEBUG_FOOTER", "1")
 os.environ.setdefault("OVERVIEW_DEBUG_FONTS", "1")
@@ -36,6 +33,14 @@ from scripts.render_images_uk.sector_blocks.draw_mpl import (
     get_market_time_info,
 )
 from scripts.render_images_uk.sector_blocks.layout import get_layout
+
+# ✅ shared ordering helpers (NO local duplicate funcs)
+from scripts.render_images_common.sector_order import (
+    normalize_sector_key,
+    extract_overview_sector_order,
+    reorder_keys_by_overview,
+    write_list_txt_ordered,
+)
 
 MARKET = "UK"
 
@@ -64,10 +69,6 @@ def _bool(x: Any) -> bool:
         return False
     s = str(x).strip().lower()
     return s in ("1", "true", "yes", "y", "on")
-
-
-def _s(x: Any) -> str:
-    return str(x).strip() if x is not None else ""
 
 
 def load_payload(path: str) -> Dict[str, Any]:
@@ -145,12 +146,6 @@ def chunk(lst: List[Any], n: int) -> List[List[Any]]:
 # Payload ymd/slot helpers (JP/KR style)
 # =============================================================================
 def _payload_ymd(payload: Dict[str, Any]) -> Optional[str]:
-    """
-    Try to get YYYY-MM-DD from payload.
-    Priority:
-      - payload["ymd"] / ["ymd_effective"] / ["bar_date"] / ["date"]
-      - parse date from payload["asof"] / ["slot"]
-    """
     for k in ("ymd", "ymd_effective", "bar_date", "date"):
         v = str(payload.get(k) or "").strip()
         if re.match(r"^\d{4}-\d{2}-\d{2}$", v):
@@ -165,10 +160,6 @@ def _payload_ymd(payload: Dict[str, Any]) -> Optional[str]:
 
 
 def _payload_slot(payload: Dict[str, Any]) -> str:
-    """
-    Normalize slot to: open / midday / close / HHMM / run
-    Priority: payload["slot"], then payload["asof"].
-    """
     s = str(payload.get("slot") or payload.get("asof") or "").strip().lower()
 
     if "open" in s:
@@ -178,7 +169,6 @@ def _payload_slot(payload: Dict[str, Any]) -> str:
     if "close" in s:
         return "close"
 
-    # accept "HH:MM" inside asof/slot
     m = re.search(r"(\d{1,2}):(\d{2})", s)
     if m:
         hh = int(m.group(1))
@@ -189,9 +179,6 @@ def _payload_slot(payload: Dict[str, Any]) -> str:
 
 
 def _default_outdir_from_payload(payload: Dict[str, Any], market: str) -> Path:
-    """
-    media/images/{market_lower}/{ymd}/{slot}
-    """
     ymd = _payload_ymd(payload) or datetime.utcnow().strftime("%Y-%m-%d")
     slot = _payload_slot(payload)
     return REPO_ROOT / "media" / "images" / market.lower() / ymd / slot
@@ -214,60 +201,8 @@ def write_list_txt(outdir: Path, market: str) -> Path:
 
     list_path = outdir / "list.txt"
     list_path.write_text("\n".join([p.name for p in ordered]) + ("\n" if ordered else ""), encoding="utf-8")
-
     print(f"🧾 list.txt written: {list_path} (items={len(ordered)})")
     return list_path
-
-
-def write_list_txt_ordered(outdir: Path, ordered_paths: List[Path]) -> Path:
-    """
-    ✅ NEW: write list.txt in the exact order you want (overview first + sector pages by overview order)
-    """
-    seen = set()
-    final: List[Path] = []
-    for p in ordered_paths:
-        try:
-            pp = Path(p)
-            if pp.is_file():
-                key = pp.name
-                if key not in seen:
-                    final.append(pp)
-                    seen.add(key)
-        except Exception:
-            continue
-
-    list_path = outdir / "list.txt"
-    list_path.write_text("\n".join([p.name for p in final]) + ("\n" if final else ""), encoding="utf-8")
-    print(f"🧾 list.txt written (ordered): {list_path} (items={len(final)})")
-    return list_path
-
-
-# =============================================================================
-# ✅ NEW: overview sector order helpers (same idea as TH)
-# =============================================================================
-def normalize_sector_key(s: Any) -> str:
-    ss = _s(s)
-    ss = re.sub(r"\s+", " ", ss).strip().lower()
-    return ss
-
-
-def _extract_overview_sector_order(payload: Dict[str, Any]) -> List[str]:
-    raw = payload.get("_overview_sector_order", []) or []
-    if not isinstance(raw, list):
-        return []
-    out: List[str] = []
-    for x in raw:
-        k = normalize_sector_key(x)
-        if k:
-            out.append(k)
-    # uniq keep order
-    seen = set()
-    out2: List[str] = []
-    for k in out:
-        if k not in seen:
-            out2.append(k)
-            seen.add(k)
-    return out2
 
 
 # =============================================================================
@@ -383,7 +318,6 @@ def main() -> int:
 
     ap.add_argument("--payload", required=True)
 
-    # ✅ outdir OPTIONAL (JP/KR style)
     ap.add_argument(
         "--outdir",
         default=None,
@@ -401,12 +335,10 @@ def main() -> int:
     ap.add_argument("--overview-metric", default="auto")
     ap.add_argument("--overview-page-size", type=int, default=15)
 
-    # ✅ Debug default ON (user passes --no-debug to disable)
     ap.add_argument("--no-debug", action="store_true", help="disable debug prints/env (default: debug ON)")
 
     args = ap.parse_args()
 
-    # ✅ debug env control (JP/KR style)
     debug_on = (not bool(args.no_debug))
     if not debug_on:
         os.environ["OVERVIEW_DEBUG_FOOTER"] = "0"
@@ -418,12 +350,7 @@ def main() -> int:
     if not universe:
         raise RuntimeError("No usable snapshot in payload")
 
-    # ✅ default outdir
-    if args.outdir:
-        outdir = Path(args.outdir)
-    else:
-        outdir = _default_outdir_from_payload(payload, market=MARKET)
-
+    outdir = Path(args.outdir) if args.outdir else _default_outdir_from_payload(payload, market=MARKET)
     outdir.mkdir(parents=True, exist_ok=True)
 
     ymd = _payload_ymd(payload)
@@ -434,13 +361,14 @@ def main() -> int:
     print(f"[UK] debug={'ON' if debug_on else 'OFF'}")
 
     layout = get_layout(args.layout)
-    cutoff = parse_cutoff(payload)  # display ymd_effective preferred
+    cutoff = parse_cutoff(payload)
     _, time_note = get_market_time_info(payload)
 
-    # We'll build an explicit render order list for list.txt
     ordered_for_list: List[Path] = []
 
+    # -------------------------------------------------------------------------
     # 1) Overview (first) + capture sector order
+    # -------------------------------------------------------------------------
     overview_order_keys: List[str] = []
     if not args.no_overview:
         payload.setdefault("market", MARKET)
@@ -458,8 +386,10 @@ def main() -> int:
                 metric=str(args.overview_metric),
             ) or []
 
-            # overview images should come first in list.txt
-            ordered_for_list.extend([Path(p) for p in overview_paths if Path(p).is_file()])
+            for p in overview_paths:
+                pp = Path(p)
+                if pp.is_file():
+                    ordered_for_list.append(pp)
 
             print(
                 "[UK][DEBUG] raw _overview_sector_order exists?:",
@@ -467,7 +397,7 @@ def main() -> int:
             )
             print("[UK][DEBUG] raw overview order head:", (payload.get("_overview_sector_order", []) or [])[:20])
 
-            overview_order_keys = _extract_overview_sector_order(payload)
+            overview_order_keys = extract_overview_sector_order(payload)
             if overview_order_keys:
                 met_eff = str(payload.get("_overview_metric_eff") or "").strip()
                 print(
@@ -481,41 +411,38 @@ def main() -> int:
         except Exception as e:
             print(f"[UK][WARN] overview skipped due to import/render error: {e}", flush=True)
 
+    # -------------------------------------------------------------------------
     # 2) Sector pages
+    # -------------------------------------------------------------------------
     movers = build_bigmove_by_sector(universe, float(args.ret_th))
     peers = build_peers_by_sector(universe, float(args.ret_th))
 
     rows_top = max(1, int(args.rows_per_box))
     rows_peer = rows_top + 1
 
-    # =============================================================================
-    # ✅ NEW: reorder sectors by overview order (then append remaining sectors)
-    # =============================================================================
-    sectors_movers = list((movers or {}).keys())
+    movers_sectors = list((movers or {}).keys())
 
-    key_to_sector: Dict[str, str] = {}
-    for sec in sectors_movers:
+    # normalize -> original sector name
+    norm_to_sector: Dict[str, str] = {}
+    existing_norm_keys: List[str] = []
+    for sec in movers_sectors:
         k = normalize_sector_key(sec)
-        if k and k not in key_to_sector:
-            key_to_sector[k] = sec
+        if not k:
+            continue
+        existing_norm_keys.append(k)
+        if k not in norm_to_sector:
+            norm_to_sector[k] = sec
 
-    ordered_sectors: List[str] = []
     if overview_order_keys:
-        for k in overview_order_keys:
-            sec = key_to_sector.get(k)
-            if sec and sec in (movers or {}):
-                ordered_sectors.append(sec)
-
-        seen = set(normalize_sector_key(s) for s in ordered_sectors)
-        for sec in sectors_movers:
-            k = normalize_sector_key(sec)
-            if k not in seen:
-                ordered_sectors.append(sec)
-                seen.add(k)
+        ordered_norm_keys = reorder_keys_by_overview(existing_keys=existing_norm_keys, overview_keys=overview_order_keys)
     else:
-        ordered_sectors = sectors_movers  # fallback
+        ordered_norm_keys = existing_norm_keys
 
-    for sector in ordered_sectors:
+    for k in ordered_norm_keys:
+        sector = norm_to_sector.get(k)
+        if not sector:
+            continue
+
         L_total = (movers or {}).get(sector, []) or []
         P_all = peers.get(sector, []) or []
 
@@ -578,15 +505,14 @@ def main() -> int:
                 has_more_peers=has_more_peers,
             )
 
-            # ✅ record sector pages in the EXACT sequence we rendered
             if out_path.is_file():
                 ordered_for_list.append(out_path)
 
-    # =============================================================================
-    # list.txt
-    # =============================================================================
+    # -------------------------------------------------------------------------
+    # 3) list.txt
+    # -------------------------------------------------------------------------
     if overview_order_keys:
-        write_list_txt_ordered(outdir, ordered_for_list)
+        write_list_txt_ordered(outdir, ordered_for_list, filename="list.txt")
     else:
         write_list_txt(outdir, market=MARKET)
 
