@@ -36,7 +36,7 @@ from scripts.render_images_jp.sector_blocks.layout import get_layout  # noqa: E4
 
 from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
 
-# ✅ shared ordering helpers (NO local duplicate funcs)
+# ✅ shared ordering helpers
 from scripts.render_images_common.sector_order import (  # noqa: E402
     normalize_sector_key,
     extract_overview_sector_order,
@@ -185,6 +185,71 @@ def write_list_txt(
     list_path = outdir / filename
     list_path.write_text("\n".join(rel_lines) + ("\n" if rel_lines else ""), encoding="utf-8")
     return list_path
+
+
+# =============================================================================
+# ✅ NEW: robust overview sector order extractor (handles typo key)
+# =============================================================================
+def _extract_overview_order_any(payload: Dict[str, Any]) -> List[str]:
+    """
+    Prefer shared extract_overview_sector_order(), but also support repo typo keys:
+      - _overview_sector_orde (missing 'r')
+    Also check meta dict.
+    """
+    # 1) official helper
+    try:
+        order = extract_overview_sector_order(payload)
+        if order:
+            return order
+    except Exception:
+        pass
+
+    # 2) direct keys (including typo)
+    for k in ("_overview_sector_order", "_overview_sector_orde"):
+        v = payload.get(k)
+        if isinstance(v, list) and v:
+            out: List[str] = []
+            for x in v:
+                s = _safe_str(x)
+                if s and s not in out:
+                    out.append(s)
+            if out:
+                return out
+
+    # 3) meta keys
+    meta = payload.get("meta")
+    if isinstance(meta, dict):
+        for k in ("_overview_sector_order", "_overview_sector_orde"):
+            v = meta.get(k)
+            if isinstance(v, list) and v:
+                out2: List[str] = []
+                for x in v:
+                    s = _safe_str(x)
+                    if s and s not in out2:
+                        out2.append(s)
+                if out2:
+                    return out2
+
+    return []
+
+
+def _jp_sector_key(sec: str) -> str:
+    """
+    Unicode-safe sector key:
+    - prefer normalize_sector_key() from shared module
+    - if it returns empty (some implementations strip non-ascii), fallback to casefold
+    """
+    s = _safe_str(sec)
+    if not s:
+        return ""
+    k = ""
+    try:
+        k = normalize_sector_key(s) or ""
+    except Exception:
+        k = ""
+    if k:
+        return k
+    return s.strip().casefold()
 
 
 # =============================================================================
@@ -492,7 +557,7 @@ def main() -> int:
     )
 
     # -------------------------------------------------------------------------
-    # 0) Overview first + capture overview sector order
+    # 0) Overview first + capture overview sector order (robust)
     # -------------------------------------------------------------------------
     overview_sector_keys: List[str] = []
     if not args.no_overview:
@@ -515,36 +580,43 @@ def main() -> int:
             for p in overview_paths:
                 print(f"[JP] wrote {p}")
 
-            # ✅ IMPORTANT: sector order is exported into payload_for_overview
-            overview_sector_keys = extract_overview_sector_order(payload_for_overview)
+            # ✅ IMPORTANT: try multiple keys (incl typo) to extract order
+            overview_sector_keys = _extract_overview_order_any(payload_for_overview)
 
-            print(
-                "[JP][DEBUG] raw _overview_sector_order exists?:",
-                isinstance(payload_for_overview.get("_overview_sector_order"), list),
-            )
-            print("[JP][DEBUG] raw overview order head:", (payload_for_overview.get("_overview_sector_order", []) or [])[:20])
-            if overview_sector_keys:
-                met_eff = str(payload_for_overview.get("_overview_metric_eff") or "").strip()
+            # If still empty, try original payload too (some implementations mutate original)
+            if not overview_sector_keys:
+                overview_sector_keys = _extract_overview_order_any(payload)
+
+            if os.getenv("OVERVIEW_DEBUG", "0") == "1":
                 print(
-                    f"[JP] overview sector order loaded: n={len(overview_sector_keys)}"
-                    + (f" metric={met_eff}" if met_eff else "")
+                    "[JP][DEBUG] raw _overview_sector_order exists?:",
+                    isinstance(payload_for_overview.get("_overview_sector_order"), list)
+                    or isinstance(payload_for_overview.get("_overview_sector_orde"), list),
                 )
-                print("[JP] normalized overview order head:", overview_sector_keys[:20])
-            else:
-                print("[JP][WARN] overview order empty after normalization", flush=True)
+                print(
+                    "[JP][DEBUG] raw order head:",
+                    (payload_for_overview.get("_overview_sector_order") or payload_for_overview.get("_overview_sector_orde") or [])[:20],
+                )
+                if overview_sector_keys:
+                    met_eff = str(payload_for_overview.get("_overview_metric_eff") or "").strip()
+                    print(
+                        f"[JP] overview sector order loaded: n={len(overview_sector_keys)}"
+                        + (f" metric={met_eff}" if met_eff else "")
+                    )
+                    print("[JP] overview order head:", overview_sector_keys[:20])
+                else:
+                    print("[JP][WARN] overview sector order NOT found (will fallback).", flush=True)
 
         except Exception as e:
             print(f"[JP] overview failed: {e}")
 
     # -------------------------------------------------------------------------
-    # 1) Sector pages (mix top + peers bottom)
-    #    ✅ sector sort: prefer overview exported order
+    # 1) Sector pages — ✅ sort prefer overview order
     # -------------------------------------------------------------------------
     top_rows = build_limitup_by_sector_jp(universe)
     peers = build_peers_by_sector_jp(universe)
     print(f"[JP] sectors(top)={len(top_rows)} sectors(peers)={len(peers)}")
 
-    # Determine sector set and base order
     if top_rows:
         sector_keys_raw = list(top_rows.keys())
     else:
@@ -558,23 +630,25 @@ def main() -> int:
         sector_keys_raw = sorted(peers.keys(), key=_sec_key, reverse=True)[: max(1, int(args.max_sectors))]
         print(f"[JP] fallback: top rows empty; use peers top {len(sector_keys_raw)} sectors")
 
-    # Apply overview order if available
+    # normalize keys (unicode-safe) and keep mapping to original sector
     norm_to_sector: Dict[str, str] = {}
     existing_norm_keys: List[str] = []
     for sec in sector_keys_raw:
-        k = normalize_sector_key(sec)
+        k = _jp_sector_key(sec)
         if not k:
             continue
         existing_norm_keys.append(k)
         if k not in norm_to_sector:
             norm_to_sector[k] = sec
 
-    if overview_sector_keys:
-        ordered_norm_keys = reorder_keys_by_overview(existing_keys=existing_norm_keys, overview_keys=overview_sector_keys)
+    # normalize overview keys too (so reorder can match)
+    overview_norm_keys = [_jp_sector_key(x) for x in (overview_sector_keys or []) if _jp_sector_key(x)]
+
+    if overview_norm_keys:
+        ordered_norm_keys = reorder_keys_by_overview(existing_keys=existing_norm_keys, overview_keys=overview_norm_keys)
     else:
         ordered_norm_keys = existing_norm_keys
 
-    # Resolve back to original sector names (dedup)
     sector_keys: List[str] = []
     seen_sec = set()
     for k in ordered_norm_keys:
@@ -584,7 +658,6 @@ def main() -> int:
         sector_keys.append(sec)
         seen_sec.add(sec)
 
-    # cap (keep behavior)
     sector_keys = sector_keys[: max(1, int(args.max_sectors))]
 
     for sector in sector_keys:
