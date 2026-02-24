@@ -22,8 +22,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
+from typing import Any, Dict, List, Optional
 
 THIS = Path(__file__).resolve()
 REPO_ROOT = THIS.parents[2]
@@ -36,12 +35,6 @@ from scripts.render_images_th.sector_blocks.draw_mpl import (  # noqa: E402
     get_market_time_info,
 )
 from scripts.render_images_th.sector_blocks.layout import get_layout  # noqa: E402
-
-from scripts.utils.drive_uploader import (  # noqa: E402
-    get_drive_service,
-    ensure_folder,
-    upload_dir,
-)
 
 DEFAULT_ROOT_FOLDER = (
     os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
@@ -167,18 +160,6 @@ def write_list_txt(outdir: Path, market: str) -> Path:
     list_path.write_text("\n".join([p.name for p in ordered]) + ("\n" if ordered else ""), encoding="utf-8")
     print(f"🧾 list.txt written: {list_path} (items={len(ordered)})")
     return list_path
-
-
-# =============================================================================
-# Drive subfolder helpers
-# =============================================================================
-def make_drive_subfolder_name(payload: Dict[str, Any], market: str) -> str:
-    ymd = _payload_ymd(payload)
-    tag = _payload_slot(payload)
-    if ymd:
-        return f"{market}_{ymd}_{tag}"
-    now = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    return f"{market}_{now}"
 
 
 # =============================================================================
@@ -434,27 +415,7 @@ def main() -> int:
 
     ap.add_argument("--no-overview", action="store_true")
 
-    ap.add_argument("--no-upload-drive", action="store_true", help="do not upload to Drive after rendering")
-
-    ap.add_argument("--drive-root-folder-id", default=DEFAULT_ROOT_FOLDER)
-    ap.add_argument("--drive-market", default=MARKET)
-    ap.add_argument("--drive-client-secret", default=None)
-    ap.add_argument("--drive-token", default=None)
-
-    ap.add_argument("--drive-subfolder", default=None)
-    ap.add_argument("--drive-subfolder-auto", action="store_true", default=True)
-
-    ap.add_argument("--drive-workers", type=int, default=16)
-    ap.add_argument("--drive-no-concurrent", action="store_true")
-    ap.add_argument("--drive-no-overwrite", action="store_true")
-    ap.add_argument("--drive-quiet", action="store_true")
-
-    ap.add_argument(
-        "--allow-market-mismatch",
-        action="store_true",
-        help="ALLOW uploading into a different drive-market (dangerous; disables safety guard)",
-    )
-
+    # ✅ Drive upload 기능 완전移除（不再提供任何 drive 參數）
     ap.add_argument("--no-debug", action="store_true", help="disable debug prints/env (default: debug ON)")
 
     args = ap.parse_args()
@@ -504,6 +465,7 @@ def main() -> int:
     if not args.no_overview:
         try:
             from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
+
             render_overview_png(payload, outdir)
         except Exception as e:
             print(f"[TH][WARN] overview skipped due to import/render error: {e}", flush=True)
@@ -572,48 +534,7 @@ def main() -> int:
 
     write_list_txt(outdir, market=MARKET)
 
-    print("✅ TH render finished.")
-
-    # Drive upload (same as your original; keep safety guard)
-    if not args.no_upload_drive:
-        market_name = str(args.drive_market or MARKET).strip().upper()
-        if (market_name != MARKET) and (not args.allow_market_mismatch):
-            print(f"\n🛑 SAFETY GUARD: drive-market={market_name} but this script is {MARKET}.")
-            print("   Upload skipped to prevent cross-market overwrite.")
-            print("   If you REALLY intend to upload there, re-run with --allow-market-mismatch")
-            return 0
-
-        print("\n🚀 Uploading PNGs to Google Drive...")
-
-        svc = get_drive_service(
-            client_secret_file=args.drive_client_secret,
-            token_file=args.drive_token,
-        )
-
-        root_id = str(args.drive_root_folder_id).strip()
-        market_folder_id = ensure_folder(svc, root_id, market_name)
-
-        if args.drive_subfolder:
-            subfolder = str(args.drive_subfolder).strip()
-        else:
-            subfolder = make_drive_subfolder_name(payload, market=market_name)
-
-        print(f"📁 Target Drive folder: root/{market_name}/{subfolder}/")
-
-        uploaded = upload_dir(
-            svc,
-            market_folder_id,
-            outdir,
-            pattern="*.png",
-            recursive=False,
-            overwrite=(not args.drive_no_overwrite),
-            verbose=(not args.drive_quiet),
-            concurrent=(not args.drive_no_concurrent),
-            workers=int(args.drive_workers),
-            subfolder_name=subfolder,
-        )
-
-        print(f"✅ Uploaded {uploaded} png(s)")
+    print("✅ TH render finished. (Drive upload removed)")
 
     return 0
 
