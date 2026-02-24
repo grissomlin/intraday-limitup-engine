@@ -370,6 +370,7 @@ def build_events_by_sector_th(
         return 2
 
     for k in out:
+        # ✅ keep your original behavior
         out[k].sort(
             key=lambda x: (
                 -int(x.get("is_new_listing", False)),
@@ -536,7 +537,10 @@ def main() -> int:
             ordered_for_list.extend([Path(p) for p in overview_paths if Path(p).is_file()])
 
             # ✅ NEW: read sector order exported by overview renderer (if present)
-            print("[TH][DEBUG] raw _overview_sector_order exists?:", isinstance(payload.get("_overview_sector_order"), list))
+            print(
+                "[TH][DEBUG] raw _overview_sector_order exists?:",
+                isinstance(payload.get("_overview_sector_order"), list),
+            )
             print("[TH][DEBUG] raw overview order head:", (payload.get("_overview_sector_order", []) or [])[:20])
 
             overview_order_keys = _extract_overview_sector_order(payload)
