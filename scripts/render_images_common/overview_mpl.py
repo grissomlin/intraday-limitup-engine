@@ -66,7 +66,7 @@ def _force_metric_for_market(payload: Dict[str, Any], metric: str) -> str:
     Market-specific default overrides (only when caller uses auto):
 
     - JP: auto -> mix
-    - TH: auto -> bigmove10   (✅ avoid touch-only pollution)
+    - TH: auto -> mix         (✅ align overview with TH sector pages "mix events")
     - TW: auto -> mix         (✅ align with metrics.auto_metric)
     """
     m = _normalize_market(str(payload.get("market") or ""))
@@ -75,9 +75,9 @@ def _force_metric_for_market(payload: Dict[str, Any], metric: str) -> str:
     if met == "auto" and m == "JP":
         return "mix"
 
-    # ✅ TH: always use bigmove10 for overview when metric=auto
+    # ✅ TH: auto -> mix  (was bigmove10)
     if met == "auto" and m == "TH":
-        return "bigmove10"
+        return "mix"
 
     # ✅ TW: auto -> mix
     if met == "auto" and m == "TW":
@@ -106,6 +106,7 @@ def _default_page_size(payload: Dict[str, Any], metric: str, page_size: int) -> 
     if m == "JP" and met in {"mix", "all", "bigmove10+locked+touched"}:
         return _env_int("OVERVIEW_PAGE_SIZE_JP_MIX", 12)
 
+    # TH keep default unless you want a special env later
     return default_ps
 
 
@@ -158,7 +159,9 @@ def _debug_overview_pct(payload: Dict[str, Any], metric_arg: str) -> None:
             c_text, p_text = badge_text(r, metric_eff, lang)
 
             print(f"[{i:02d}] {sec}")
-            print(f"     raw: locked_pct={raw_locked} touched_pct={raw_touched} bigmove10_pct={raw_big10} mix_pct={raw_mix}")
+            print(
+                f"     raw: locked_pct={raw_locked} touched_pct={raw_touched} bigmove10_pct={raw_big10} mix_pct={raw_mix}"
+            )
             print(f"     calc: value={v} compute_pct={p}")
             print(f"     badge_text: count='{c_text}' pct='{p_text}'")
 
