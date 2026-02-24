@@ -48,7 +48,7 @@ def _market_from_payload(payload: Dict[str, Any]) -> str:
 
 
 def _sector_order_from_sector_summary(payload: Dict[str, Any]) -> List[str]:
-    """拿 sector_summary 的順序（去重），用來排序 sector pages。"""
+    """拿 sector_summary 的順序（去重），用來排序 sector pages（fallback 用）。"""
     out: List[str] = []
     seen = set()
     ss = payload.get("sector_summary") or []
@@ -63,6 +63,82 @@ def _sector_order_from_sector_summary(payload: Dict[str, Any]) -> List[str]:
         seen.add(sec)
         out.append(sec)
     return out
+
+
+# =============================================================================
+# ✅ NEW: overview sector order helpers (TW)
+# =============================================================================
+def _normalize_sector_key_for_overview(s: Any) -> str:
+    """
+    Normalize sector for matching overview order.
+    Keep consistent with other markets:
+    - strip
+    - collapse whitespace
+    - lowercase
+    """
+    ss = safe_str(s)
+    ss = re.sub(r"\s+", " ", ss).strip().lower()
+    return ss
+
+
+def _extract_overview_sector_order(payload: Dict[str, Any]) -> List[str]:
+    """
+    Read payload["_overview_sector_order"] exported by overview renderer,
+    normalize + de-dup keep order.
+    """
+    raw = payload.get("_overview_sector_order", []) or []
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for x in raw:
+        k = _normalize_sector_key_for_overview(x)
+        if k:
+            out.append(k)
+    seen = set()
+    out2: List[str] = []
+    for k in out:
+        if k not in seen:
+            out2.append(k)
+            seen.add(k)
+    return out2
+
+
+def _reorder_sectors_by_overview(
+    *,
+    sector_names: List[str],
+    overview_order_keys: List[str],
+) -> List[str]:
+    """
+    Reorder actual sector names by overview order keys; append remaining in original order.
+    sector_names: original sector strings (as stored in top_rows keys)
+    overview_order_keys: normalized keys (lowercase, collapsed spaces)
+    """
+    if not sector_names:
+        return []
+    if not overview_order_keys:
+        return list(sector_names)
+
+    # map normalized -> original (first wins)
+    key_to_sector: Dict[str, str] = {}
+    for sec in sector_names:
+        k = _normalize_sector_key_for_overview(sec)
+        if k and k not in key_to_sector:
+            key_to_sector[k] = sec
+
+    ordered: List[str] = []
+    for k in overview_order_keys:
+        sec = key_to_sector.get(k)
+        if sec:
+            ordered.append(sec)
+
+    seen = set(_normalize_sector_key_for_overview(s) for s in ordered)
+    for sec in sector_names:
+        k = _normalize_sector_key_for_overview(sec)
+        if k not in seen:
+            ordered.append(sec)
+            seen.add(k)
+
+    return ordered
 
 
 def render_tw(
@@ -125,24 +201,54 @@ def render_tw(
             for p in gain_paths:
                 print(f"[TW] wrote {p}")
 
+        # ✅ sync exported overview order back to original payload
+        # (overview renderer writes into payload_for_overview, not payload)
+        if isinstance(payload_for_overview.get("_overview_sector_order"), list):
+            payload["_overview_sector_order"] = payload_for_overview.get("_overview_sector_order")
+        if payload_for_overview.get("_overview_metric_eff") is not None:
+            payload["_overview_metric_eff"] = payload_for_overview.get("_overview_metric_eff")
+
     # ---------------------------------------------------------------------
     # Sector pages
     # ---------------------------------------------------------------------
     top_rows = build_top_rows_by_sector_tw(payload)
 
-    # ✅ 只對「有 top」的 sector 出頁，但排序用 sector_summary 的順序
-    order = _sector_order_from_sector_summary(payload)
+    # ✅ only sectors with "top" get pages
     top_sectors = set(top_rows.keys())
+    sectors_events = list(top_rows.keys())
 
-    if order:
-        sector_keys = [s for s in order if s in top_sectors]
+    # 1) Prefer overview exported order (if present)
+    overview_order_keys = _extract_overview_sector_order(payload)
+
+    # Debug prints (safe)
+    print("[TW][DEBUG] raw _overview_sector_order exists?:", isinstance(payload.get("_overview_sector_order"), list))
+    print("[TW][DEBUG] raw overview order head:", (payload.get("_overview_sector_order", []) or [])[:20])
+    if overview_order_keys:
+        met_eff = safe_str(payload.get("_overview_metric_eff") or "")
+        print(f"[TW] overview sector order loaded: n={len(overview_order_keys)}" + (f" metric={met_eff}" if met_eff else ""))
+        print("[TW] normalized overview order head:", overview_order_keys[:20])
+
+    # 2) Fallback: sector_summary order (your original logic)
+    fallback_order = _sector_order_from_sector_summary(payload)
+
+    # Build sector_keys with priority:
+    # - overview order (only those in top_sectors)
+    # - then remaining by original insertion order (or fallback sector_summary if no overview)
+    if overview_order_keys:
+        # reorder actual sector names based on overview order keys
+        sector_keys = _reorder_sectors_by_overview(sector_names=sectors_events, overview_order_keys=overview_order_keys)
+        # ensure only sectors with top
+        sector_keys = [s for s in sector_keys if s in top_sectors]
     else:
-        sector_keys = list(top_rows.keys())
+        if fallback_order:
+            sector_keys = [s for s in fallback_order if s in top_sectors]
+        else:
+            sector_keys = list(top_rows.keys())
 
     # cap
     sector_keys = sector_keys[: max(1, int(max_sectors))]
 
-    # ✅ peers 只需要針對「會出頁的 sector」
+    # ✅ peers only for sectors that will be rendered
     peers = build_peers_by_sector_tw(payload, sector_keys)
 
     print(
