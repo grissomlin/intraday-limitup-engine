@@ -204,13 +204,24 @@ _CJK_TTC_PATHS = [
     "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
 ]
 
+# ✅ KR-only: when family names are not registered (common on CI),
+# use TTC file directly for Hangul rendering.
+_KR_TTC_BY_WEIGHT = {
+    "bold": "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "black": "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc",
+    "medium": "/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc",
+    "light": "/usr/share/fonts/opentype/noto/NotoSansCJK-Light.ttc",
+    "regular": "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+}
+
 
 def _try_add_noto_cjk_ttc() -> None:
     """
     On some GitHub runner + Matplotlib setups, fontManager scans TTC but only
-    registers one family name (often JP). However fc-list shows KR/SC/TC exist.
+    registers one family name (often JP). However the TTC file itself still
+    contains KR glyphs.
 
-    Force-add TTC via fontManager.addfont() to register all faces.
+    Force-add TTC via fontManager.addfont() to register faces.
     Safe/idempotent.
     """
     try:
@@ -222,6 +233,31 @@ def _try_add_noto_cjk_ttc() -> None:
                     pass
     except Exception:
         pass
+
+
+def _pick_kr_ttc_path(weight: Optional[str]) -> Optional[str]:
+    """
+    ✅ KR-only: pick a TTC font file path that exists on disk.
+    This bypasses "family name not registered" issues and prevents DejaVu fallback.
+    """
+    w = (weight or "").strip().lower()
+    if w in {"heavy", "black"}:
+        w = "black"
+    elif w in {"bold"}:
+        w = "bold"
+    elif w in {"medium"}:
+        w = "medium"
+    elif w in {"light"}:
+        w = "light"
+    else:
+        w = "regular"
+
+    # Try requested weight first, then fall back to regular
+    cand = [_KR_TTC_BY_WEIGHT.get(w), _KR_TTC_BY_WEIGHT.get("regular")]
+    for p in cand:
+        if p and os.path.exists(p):
+            return p
+    return None
 
 
 # =============================================================================
@@ -270,18 +306,12 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """
     Configure matplotlib fonts for rendering + bbox measurement.
 
-    Key rule for stability:
-    - For markets that actually DISPLAY CJK/TH text (TW/CN/JP/KR/TH),
-      the FIRST font in rcParams['font.sans-serif'] MUST be able to render that script.
-      Otherwise matplotlib will measure with a font that lacks glyphs (=> warnings + wrong widths),
-      and layout/ellipsize will drift.
-
-    - For pure EN markets, keep Latin-first for clean digits/punct, but include CJK/TH as fallbacks.
+    NOTE: This sets rcParams fallback list. For KR tofu on CI, we additionally
+    use fontprops_for_text(fname=...) for Hangul, so KR fix does NOT rely on
+    family-name registration.
     """
     try:
-        # critical: ensure TTC faces available in fontManager
         _try_add_noto_cjk_ttc()
-
         available = _available_font_names()
 
         market = ""
@@ -295,7 +325,6 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         if not isinstance(ss, list):
             ss = []
 
-        # Detect KR need (for mixed payloads)
         need_kr = (market == "KR")
         if not need_kr and ss:
             for r in ss[:80]:
@@ -303,7 +332,6 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
                     need_kr = True
                     break
 
-        # Detect Thai need (for mixed payloads)
         need_th = (market == "TH")
         if not need_th and ss:
             for r in ss[:80]:
@@ -311,7 +339,6 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
                     need_th = True
                     break
 
-        # Detect JP need (for mixed payloads)
         need_jp = (market == "JP")
         if not need_jp and ss:
             for r in ss[:80]:
@@ -319,7 +346,6 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
                     need_jp = True
                     break
 
-        # Detect Han need (for mixed payloads)
         need_han = (market in {"TW", "CN"})
         if not need_han and ss:
             for r in ss[:80]:
@@ -327,29 +353,11 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
                     need_han = True
                     break
 
-        # Prefer CJK family names that exist on Ubuntu CI (fonts-noto-cjk)
-        # NOTE: runner family name may be "Noto Sans CJK XX" not "Noto Sans XX"
         primary_cn = ["Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", "SimHei", "WenQuanYi Zen Hei"]
         primary_tw = ["Noto Sans CJK TC", "Noto Sans TC", "Noto Sans CJK HK", "Noto Sans HK", "Microsoft JhengHei", "PingFang TC"]
         primary_jp = ["Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "Meiryo"]
+        primary_kr = ["Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic"]
 
-        # ✅ ONLY CHANGE: strengthen KR candidates (add common Hangul fonts; keep old ones)
-        # This does NOT affect other markets because this list is only used in KR paths / Hangul detection paths.
-        primary_kr = [
-            "Noto Sans CJK KR",
-            "Noto Sans KR",
-            # Common on Ubuntu if installed (fonts-nanum / nanum-fonts)
-            "NanumGothic",
-            "Nanum Gothic",
-            "NanumSquare",
-            "NanumSquareRound",
-            # Windows-ish
-            "Malgun Gothic",
-            # macOS-ish (harmless if absent)
-            "Apple SD Gothic Neo",
-        ]
-
-        # Thai families
         primary_th = [
             "Noto Sans Thai",
             "Noto Sans Thai UI",
@@ -366,7 +374,6 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         profile = _get_font_profile()
         zh_primary = primary_cn if market == "CN" else primary_tw
 
-        # ---- Build order ----
         if market in {"TW", "CN", "JP", "KR", "TH"} or need_han or need_jp or need_kr or need_th:
             if market == "TH" or need_th:
                 order = primary_th + latin + zh_primary + primary_jp + primary_kr
@@ -398,14 +405,13 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         chosen = font_list[0] if font_list else None
         _debug_print_fonts(market, profile, font_list, chosen)
         _debug_print_noto_paths()
-
         return chosen
     except Exception:
         return None
 
 
 # =============================================================================
-# Per-text FontProperties chooser (CRITICAL for bbox measurement)
+# Per-text FontProperties chooser (KR tofu-safe)
 # =============================================================================
 def _pick_first_available(candidates: List[str]) -> Optional[str]:
     try:
@@ -426,9 +432,12 @@ def fontprops_for_text(
     weight: Optional[str] = None,
 ) -> FontProperties:
     """
-    Keep script detection logic.
-    But return a family fallback list so Matplotlib can fall back without switching
-    to DejaVu (missing glyph) and without bbox drift.
+    Return FontProperties that avoids tofu.
+
+    ✅ KR-only enhancement:
+    - If Hangul detected, try using TTC file path directly via FontProperties(fname=...).
+      This bypasses CI cases where family name "Noto Sans CJK KR" is not registered,
+      which otherwise causes fallback to DejaVu (missing glyphs).
     """
     # Ensure rcParams configured (idempotent)
     try:
@@ -437,6 +446,24 @@ def fontprops_for_text(
         pass
 
     m = normalize_market(market or (payload or {}).get("market", "") if payload else market)
+
+    w_in = (weight or "").strip().lower() or None
+    w_norm = w_in
+    if w_norm in {"regular", "normal"}:
+        w_norm = "regular"
+    elif w_norm in {"medium"}:
+        w_norm = "medium"
+    elif w_norm in {"bold", "heavy", "black"}:
+        w_norm = "bold"
+
+    # ✅ KR-only: Hangul -> use TTC path if possible
+    if has_hangul(text):
+        p = _pick_kr_ttc_path(w_norm)
+        if p:
+            # fname forces the actual font file, avoiding DejaVu fallback
+            if w_norm is None:
+                return FontProperties(fname=p)
+            return FontProperties(fname=p, weight=w_norm)
 
     if has_thai(text):
         primary = [
@@ -449,16 +476,11 @@ def fontprops_for_text(
             "DejaVu Sans",
         ]
     elif has_hangul(text):
-        # ✅ ONLY CHANGE: strengthen Hangul fallback list (KR-only effect in practice)
+        # (If TTC path not found, fall back to family list)
         primary = [
             "Noto Sans CJK KR",
             "Noto Sans KR",
-            "NanumGothic",
-            "Nanum Gothic",
-            "NanumSquare",
-            "NanumSquareRound",
             "Malgun Gothic",
-            "Apple SD Gothic Neo",
             "DejaVu Sans",
         ]
     elif has_kana(text):
@@ -501,18 +523,10 @@ def fontprops_for_text(
         base = _pick_first_available(primary) or "sans-serif"
         families = [base]
 
-    w = (weight or "").strip().lower() or None
-    if w is None:
+    if w_in is None:
         return FontProperties(family=families)
 
-    if w in {"regular", "normal"}:
-        w = "regular"
-    elif w in {"medium"}:
-        w = "medium"
-    elif w in {"bold", "heavy", "black"}:
-        w = "bold"
-
-    return FontProperties(family=families, weight=w)
+    return FontProperties(family=families, weight=w_norm)
 
 
 # =============================================================================
