@@ -46,6 +46,13 @@ from scripts.render_images_common.header_mpl import get_market_time_info  # noqa
 # overview (common)
 from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
 
+# ✅ shared ordering helpers (NO local duplicate funcs)
+from scripts.render_images_common.sector_order import (  # noqa: E402
+    normalize_sector_key,
+    extract_overview_sector_order,
+    reorder_keys_by_overview,
+)
+
 # aggregator (no re-download, just compute from payload snapshot_main)
 from markets.cn.aggregator import aggregate as cn_aggregate  # noqa: E402
 
@@ -553,18 +560,47 @@ def main() -> int:
     time_note = build_cn_time_note(payload)
 
     # -------------------------------------------------------------------------
-    # 0) Overview first
+    # 0) Overview first + capture overview sector order
     # -------------------------------------------------------------------------
+    overview_sector_keys: List[str] = []
     if not args.no_overview:
         try:
+            # IMPORTANT: render_overview_png mutates payload to export:
+            #   payload["_overview_sector_order"] (list[str])
+            payload_for_overview = dict(agg_payload)
+            payload_for_overview.setdefault("market", "CN")
+            payload_for_overview.setdefault("asof", payload_for_overview.get("asof") or payload_for_overview.get("slot") or "")
+
             render_overview_png(
-                agg_payload,
+                payload_for_overview,
                 outdir,
                 width=1080,
                 height=1920,
                 page_size=int(args.overview_page_size),
                 metric=om,  # normalized
             )
+
+            # ✅ read exported order (normalized keys)
+            overview_sector_keys = extract_overview_sector_order(payload_for_overview)
+
+            print(
+                "[CN][DEBUG] raw _overview_sector_order exists?:",
+                isinstance(payload_for_overview.get("_overview_sector_order"), list),
+            )
+            print(
+                "[CN][DEBUG] raw overview order head:",
+                (payload_for_overview.get("_overview_sector_order", []) or [])[:20],
+            )
+            if overview_sector_keys:
+                met_eff = str(payload_for_overview.get("_overview_metric_eff") or "").strip()
+                print(
+                    f"[CN] overview sector order loaded: n={len(overview_sector_keys)}"
+                    + (f" metric={met_eff}" if met_eff else "")
+                )
+                print("[CN] normalized overview order head:", overview_sector_keys[:20])
+            else:
+                print("[CN][WARN] overview order empty after normalization", flush=True)
+
         except Exception as e:
             print(f"[CN] overview failed (continue): {e}")
 
@@ -578,6 +614,7 @@ def main() -> int:
 
     # -------------------------------------------------------------------------
     # 1) Sector pages
+    #   ✅ order: use overview exported _overview_sector_order first
     # -------------------------------------------------------------------------
     sector_total_map: Dict[str, int] = {}
     for r in universe:
@@ -592,8 +629,36 @@ def main() -> int:
     rows_peer = rows_top + 1
     CAP_PAGES = max(1, int(args.cap_pages))
 
-    for sector, L_total in limitup.items():
-        P = peers.get(sector, [])
+    # Build sector order (normalized) using common helper
+    sectors_raw = list((limitup or {}).keys())
+    norm_to_sector: Dict[str, str] = {}
+    existing_norm_keys: List[str] = []
+    for sec in sectors_raw:
+        k = normalize_sector_key(sec)
+        if not k:
+            continue
+        existing_norm_keys.append(k)
+        if k not in norm_to_sector:
+            norm_to_sector[k] = sec
+
+    if overview_sector_keys:
+        ordered_norm = reorder_keys_by_overview(existing_keys=existing_norm_keys, overview_keys=overview_sector_keys)
+    else:
+        ordered_norm = existing_norm_keys
+
+    # Resolve ordered sectors back to original names (dedupe)
+    ordered_sectors: List[str] = []
+    seen = set()
+    for k in ordered_norm:
+        sec = norm_to_sector.get(k)
+        if not sec or sec in seen:
+            continue
+        ordered_sectors.append(sec)
+        seen.add(sec)
+
+    for sector in ordered_sectors:
+        L_total = (limitup or {}).get(sector, []) or []
+        P = (peers or {}).get(sector, []) or []
 
         max_limitup_show = CAP_PAGES * rows_top
         L_show = L_total[:max_limitup_show]
@@ -663,7 +728,7 @@ def main() -> int:
             print(f"[CN] wrote {out_path}")
 
     # -------------------------------------------------------------------------
-    # 1.5) Write list.txt (unified)  ✅ NEW
+    # 1.5) Write list.txt (unified)
     # -------------------------------------------------------------------------
     try:
         list_path = write_list_txt(
