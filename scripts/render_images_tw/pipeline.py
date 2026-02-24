@@ -2,9 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import os
 import re
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, List
 
@@ -29,14 +27,6 @@ from scripts.render_images_tw.utils_tw import (
     chunk,
 )
 
-from scripts.utils.drive_uploader import ensure_folder, get_drive_service, upload_dir
-
-
-DEFAULT_ROOT_FOLDER = (
-    os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
-    or "1wxOxKDRLZ15dwm-V2G25l_vjaHQ-f2aE"
-)
-
 
 def _payload_ymd(payload: Dict[str, Any]) -> str:
     return safe_str(payload.get("ymd_effective") or payload.get("ymd") or "")
@@ -55,44 +45,6 @@ def _normalize_market(m: str) -> str:
 
 def _market_from_payload(payload: Dict[str, Any]) -> str:
     return _normalize_market(safe_str(payload.get("market") or "TW"))
-
-
-def _first_ymd(payload: Dict[str, Any]) -> Optional[str]:
-    for k in ("bar_date", "ymd", "ymd_effective", "date"):
-        v = str(payload.get(k) or "").strip()
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", v):
-            return v
-    for k in ("asof", "slot"):
-        v = str(payload.get(k) or "").strip()
-        m = re.search(r"(\d{4}-\d{2}-\d{2})", v)
-        if m:
-            return m.group(1)
-    return None
-
-
-def _infer_run_tag(payload: Dict[str, Any]) -> str:
-    s = str(payload.get("slot") or payload.get("asof") or "").lower()
-    if "open" in s:
-        return "open"
-    if "midday" in s or "noon" in s:
-        return "midday"
-    if "close" in s:
-        return "close"
-    m = re.search(r"(\d{1,2}):(\d{2})", s)
-    if m:
-        hh = int(m.group(1))
-        mm = int(m.group(2))
-        return f"{hh:02d}{mm:02d}"
-    return "run"
-
-
-def make_drive_subfolder_name(payload: Dict[str, Any], market: str) -> str:
-    ymd = _first_ymd(payload)
-    tag = _infer_run_tag(payload)
-    if ymd:
-        return f"{market}_{ymd}_{tag}"
-    now = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    return f"{market}_{now}"
 
 
 def _sector_order_from_sector_summary(payload: Dict[str, Any]) -> List[str]:
@@ -126,16 +78,6 @@ def render_tw(
     overview_metric: str = "auto",
     overview_page_size: int = 15,
     overview_gainbins: bool = False,
-    no_upload_drive: bool = False,
-    drive_root_folder_id: str = DEFAULT_ROOT_FOLDER,
-    drive_market: str = "TW",
-    drive_client_secret: Optional[str] = None,
-    drive_token: Optional[str] = None,
-    drive_subfolder: Optional[str] = None,
-    drive_workers: int = 16,
-    drive_no_concurrent: bool = False,
-    drive_no_overwrite: bool = False,
-    drive_quiet: bool = False,
 ) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -203,7 +145,11 @@ def render_tw(
     # ✅ peers 只需要針對「會出頁的 sector」
     peers = build_peers_by_sector_tw(payload, sector_keys)
 
-    print(f"[TW] sectors(top)={len(top_rows)} sectors(peers)={len(peers)} sectors(pages)={len(sector_keys)}")
+    print(
+        f"[TW] sectors(top)={len(top_rows)} "
+        f"sectors(peers)={len(peers)} "
+        f"sectors(pages)={len(sector_keys)}"
+    )
 
     # sector_share map from sector_summary
     sec_share_map: Dict[str, float] = {}
@@ -248,7 +194,6 @@ def render_tw(
             peer_rows = P_pages_all[i] if i < len(P_pages_all) else []
 
             # ✅ per-page prefix "shown" counts
-            # - 顯示到本頁為止 top 區已呈現的累計筆數
             prefix_n = min(len(L_show), (i + 1) * rows_top)
             prefix_rows = L_show[:prefix_n]
             locked_shown_i, touch_shown_i, surge_shown_i = count_locked_touch_surge(prefix_rows)
@@ -283,42 +228,3 @@ def render_tw(
                 has_more_peers=has_more_peers,
             )
             print(f"[TW] wrote {out_path}")
-
-    # ---------------------------------------------------------------------
-    # Drive upload
-    # ---------------------------------------------------------------------
-    if not no_upload_drive:
-        print("\n🚀 Uploading PNGs to Google Drive...")
-
-        svc = get_drive_service(
-            client_secret_file=drive_client_secret,
-            token_file=drive_token,
-        )
-
-        root_id = str(drive_root_folder_id).strip()
-        market_name = str(drive_market or market or "TW").strip().upper()
-
-        market_folder_id = ensure_folder(svc, root_id, market_name)
-
-        subfolder = (
-            str(drive_subfolder).strip()
-            if drive_subfolder
-            else make_drive_subfolder_name(payload, market=market_name)
-        )
-
-        print(f"📁 Target Drive folder: root/{market_name}/{subfolder}/")
-
-        uploaded = upload_dir(
-            svc,
-            market_folder_id,
-            outdir,
-            pattern="*.png",
-            recursive=False,
-            overwrite=(not drive_no_overwrite),
-            verbose=(not drive_quiet),
-            concurrent=(not drive_no_concurrent),
-            workers=int(drive_workers),
-            subfolder_name=subfolder,
-        )
-
-        print(f"✅ Uploaded {uploaded} png(s)")
