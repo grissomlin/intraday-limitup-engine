@@ -77,6 +77,10 @@ def _bool(x: Any) -> bool:
     return s in ("1", "true", "yes", "y", "on")
 
 
+def _s(x: Any) -> str:
+    return str(x).strip() if x is not None else ""
+
+
 def load_payload(path: str) -> Dict[str, Any]:
     p = Path(path)
     if not p.exists():
@@ -202,15 +206,13 @@ def _default_outdir(payload: Dict[str, Any], market: str = "au") -> Path:
 
 
 # =============================================================================
-# list.txt writer (JP-style)
+# list.txt writer (JP-style) + ordered writer (NEW)
 # =============================================================================
 def write_list_txt(outdir: Path) -> Path:
     """
-    Write list.txt for video stitching.
-    Sorting rule:
-      1) overview* first (any filename containing 'overview')
-      2) then others by filename asc
-    Each line is the filename (relative, no quotes).
+    Original behavior:
+      1) overview* first
+      2) others by filename asc
     """
     outdir = Path(outdir)
     pngs = [p for p in outdir.glob("*.png") if p.is_file()]
@@ -229,6 +231,29 @@ def write_list_txt(outdir: Path) -> Path:
     lines = [p.name for p in pngs_sorted]
     list_path = outdir / "list.txt"
     list_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return list_path
+
+
+def write_list_txt_ordered(outdir: Path, ordered_paths: List[Path]) -> Path:
+    """
+    ✅ NEW: write list.txt in the exact order you want
+    (overview first + sector pages by overview sector order)
+    """
+    seen = set()
+    final: List[Path] = []
+    for p in ordered_paths:
+        try:
+            pp = Path(p)
+            if pp.is_file():
+                key = pp.name
+                if key not in seen:
+                    final.append(pp)
+                    seen.add(key)
+        except Exception:
+            continue
+
+    list_path = Path(outdir) / "list.txt"
+    list_path.write_text("\n".join([p.name for p in final]) + ("\n" if final else ""), encoding="utf-8")
     return list_path
 
 
@@ -339,6 +364,40 @@ def build_peers_by_sector(universe: List[Dict[str, Any]], ret_th: float):
 
 
 # =============================================================================
+# ✅ NEW: overview sector order helpers
+# =============================================================================
+def normalize_sector_key(s: Any) -> str:
+    """
+    Normalize sector names for matching overview order:
+    - strip
+    - collapse whitespace
+    - lowercase
+    """
+    ss = _s(s)
+    ss = re.sub(r"\s+", " ", ss).strip().lower()
+    return ss
+
+
+def _extract_overview_sector_order(payload: Dict[str, Any]) -> List[str]:
+    raw = payload.get("_overview_sector_order", []) or []
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for x in raw:
+        k = normalize_sector_key(x)
+        if k:
+            out.append(k)
+    # uniq keep order
+    seen = set()
+    out2: List[str] = []
+    for k in out:
+        if k not in seen:
+            out2.append(k)
+            seen.add(k)
+    return out2
+
+
+# =============================================================================
 # Main (JP-style UX)
 # =============================================================================
 def main() -> int:
@@ -399,19 +458,47 @@ def main() -> int:
             f"fonts={os.getenv('OVERVIEW_DEBUG_FONTS','0')}"
         )
 
-    # 1) Overview (first)
+    # We'll build an explicit render order list for list.txt
+    ordered_for_list: List[Path] = []
+
+    # 1) Overview (first) + capture sector order
+    overview_order_keys: List[str] = []
     if not args.no_overview:
         payload.setdefault("market", "AU")
         payload.setdefault("asof", payload.get("asof") or payload.get("slot") or "")
 
-        render_overview_png(
-            payload=payload,
-            out_dir=outdir,
-            width=1080,
-            height=1920,
-            page_size=int(args.overview_page_size),
-            metric=str(args.overview_metric),
-        )
+        try:
+            overview_paths = render_overview_png(
+                payload=payload,
+                out_dir=outdir,
+                width=1080,
+                height=1920,
+                page_size=int(args.overview_page_size),
+                metric=str(args.overview_metric),
+            ) or []
+
+            # overview images should come first in list.txt
+            ordered_for_list.extend([Path(p) for p in overview_paths if Path(p).is_file()])
+
+            # debug
+            print(
+                "[AU][DEBUG] raw _overview_sector_order exists?:",
+                isinstance(payload.get("_overview_sector_order"), list),
+            )
+            print("[AU][DEBUG] raw overview order head:", (payload.get("_overview_sector_order", []) or [])[:20])
+
+            overview_order_keys = _extract_overview_sector_order(payload)
+            if overview_order_keys:
+                met_eff = str(payload.get("_overview_metric_eff") or "").strip()
+                print(
+                    f"[AU] overview sector order loaded: n={len(overview_order_keys)}"
+                    + (f" metric={met_eff}" if met_eff else "")
+                )
+                print("[AU] normalized overview order head:", overview_order_keys[:20])
+            else:
+                print("[AU][WARN] overview order empty after normalization", flush=True)
+        except Exception as e:
+            print(f"[AU][WARN] overview skipped due to render error: {e}", flush=True)
 
     # 2) Sector pages
     movers = build_bigmove_by_sector(universe, float(args.ret_th))
@@ -420,8 +507,40 @@ def main() -> int:
     rows_top = max(1, int(args.rows_per_box))
     rows_peer = rows_top + 1
 
-    for sector, L_total in movers.items():
-        P_all = peers.get(sector, [])
+    # =============================================================================
+    # ✅ NEW: reorder sectors by overview order (then append remaining sectors)
+    # =============================================================================
+    sectors_movers = list((movers or {}).keys())
+
+    # Map normalized key -> original sector name(s)
+    key_to_sector: Dict[str, str] = {}
+    for sec in sectors_movers:
+        k = normalize_sector_key(sec)
+        # first wins (stable)
+        if k and k not in key_to_sector:
+            key_to_sector[k] = sec
+
+    ordered_sectors: List[str] = []
+    if overview_order_keys:
+        # add sectors that appear in overview order
+        for k in overview_order_keys:
+            sec = key_to_sector.get(k)
+            if sec and sec in (movers or {}):
+                ordered_sectors.append(sec)
+
+        # append remaining sectors (keep original insertion order from dict)
+        seen = set(normalize_sector_key(s) for s in ordered_sectors)
+        for sec in sectors_movers:
+            k = normalize_sector_key(sec)
+            if k not in seen:
+                ordered_sectors.append(sec)
+                seen.add(k)
+    else:
+        ordered_sectors = sectors_movers  # fallback
+
+    for sector in ordered_sectors:
+        L_total = (movers or {}).get(sector, []) or []
+        P_all = peers.get(sector, []) or []
 
         big_total = len([x for x in L_total if not x.get("touched_only")])
         touch_total = len([x for x in L_total if x.get("touched_only")])
@@ -440,6 +559,8 @@ def main() -> int:
         sector_shown_total = big_total + touch_total
         sector_all_total = sector_shown_total + len(P_all)
 
+        safe_sector = safe_filename(sector)
+
         for i in range(total_pages):
             mover_rows = top_pages[i] if i < len(top_pages) else []
             peer_rows = peer_pages[i] if i < len(peer_pages) else []
@@ -452,10 +573,11 @@ def main() -> int:
 
             has_more_peers = (i == total_pages - 1) and (len(peer_pages_all) > len(peer_pages))
 
-            fname = f"au_{safe_filename(sector)}_p{i+1}.png"
+            fname = f"au_{safe_sector}_p{i+1}.png"
+            out_path = outdir / fname
 
             draw_block_table(
-                out_path=outdir / fname,
+                out_path=out_path,
                 layout=layout,
                 sector=sector,
                 cutoff=cutoff,
@@ -480,8 +602,16 @@ def main() -> int:
                 has_more_peers=has_more_peers,
             )
 
-    # 3) list.txt (JP-style)
-    list_path = write_list_txt(outdir)
+            # ✅ record sector pages in the EXACT sequence we rendered
+            if out_path.is_file():
+                ordered_for_list.append(out_path)
+
+    # 3) list.txt
+    if overview_order_keys:
+        list_path = write_list_txt_ordered(outdir, ordered_for_list)
+    else:
+        list_path = write_list_txt(outdir)
+
     if not args.quiet:
         print(f"📝 Wrote list: {list_path}")
         print("\n✅ AU render finished. (Drive upload removed)")
