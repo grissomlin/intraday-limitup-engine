@@ -38,18 +38,6 @@ from scripts.render_images_uk.sector_blocks.draw_mpl import (
 from scripts.render_images_uk.sector_blocks.layout import get_layout
 from scripts.render_images_common.overview_mpl import render_overview_png
 
-# ✅ Drive uploader
-from scripts.utils.drive_uploader import (
-    get_drive_service,
-    ensure_folder,
-    upload_dir,
-)
-
-DEFAULT_ROOT_FOLDER = (
-    os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
-    or "1wxOxKDRLZ15dwm-V2G25l_vjaHQ-f2aE"
-)
-
 MARKET = "UK"
 
 
@@ -101,7 +89,7 @@ def safe_filename(name: str) -> str:
     s = (name or "").strip()
     if not s:
         return "Unknown"
-    bad = ['\\', '/', ':', '*', '?', '"', '<', '>', '|']
+    bad = ["\\", "/", ":", "*", "?", '"', "<", ">", "|"]
     for ch in bad:
         s = s.replace(ch, "_")
     s = s.replace(" ", "_")
@@ -228,21 +216,6 @@ def write_list_txt(outdir: Path, market: str) -> Path:
 
     print(f"🧾 list.txt written: {list_path} (items={len(ordered)})")
     return list_path
-
-
-# =============================================================================
-# Drive subfolder helpers (kept)
-# =============================================================================
-def make_drive_subfolder_name(payload: Dict[str, Any], market: str) -> str:
-    """
-    Default folder: UK_2026-02-14_midday
-    """
-    ymd = _payload_ymd(payload)
-    tag = _payload_slot(payload)
-    if ymd:
-        return f"{market}_{ymd}_{tag}"
-    now = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    return f"{market}_{now}"
 
 
 # =============================================================================
@@ -379,28 +352,6 @@ def main() -> int:
     # ✅ Debug default ON (user passes --no-debug to disable)
     ap.add_argument("--no-debug", action="store_true", help="disable debug prints/env (default: debug ON)")
 
-    # Drive upload (DEFAULT ON)
-    ap.add_argument("--no-upload-drive", action="store_true", help="do not upload to Drive after rendering")
-    ap.add_argument("--drive-root-folder-id", default=DEFAULT_ROOT_FOLDER)
-    ap.add_argument("--drive-market", default=MARKET)
-    ap.add_argument("--drive-client-secret", default=None)
-    ap.add_argument("--drive-token", default=None)
-
-    ap.add_argument("--drive-subfolder", default=None)
-    ap.add_argument("--drive-subfolder-auto", action="store_true", default=True)
-
-    ap.add_argument("--drive-workers", type=int, default=8)
-    ap.add_argument("--drive-no-concurrent", action="store_true")
-    ap.add_argument("--drive-no-overwrite", action="store_true")
-    ap.add_argument("--drive-quiet", action="store_true")
-
-    # ✅ safety: prevent cross-market mis-upload by default
-    ap.add_argument(
-        "--allow-market-mismatch",
-        action="store_true",
-        help="ALLOW uploading into a different drive-market (dangerous; disables safety guard)",
-    )
-
     args = ap.parse_args()
 
     # ✅ debug env control (JP/KR style)
@@ -517,56 +468,7 @@ def main() -> int:
     # ✅ list.txt (for video)
     write_list_txt(outdir, market=MARKET)
 
-    print("\n✅ UK render finished.")
-
-    # -------------------------------------------------------------------------
-    # Drive upload (DEFAULT ON) + SAFETY GUARD
-    # -------------------------------------------------------------------------
-    if not args.no_upload_drive:
-        market_name = str(args.drive_market or MARKET).strip().upper()
-
-        # ✅ HARD GUARD: prevent accidental cross-market overwrite
-        if (market_name != MARKET) and (not args.allow_market_mismatch):
-            print(f"\n🛑 SAFETY GUARD: drive-market={market_name} but this script is {MARKET}.")
-            print("   Upload skipped to prevent cross-market overwrite.")
-            print("   If you REALLY intend to upload there, re-run with --allow-market-mismatch")
-            return 0
-
-        print("\n🚀 Uploading PNGs to Google Drive...")
-
-        svc = get_drive_service(
-            client_secret_file=args.drive_client_secret,
-            token_file=args.drive_token,
-        )
-
-        root_id = str(args.drive_root_folder_id).strip()
-        market_folder_id = ensure_folder(svc, root_id, market_name)
-
-        if args.drive_subfolder:
-            subfolder = str(args.drive_subfolder).strip()
-        else:
-            subfolder = make_drive_subfolder_name(payload, market=market_name) if args.drive_subfolder_auto else None
-
-        if subfolder:
-            print(f"📁 Target Drive folder: root/{market_name}/{subfolder}/")
-        else:
-            print(f"📁 Target Drive folder: root/{market_name}/")
-
-        uploaded = upload_dir(
-            svc,
-            market_folder_id,
-            outdir,
-            pattern="*.png",
-            recursive=False,
-            overwrite=(not args.drive_no_overwrite),
-            verbose=(not args.drive_quiet),
-            concurrent=(not args.drive_no_concurrent),
-            workers=int(args.drive_workers),
-            subfolder_name=subfolder,
-        )
-
-        print(f"✅ Uploaded {uploaded} png(s)")
-
+    print("\n✅ UK render finished (Drive upload removed).")
     return 0
 
 
