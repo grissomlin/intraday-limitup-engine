@@ -9,7 +9,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 # ✅ VERY IMPORTANT: Force matplotlib headless backend (avoid tkinter warnings)
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -26,18 +26,6 @@ from scripts.render_images_ca.sector_blocks.draw_mpl import (  # noqa: E402
 )
 from scripts.render_images_ca.sector_blocks.layout import get_layout  # noqa: E402
 from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
-
-# ✅ Drive uploader (env-first / b64 supported by drive_uploader)
-from scripts.utils.drive_uploader import (  # noqa: E402
-    get_drive_service,
-    ensure_folder,
-    upload_dir,
-)
-
-DEFAULT_ROOT_FOLDER = (
-    os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
-    or "1wxOxKDRLZ15dwm-V2G25l_vjaHQ-f2aE"
-)
 
 MARKET = "CA"
 
@@ -95,7 +83,7 @@ def safe_filename(name: str) -> str:
     s = (name or "").strip()
     if not s:
         return "Unknown"
-    bad = ['\\', '/', ':', '*', '?', '"', '<', '>', '|']
+    bad = ["\\", "/", ":", "*", "?", '"', "<", ">", "|"]
     for ch in bad:
         s = s.replace(ch, "_")
     s = s.replace(" ", "_")
@@ -232,28 +220,6 @@ def write_list_txt(outdir: Path) -> int:
 
     (outdir / "list.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     return len(lines)
-
-
-# =============================================================================
-# Drive subfolder helpers (use payload helpers)
-# =============================================================================
-def _infer_run_tag(payload: Dict[str, Any]) -> str:
-    return _payload_slot(payload) or "run"
-
-
-def make_drive_subfolder_name(payload: Dict[str, Any], market: str) -> str:
-    """
-    Default folder: CA_2026-02-15_close (keep ymd for weekend runs)
-    Fallback: CA_20260215_054033
-    """
-    ymd = _payload_ymd(payload)
-    tag = _infer_run_tag(payload)
-
-    if ymd:
-        return f"{market}_{ymd}_{tag}"
-
-    now = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    return f"{market}_{now}"
 
 
 # =============================================================================
@@ -396,32 +362,6 @@ def main() -> int:
     # ✅ Debug default ON (user can disable)
     ap.add_argument("--no-debug", action="store_true", help="Disable overview/footer/font debug env (default: ON)")
 
-    # ✅ Drive upload DEFAULT ON
-    ap.add_argument("--no-upload-drive", action="store_true", help="Do not upload to Drive after rendering")
-
-    ap.add_argument("--drive-root-folder-id", default=DEFAULT_ROOT_FOLDER)
-    ap.add_argument("--drive-market", default=MARKET)
-
-    ap.add_argument("--drive-client-secret", default=None)
-    ap.add_argument("--drive-token", default=None)
-
-    # Subfolder strategy
-    ap.add_argument("--drive-subfolder", default=None)
-    ap.add_argument("--drive-subfolder-auto", action="store_true", default=True)
-
-    # Upload tuning
-    ap.add_argument("--drive-workers", type=int, default=8)
-    ap.add_argument("--drive-no-concurrent", action="store_true")
-    ap.add_argument("--drive-no-overwrite", action="store_true")
-    ap.add_argument("--drive-quiet", action="store_true")
-
-    # ✅ safety guard
-    ap.add_argument(
-        "--allow-market-mismatch",
-        action="store_true",
-        help="ALLOW uploading into a different drive-market (dangerous; disables safety guard)",
-    )
-
     args = ap.parse_args()
 
     # ✅ debug default ON
@@ -430,6 +370,10 @@ def main() -> int:
         os.environ.setdefault("OVERVIEW_DEBUG", "1")
         os.environ.setdefault("OVERVIEW_DEBUG_FOOTER", "1")
         os.environ.setdefault("OVERVIEW_DEBUG_FONTS", "1")
+    else:
+        os.environ["OVERVIEW_DEBUG"] = "0"
+        os.environ["OVERVIEW_DEBUG_FOOTER"] = "0"
+        os.environ["OVERVIEW_DEBUG_FONTS"] = "0"
 
     payload = load_payload(args.payload)
     universe = pick_universe(payload)
@@ -531,52 +475,7 @@ def main() -> int:
     n_list = write_list_txt(outdir)
     print(f"🧾 list.txt written ({n_list} png(s)) -> {outdir / 'list.txt'}")
 
-    print("\n✅ CA render finished.")
-
-    # -------------------------------------------------------------------------
-    # Drive upload (DEFAULT ON) + SAFETY GUARD
-    # -------------------------------------------------------------------------
-    if not args.no_upload_drive:
-        market_name = str(args.drive_market or MARKET).strip().upper()
-
-        if (market_name != MARKET) and (not args.allow_market_mismatch):
-            print(f"\n🛑 SAFETY GUARD: drive-market={market_name} but this script is {MARKET}.")
-            print("   Upload skipped to prevent cross-market overwrite.")
-            print("   If you REALLY intend to upload there, re-run with --allow-market-mismatch")
-            return 0
-
-        print("\n🚀 Uploading PNGs to Google Drive...")
-
-        svc = get_drive_service(
-            client_secret_file=args.drive_client_secret,
-            token_file=args.drive_token,
-        )
-
-        root_id = str(args.drive_root_folder_id).strip()
-        market_folder_id = ensure_folder(svc, root_id, market_name)
-
-        if args.drive_subfolder:
-            subfolder: Optional[str] = str(args.drive_subfolder).strip()
-        else:
-            subfolder = make_drive_subfolder_name(payload, market=market_name)
-
-        print(f"📁 Target Drive folder: root/{market_name}/{subfolder}/")
-
-        uploaded = upload_dir(
-            svc,
-            market_folder_id,
-            outdir,
-            pattern="*.png",
-            recursive=False,
-            overwrite=(not args.drive_no_overwrite),
-            verbose=(not args.drive_quiet),
-            concurrent=(not args.drive_no_concurrent),
-            workers=int(args.drive_workers),
-            subfolder_name=subfolder,
-        )
-
-        print(f"✅ Uploaded {uploaded} png(s)")
-
+    print("\n✅ CA render finished (Drive upload removed).")
     return 0
 
 
