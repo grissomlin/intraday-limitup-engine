@@ -332,7 +332,22 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         primary_cn = ["Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", "SimHei", "WenQuanYi Zen Hei"]
         primary_tw = ["Noto Sans CJK TC", "Noto Sans TC", "Noto Sans CJK HK", "Noto Sans HK", "Microsoft JhengHei", "PingFang TC"]
         primary_jp = ["Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "Meiryo"]
-        primary_kr = ["Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic"]
+
+        # ✅ ONLY CHANGE: strengthen KR candidates (add common Hangul fonts; keep old ones)
+        # This does NOT affect other markets because this list is only used in KR paths / Hangul detection paths.
+        primary_kr = [
+            "Noto Sans CJK KR",
+            "Noto Sans KR",
+            # Common on Ubuntu if installed (fonts-nanum / nanum-fonts)
+            "NanumGothic",
+            "Nanum Gothic",
+            "NanumSquare",
+            "NanumSquareRound",
+            # Windows-ish
+            "Malgun Gothic",
+            # macOS-ish (harmless if absent)
+            "Apple SD Gothic Neo",
+        ]
 
         # Thai families
         primary_th = [
@@ -434,10 +449,16 @@ def fontprops_for_text(
             "DejaVu Sans",
         ]
     elif has_hangul(text):
+        # ✅ ONLY CHANGE: strengthen Hangul fallback list (KR-only effect in practice)
         primary = [
             "Noto Sans CJK KR",
             "Noto Sans KR",
+            "NanumGothic",
+            "Nanum Gothic",
+            "NanumSquare",
+            "NanumSquareRound",
             "Malgun Gothic",
+            "Apple SD Gothic Neo",
             "DejaVu Sans",
         ]
     elif has_kana(text):
