@@ -25,7 +25,6 @@ from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any, Dict, List, Optional, Tuple  # noqa: E402
 
-
 THIS = Path(__file__).resolve()
 REPO_ROOT = THIS.parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -41,18 +40,10 @@ from scripts.render_images_kr.sector_blocks.layout import get_layout  # noqa: E4
 # ✅ Common overview (optional)
 from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
 
-# ✅ Drive uploader (env-first / b64 supported by drive_uploader) —— US規格
-from scripts.utils.drive_uploader import (  # noqa: E402
-    get_drive_service,
-    ensure_folder,
-    upload_dir,
-)
-
 DEFAULT_ROOT_FOLDER = (
     os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
     or "1wxOxKDRLZ15dwm-V2G25l_vjaHQ-f2aE"
 )
-
 
 # =============================================================================
 # Utils
@@ -286,10 +277,8 @@ def yesterday_text_kr(r: Dict[str, Any]) -> str:
     """
     sl2 = _s(r.get("status_line2"))
     if sl2:
-        # normalize if you used a very short marker
         if sl2 in ("昨無", "어제없음", "어제 무", "없음"):
             return "어제 상한가/10%+ 없음"
-        # If status_line2 might be Chinese from upstream, map a couple common ones:
         if sl2 == "昨漲停":
             return "어제 상한가"
         if sl2 == "昨觸及":
@@ -391,7 +380,6 @@ def build_events_by_sector_kr(
             return 1
         return 2
 
-    # Sort: 신규상장 우선 > 상한가 > 터치 > 등락률
     for k in out:
         out[k].sort(
             key=lambda x: (
@@ -439,7 +427,6 @@ def build_peers_by_sector_kr(
         if sector not in sectors:
             continue
 
-        # Don't mix 10%+ into peers; should be in top box.
         if is_event_stock_kr(r, float(ret_th_event)):
             continue
 
@@ -513,7 +500,7 @@ def _sector_summary_is_overview_ready(payload: Dict[str, Any]) -> bool:
     ✅ Overview-ready sector_summary means:
     - list[dict]
     - has universe denominator: sector_total (or similar)
-    - has *_pct fields (locked_pct/touched_pct/bigmove10_pct/mix_pct) so badge won't derive 100%
+    - has *_pct fields
     """
     ss = payload.get("sector_summary")
     if not isinstance(ss, list) or not ss:
@@ -522,13 +509,8 @@ def _sector_summary_is_overview_ready(payload: Dict[str, Any]) -> bool:
     if not isinstance(r0, dict):
         return False
 
-    # must have a universe-style denominator
     has_den = ("sector_total" in r0) or ("sector_cnt" in r0) or ("total_cnt" in r0)
-
-    # must have pct fields (any one is enough)
     has_pct = any(k in r0 for k in ("mix_pct", "locked_pct", "touched_pct", "bigmove10_pct"))
-
-    # guard against event-only summary: usually has total_cnt but lacks pct
     return bool(has_den and has_pct)
 
 
@@ -542,43 +524,88 @@ def _apply_kr_overview_copy(payload: Dict[str, Any]) -> None:
 
 
 # =============================================================================
+# NEW: sector sort (follow overview order if possible)
+# =============================================================================
+def _extract_sector_order_from_sector_summary(payload: Dict[str, Any]) -> List[str]:
+    """
+    Prefer payload['sector_summary'] order (overview uses this).
+    Return list of sector names in desired order.
+    """
+    ss = payload.get("sector_summary")
+    if not isinstance(ss, list) or not ss:
+        return []
+    out: List[str] = []
+    for r in ss:
+        if not isinstance(r, dict):
+            continue
+        sec = clean_sector_name(r.get("sector"))
+        if sec and sec not in out:
+            out.append(sec)
+    return out
+
+
+def _sorted_sector_items(
+    payload: Dict[str, Any],
+    events: Dict[str, List[Dict[str, Any]]],
+    peers: Dict[str, List[Dict[str, Any]]],
+) -> List[Tuple[str, List[Dict[str, Any]]]]:
+    """
+    Return (sector, events_list) items ordered by:
+    1) overview sector_summary order (if available)
+    2) fallback: event count desc, then sector name asc
+    """
+    items = [(s, rows) for s, rows in (events or {}).items()]
+    if not items:
+        return []
+
+    order = _extract_sector_order_from_sector_summary(payload)
+    rank = {s: i for i, s in enumerate(order)}
+
+    def key_fn(it: Tuple[str, List[Dict[str, Any]]]) -> Tuple[int, int, str]:
+        s, rows = it
+        # sectors not in overview go to bottom
+        r = rank.get(s, 10**9)
+        # fallback tiebreakers
+        e_cnt = len(rows or [])
+        # keep stable + readable
+        return (r, -e_cnt, s)
+
+    items.sort(key=key_fn)
+    return items
+
+
+# =============================================================================
 # Main
 # =============================================================================
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--payload", required=True)
 
-    # ✅ Align with JP: outdir is OPTIONAL (default -> media/images/kr/{ymd}/{slot})
     ap.add_argument("--outdir", default=None)
 
     ap.add_argument("--theme", default="dark")
     ap.add_argument("--layout", default="us")
     ap.add_argument("--rows-per-box", type=int, default=6)
 
-    # event thresholds
     ap.add_argument("--ret-th", type=float, default=0.10, help="event stock threshold (default 10%)")
     ap.add_argument("--peer-ret-min", type=float, default=0.05)
     ap.add_argument("--peer-max-per-sector", type=int, default=10)
 
-    # Overview
     ap.add_argument("--no-overview", action="store_true")
 
-    # ✅ DEBUG: default ON, allow opt-out (align with JP)
     ap.add_argument("--no-debug", action="store_true", help="overview/footer debug 비활성화")
 
-    # ✅ Upload is DEFAULT ON (統一規格)
-    ap.add_argument("--no-upload-drive", action="store_true", help="생성 후 Drive 업로드 안 함")
-
+    # ✅ CHANGE: Drive upload is DEFAULT OFF.
+    # Enable explicitly with --upload-drive (so CI won't fail without creds).
+    ap.add_argument("--upload-drive", action="store_true", help="생성 후 Drive 업로드 (default: off)")
     ap.add_argument("--drive-root-folder-id", default=DEFAULT_ROOT_FOLDER)
     ap.add_argument("--drive-market", default="KR")
     ap.add_argument("--drive-client-secret", default=None)
     ap.add_argument("--drive-token", default=None)
 
-    # ✅ Subfolder default AUTO ON
     ap.add_argument("--drive-subfolder", default=None)
     ap.add_argument("--drive-subfolder-auto", action="store_true", default=True)
 
-    # ✅ Upload tuning
     ap.add_argument("--drive-workers", type=int, default=16)
     ap.add_argument("--drive-no-concurrent", action="store_true")
     ap.add_argument("--drive-no-overwrite", action="store_true")
@@ -586,7 +613,6 @@ def main() -> int:
 
     args = ap.parse_args()
 
-    # If user explicitly disables debug, override envs to 0
     if args.no_debug:
         os.environ["OVERVIEW_DEBUG_FOOTER"] = "0"
         os.environ["OVERVIEW_DEBUG_FONTS"] = "0"
@@ -630,41 +656,32 @@ def main() -> int:
 
     payload.setdefault("market", "KR")
 
-    # -------------------------------------------------------------------------
-    # ✅ IMPORTANT FIX:
-    # Do NOT overwrite overview-ready sector_summary from market aggregator.
-    # Keep events-only summary separately for debug / legacy.
-    # -------------------------------------------------------------------------
     payload["sector_summary_events"] = _build_sector_summary_from_events(events)
-
     if not _sector_summary_is_overview_ready(payload):
-        # fallback only when payload has no proper universe-based sector_summary
         payload["sector_summary"] = payload["sector_summary_events"]
 
     _apply_kr_overview_copy(payload)
 
-    # -------------------------------------------------------------------------
     # 0) Overview first (align with JP flow)
-    # -------------------------------------------------------------------------
     if not args.no_overview:
         try:
             render_overview_png(payload, outdir)
         except Exception as e:
             print(f"[KR] overview failed: {e}")
 
-    # -------------------------------------------------------------------------
-    # 1) Sector pages
-    # -------------------------------------------------------------------------
+    # 1) Sector pages — ✅ now ordered like overview
     width, height = 1080, 1920
     rows_top = max(1, int(args.rows_per_box))
     rows_peer = rows_top + 1
     CAP_PAGES = 5
 
-    for sector, E_total in (events or {}).items():
+    sector_items = _sorted_sector_items(payload, events, peers)
+
+    for sector, E_total in sector_items:
         P_total = peers.get(sector, [])
 
-        E_show = E_total[: CAP_PAGES * rows_top]
-        P_show = P_total
+        E_show = (E_total or [])[: CAP_PAGES * rows_top]
+        P_show = P_total or []
 
         E_pages = chunk(E_show, rows_top) if E_show else [[]]
         P_pages = chunk(P_show, rows_peer)
@@ -674,13 +691,13 @@ def main() -> int:
             total_pages += 1
         total_pages = min(CAP_PAGES, max(1, total_pages))
 
-        locked_total = sum(1 for r in E_total if r.get("limitup_status") == "locked")
-        touch_total = sum(1 for r in E_total if r.get("limitup_status") == "touch")
-        hit_total = len(E_total)
+        locked_total = sum(1 for r in (E_total or []) if r.get("limitup_status") == "locked")
+        touch_total = sum(1 for r in (E_total or []) if r.get("limitup_status") == "touch")
+        hit_total = len(E_total or [])
 
-        locked_shown = sum(1 for r in E_show if r.get("limitup_status") == "locked")
-        touch_shown = sum(1 for r in E_show if r.get("limitup_status") == "touch")
-        hit_shown = len(E_show)
+        locked_shown = sum(1 for r in (E_show or []) if r.get("limitup_status") == "locked")
+        touch_shown = sum(1 for r in (E_show or []) if r.get("limitup_status") == "touch")
+        hit_shown = len(E_show or [])
 
         sector_fn = _sanitize_filename(sector)
 
@@ -720,9 +737,7 @@ def main() -> int:
 
     print("✅ KR render finished.")
 
-    # -------------------------------------------------------------------------
-    # 1.5) Write list.txt (unified)  ✅ NEW
-    # -------------------------------------------------------------------------
+    # 1.5) Write list.txt (unified)
     try:
         list_path = write_list_txt(
             outdir,
@@ -734,43 +749,53 @@ def main() -> int:
     except Exception as e:
         print(f"[KR] list.txt generation failed (continue): {e}")
 
-    # -------------------------------------------------------------------------
-    # 2) Drive upload (DEFAULT ON) —— US規格
-    # -------------------------------------------------------------------------
-    if not args.no_upload_drive:
-        print("\n🚀 Uploading PNGs to Google Drive...")
+    # 2) Drive upload (DEFAULT OFF) — best-effort
+    if args.upload_drive:
+        print("\n🚀 Uploading PNGs to Google Drive...", flush=True)
+        try:
+            from scripts.utils.drive_uploader import (  # type: ignore
+                get_drive_service,
+                ensure_folder,
+                upload_dir,
+            )
 
-        svc = get_drive_service(
-            client_secret_file=args.drive_client_secret,
-            token_file=args.drive_token,
-        )
+            svc = get_drive_service(
+                client_secret_file=args.drive_client_secret,
+                token_file=args.drive_token,
+            )
 
-        root_id = str(args.drive_root_folder_id).strip()
-        market_name = str(args.drive_market or "KR").strip().upper()
+            root_id = str(args.drive_root_folder_id).strip()
+            market_name = str(args.drive_market or "KR").strip().upper()
 
-        market_folder_id = ensure_folder(svc, root_id, market_name)
+            market_folder_id = ensure_folder(svc, root_id, market_name)
 
-        if args.drive_subfolder:
-            subfolder = str(args.drive_subfolder).strip()
-        else:
-            subfolder = make_drive_subfolder_name(payload, market=market_name)
+            if args.drive_subfolder:
+                subfolder = str(args.drive_subfolder).strip()
+            else:
+                subfolder = make_drive_subfolder_name(payload, market=market_name)
 
-        print(f"📁 Target Drive folder: root/{market_name}/{subfolder}/")
+            print(f"📁 Target Drive folder: root/{market_name}/{subfolder}/", flush=True)
 
-        uploaded = upload_dir(
-            svc,
-            market_folder_id,
-            outdir,
-            pattern="*.png",
-            recursive=False,
-            overwrite=(not args.drive_no_overwrite),
-            verbose=(not args.drive_quiet),
-            concurrent=(not args.drive_no_concurrent),
-            workers=int(args.drive_workers),
-            subfolder_name=subfolder,
-        )
+            uploaded = upload_dir(
+                svc,
+                market_folder_id,
+                outdir,
+                pattern="*.png",
+                recursive=False,
+                overwrite=(not args.drive_no_overwrite),
+                verbose=(not args.drive_quiet),
+                concurrent=(not args.drive_no_concurrent),
+                workers=int(args.drive_workers),
+                subfolder_name=subfolder,
+            )
 
-        print(f"✅ Uploaded {uploaded} png(s)")
+            print(f"✅ Uploaded {uploaded} png(s)", flush=True)
+
+        except Exception as e:
+            # ✅ Never fail the render due to Drive
+            print(f"[WARN] Drive upload failed (best-effort, continue): {e}", flush=True)
+    else:
+        print("\n[drive] upload skipped (default off).", flush=True)
 
     return 0
 
