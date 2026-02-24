@@ -1,0 +1,30 @@
+name: NSE Data Sync to Google Drive
+
+on:
+  schedule:
+    - cron: '0 10 * * 1-5' # 每個工作日的下午 6:00 (UTC+8) 自動執行 (UTC 10:00)
+  workflow_dispatch:      # 允許手動點擊按鈕執行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install dependencies
+      run: |
+        pip install requests pandas google-api-python-client google-auth-httplib2 google-auth-oauthlib
+
+    - name: Run Script
+      env:
+        # 這裡對接你的 GitHub Secrets 名稱
+        GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
+        IN_STOCKLIST: ${{ secrets.IN_STOCKLIST }}
+      run: python main.py
