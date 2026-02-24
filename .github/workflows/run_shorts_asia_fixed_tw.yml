@@ -30,17 +30,24 @@ on:
         type: string
 
 concurrency:
-  group: run_shorts_asia_fixed_${{ github.ref }}_${{ github.event_name }}
+  group: run_shorts_asia_fixed_${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   plan:
     runs-on: ubuntu-latest
     outputs:
+      should_run: ${{ steps.plan.outputs.should_run }}
       matrix_json: ${{ steps.plan.outputs.matrix_json }}
       slot: ${{ steps.plan.outputs.slot }}
       images_ymd: ${{ steps.plan.outputs.images_ymd }}
+
     steps:
+      - name: Setup Python (for plan)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - id: plan
         shell: bash
         run: |
@@ -60,51 +67,58 @@ jobs:
           ALL = ["jp","kr","cn","th"]
 
           now_utc = datetime.now(timezone.utc)
-          # Which cron fired (UTC hour)
-          h = now_utc.hour
-          m = now_utc.minute
+          h, m = now_utc.hour, now_utc.minute
 
-          # Mapping: UTC time -> markets
-          # 02:00 UTC => jp,kr
-          # 03:00 UTC => cn
-          # 05:00 UTC => th
           chosen = []
           if event == "workflow_dispatch":
-            if (not in_markets) or in_markets in ("all","*"):
-              chosen = ALL[:]
-            else:
-              parts = [p for p in in_markets.split(",") if p]
-              chosen = [p for p in parts if p in ALL]
-              bad = [p for p in parts if p not in ALL]
-              if bad:
-                raise SystemExit(f"Invalid market(s): {bad}. Allowed: {ALL} or all")
+              if (not in_markets) or in_markets in ("all","*"):
+                  chosen = ALL[:]
+              else:
+                  parts = [p for p in in_markets.split(",") if p]
+                  bad = [p for p in parts if p not in ALL]
+                  if bad:
+                      raise SystemExit(f"Invalid market(s): {bad}. Allowed: {ALL} or all")
+                  # keep order, de-dup
+                  seen = set()
+                  for p in parts:
+                      if p not in seen:
+                          chosen.append(p)
+                          seen.add(p)
           else:
-            if (h,m) == (2,0):
-              chosen = ["jp","kr"]
-            elif (h,m) == (3,0):
-              chosen = ["cn"]
-            elif (h,m) == (5,0):
-              chosen = ["th"]
-            else:
-              chosen = []
+              # schedule mapping by UTC time
+              if (h, m) == (2, 0):
+                  chosen = ["jp","kr"]
+              elif (h, m) == (3, 0):
+                  chosen = ["cn"]
+              elif (h, m) == (5, 0):
+                  chosen = ["th"]
+              else:
+                  chosen = []
 
-          matrix = {"include":[{"market":x} for x in chosen]}
-          print("MATRIX_JSON=" + json.dumps(matrix))
-          print("SLOT=" + slot)
-          print("IMAGES_YMD=" + images_ymd)
-          PY | tee plan.log
+          matrix = {"include": [{"market": x} for x in chosen]}
+          should_run = "true" if chosen else "false"
 
-          MATRIX_JSON="$(grep '^MATRIX_JSON=' plan.log | head -n1 | sed 's/^MATRIX_JSON=//')"
-          SLOT="$(grep '^SLOT=' plan.log | head -n1 | sed 's/^SLOT=//')"
-          IMAGES_YMD="$(grep '^IMAGES_YMD=' plan.log | head -n1 | sed 's/^IMAGES_YMD=//')"
+          # write outputs directly (no grep/tee)
+          out_path = os.environ["GITHUB_OUTPUT"]
+          with open(out_path, "a", encoding="utf-8") as f:
+              f.write(f"should_run={should_run}\n")
+              f.write("matrix_json=" + json.dumps(matrix) + "\n")
+              f.write(f"slot={slot}\n")
+              f.write(f"images_ymd={images_ymd}\n")
 
-          echo "matrix_json=${MATRIX_JSON}" >> "$GITHUB_OUTPUT"
-          echo "slot=${SLOT}" >> "$GITHUB_OUTPUT"
-          echo "images_ymd=${IMAGES_YMD}" >> "$GITHUB_OUTPUT"
+          print("[PLAN]")
+          print("  event      =", event)
+          print("  now_utc    =", now_utc.isoformat(timespec="seconds"))
+          print("  chosen     =", chosen)
+          print("  should_run =", should_run)
+          print("  slot       =", slot)
+          print("  images_ymd =", images_ymd)
+          print("  matrix     =", json.dumps(matrix))
+          PY
 
   run:
     needs: plan
-    if: ${{ fromJSON(needs.plan.outputs.matrix_json).include[0] != null }}
+    if: needs.plan.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
