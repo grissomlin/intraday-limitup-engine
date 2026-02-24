@@ -9,7 +9,7 @@ from googleapiclient.http import MediaIoBaseUpload
 from google.auth.transport.requests import Request
 import sys
 
-# --- 1. 設定變數 ---
+# 變數設定 (從 GitHub Secrets 讀取)
 GDRIVE_TOKEN_B64 = os.environ.get("GDRIVE_TOKEN_B64")
 GDRIVE_ROOT_FOLDER_ID = os.environ.get("IN_STOCKLIST") 
 
@@ -18,34 +18,22 @@ FILES_TO_PROCESS = {
     "https://nsearchives.nseindia.com/content/equities/sec_list.csv": "sec_list.csv"
 }
 
-# --- 2. 認證服務 ---
 def get_drive_service():
     if not GDRIVE_TOKEN_B64:
         raise ValueError("缺少 GDRIVE_TOKEN_B64 Secrets")
-    
     token_json = json.loads(base64.b64decode(GDRIVE_TOKEN_B64).decode("utf-8"))
     creds = Credentials.from_authorized_user_info(token_json, scopes=["https://www.googleapis.com/auth/drive"])
-    
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        
     return build("drive", "v3", credentials=creds)
 
-# --- 3. 刪除舊檔 ---
 def delete_existing_file(service, file_name, folder_id):
     query = f"name = '{file_name}' and '{folder_id}' in parents and trashed = false"
-    results = service.files().list(
-        q=query, 
-        fields="files(id, name)",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True
-    ).execute()
-    
+    results = service.files().list(q=query, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     for item in results.get('files', []):
         print(f"正在清理舊檔案: {item['name']}")
         service.files().delete(fileId=item['id'], supportsAllDrives=True).execute()
 
-# --- 4. 核心執行函式 ---
 def run():
     try:
         if not GDRIVE_ROOT_FOLDER_ID:
@@ -53,10 +41,7 @@ def run():
             sys.exit(1)
 
         service = get_drive_service()
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://www.nseindia.com/"
-        }
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.nseindia.com/"}
 
         for url, file_name in FILES_TO_PROCESS.items():
             print(f"\n處理中: {file_name}")
@@ -67,13 +52,10 @@ def run():
             
             media = MediaIoBaseUpload(io.BytesIO(resp.content), mimetype='text/csv')
             file_metadata = {'name': file_name, 'parents': [GDRIVE_ROOT_FOLDER_ID]}
-            
             service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
             print(f"✅ {file_name} 上傳成功")
-
     except Exception as e:
         print(f"❌ 發生錯誤: {str(e)}")
         sys.exit(1)
 
-# 直接執行，不使用 if __name__ == "__main__"
 run()
