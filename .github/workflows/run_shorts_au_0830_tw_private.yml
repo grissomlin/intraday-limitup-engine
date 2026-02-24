@@ -1,11 +1,11 @@
-name: Run Shorts (AU @ 08:30 TW, private)
+name: Run Shorts (AU @ 10:00 TW, private)
 
 on:
   schedule:
     # GitHub Actions cron uses UTC.
     # 08:30 Asia/Taipei (UTC+8) => 00:30 UTC
-    - cron: "30 0 * * 1-5"
-
+    #- cron: "30 0 * * 1-5"
+    - cron: "0 2 * * 1-5"  
   workflow_dispatch:
     inputs:
       slot:
