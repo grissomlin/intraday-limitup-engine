@@ -27,6 +27,13 @@ from scripts.render_images_ca.sector_blocks.draw_mpl import (  # noqa: E402
 from scripts.render_images_ca.sector_blocks.layout import get_layout  # noqa: E402
 from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
 
+# ✅ Sector order helpers (shared)
+from scripts.render_images_common.sector_order import (  # noqa: E402
+    normalize_sector_key,
+    extract_overview_sector_order,
+    reorder_keys_by_overview,
+)
+
 MARKET = "CA"
 
 
@@ -391,6 +398,9 @@ def main() -> int:
     cutoff = parse_cutoff(payload)
     _, time_note = get_market_time_info(payload)
 
+    # ✅ capture overview sector order keys (normalized)
+    overview_sector_keys: List[str] = []
+
     # 1) Overview first
     if not args.no_overview:
         payload.setdefault("market", MARKET)
@@ -405,6 +415,24 @@ def main() -> int:
             metric=str(args.overview_metric),
         )
 
+        overview_sector_keys = extract_overview_sector_order(payload)
+
+        if debug_on:
+            print(
+                "[CA][DEBUG] raw _overview_sector_order exists?:",
+                isinstance(payload.get("_overview_sector_order"), list),
+            )
+            print("[CA][DEBUG] raw overview order head:", (payload.get("_overview_sector_order", []) or [])[:20])
+            if overview_sector_keys:
+                met_eff = str(payload.get("_overview_metric_eff") or "").strip()
+                print(
+                    f"[CA] overview sector order loaded: n={len(overview_sector_keys)}"
+                    + (f" metric={met_eff}" if met_eff else "")
+                )
+                print("[CA] normalized overview order head:", overview_sector_keys[:20])
+            else:
+                print("[CA][WARN] overview order empty after normalization", flush=True)
+
     # 2) Sector pages
     limitup = build_limitup_by_sector(universe, float(args.ret_th))
     peers = build_peers_by_sector(universe, float(args.ret_th))
@@ -412,8 +440,35 @@ def main() -> int:
     rows_top = max(1, int(args.rows_per_box))
     rows_peer = rows_top + 1
 
-    for sector, L_total in (limitup or {}).items():
-        P_all = peers.get(sector, [])
+    # ✅ sector ordering: prefer overview order, then append remaining
+    sectors_raw = list((limitup or {}).keys())
+    norm_to_sector: Dict[str, str] = {}
+    existing_norm_keys: List[str] = []
+    for sec in sectors_raw:
+        k = normalize_sector_key(sec)
+        if not k:
+            continue
+        existing_norm_keys.append(k)
+        if k not in norm_to_sector:
+            norm_to_sector[k] = sec
+
+    if overview_sector_keys:
+        ordered_norm = reorder_keys_by_overview(existing_keys=existing_norm_keys, overview_keys=overview_sector_keys)
+    else:
+        ordered_norm = existing_norm_keys
+
+    ordered_sectors: List[str] = []
+    seen_secs = set()
+    for k in ordered_norm:
+        sec = norm_to_sector.get(k)
+        if not sec or sec in seen_secs:
+            continue
+        ordered_sectors.append(sec)
+        seen_secs.add(sec)
+
+    for sector in ordered_sectors:
+        L_total = (limitup or {}).get(sector, []) or []
+        P_all = peers.get(sector, []) or []
 
         big_total = len([x for x in L_total if not x.get("touched_only")])
         touch_total = len([x for x in L_total if x.get("touched_only")])
@@ -472,6 +527,9 @@ def main() -> int:
             )
 
     # 3) list.txt (for video stitching)
+    # NOTE: this keeps your original behavior (overview first, then name sort).
+    # If you want list.txt to follow overview sector order too, we can switch it
+    # to use sector_order.write_list_txt_from_overview_order like AU/UK later.
     n_list = write_list_txt(outdir)
     print(f"🧾 list.txt written ({n_list} png(s)) -> {outdir / 'list.txt'}")
 
