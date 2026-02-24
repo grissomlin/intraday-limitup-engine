@@ -15,7 +15,6 @@ os.environ.setdefault("OVERVIEW_DEBUG", "1")
 
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -26,11 +25,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.render_images_tw.pipeline import render_tw  # ✅ 絕對 import
 from scripts.render_images_tw.tw_rows import print_open_limit_watchlist, print_sector_top_rows
-
-DEFAULT_ROOT_FOLDER = (
-    os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
-    or "1wxOxKDRLZ15dwm-V2G25l_vjaHQ-f2aE"
-)
 
 
 # =============================================================================
@@ -107,49 +101,6 @@ def write_list_txt(
 
 
 # =============================================================================
-# Drive subfolder helpers (align with JP/KR)
-# =============================================================================
-def _first_ymd(payload: Dict[str, Any]) -> Optional[str]:
-    for k in ("bar_date", "ymd", "ymd_effective", "date"):
-        v = _safe_str(payload.get(k))
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", v):
-            return v
-
-    for k in ("asof", "slot"):
-        v = _safe_str(payload.get(k))
-        m = re.search(r"(\d{4}-\d{2}-\d{2})", v)
-        if m:
-            return m.group(1)
-    return None
-
-
-def _infer_run_tag(payload: Dict[str, Any]) -> str:
-    s = _safe_str(payload.get("slot") or payload.get("asof") or "").lower()
-    if "open" in s:
-        return "open"
-    if "midday" in s or "noon" in s:
-        return "midday"
-    if "close" in s:
-        return "close"
-
-    m = re.search(r"(\d{1,2}):(\d{2})", s)
-    if m:
-        hh = int(m.group(1))
-        mm = int(m.group(2))
-        return f"{hh:02d}{mm:02d}"
-    return "run"
-
-
-def make_drive_subfolder_name(payload: Dict[str, Any], market: str) -> str:
-    ymd = _first_ymd(payload)
-    tag = _infer_run_tag(payload)
-    if ymd:
-        return f"{market}_{ymd}_{tag}"
-    now = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    return f"{market}_{now}"
-
-
-# =============================================================================
 # Main
 # =============================================================================
 def main() -> int:
@@ -174,22 +125,6 @@ def main() -> int:
     ap.add_argument("--debug-sector", default=None)
     ap.add_argument("--debug-only", action="store_true")
 
-    # Upload flags (same semantics as JP/KR)
-    ap.add_argument("--no-upload-drive", action="store_true")
-    ap.add_argument("--drive-root-folder-id", default=DEFAULT_ROOT_FOLDER)
-    ap.add_argument("--drive-market", default="TW")
-    ap.add_argument("--drive-client-secret", default=None)
-    ap.add_argument("--drive-token", default=None)
-
-    # ✅ subfolder: explicit or auto
-    ap.add_argument("--drive-subfolder", default=None)
-    ap.add_argument("--drive-subfolder-auto", action="store_true", default=True)
-
-    ap.add_argument("--drive-workers", type=int, default=16)
-    ap.add_argument("--drive-no-concurrent", action="store_true")
-    ap.add_argument("--drive-no-overwrite", action="store_true")
-    ap.add_argument("--drive-quiet", action="store_true")
-
     args = ap.parse_args()
 
     if args.no_debug:
@@ -206,7 +141,7 @@ def main() -> int:
         print_sector_top_rows(payload, sector=str(args.debug_sector), n=50)
 
     if args.debug_only:
-        print("\n[DEBUG] --debug-only enabled: skip rendering & uploading.")
+        print("\n[DEBUG] --debug-only enabled: skip rendering.")
         return 0
 
     ymd = _payload_ymd(payload) or "unknown"
@@ -226,14 +161,6 @@ def main() -> int:
         f"fonts={os.getenv('OVERVIEW_DEBUG_FONTS','0')}"
     )
 
-    # Drive subfolder auto naming (align JP/KR)
-    drive_subfolder: Optional[str] = None
-    if args.drive_subfolder:
-        drive_subfolder = str(args.drive_subfolder).strip() or None
-    else:
-        if bool(args.drive_subfolder_auto):
-            drive_subfolder = make_drive_subfolder_name(payload, market=str(args.drive_market or "TW").upper())
-
     # ✅ 直接固定關掉 gainbins（不浪費時間）
     render_tw(
         payload=payload,
@@ -247,16 +174,6 @@ def main() -> int:
         overview_metric=str(args.overview_metric or "auto"),
         overview_page_size=int(args.overview_page_size),
         overview_gainbins=False,  # ✅ HARD OFF
-        no_upload_drive=bool(args.no_upload_drive),
-        drive_root_folder_id=str(args.drive_root_folder_id),
-        drive_market=str(args.drive_market),
-        drive_client_secret=args.drive_client_secret,
-        drive_token=args.drive_token,
-        drive_subfolder=drive_subfolder,
-        drive_workers=int(args.drive_workers),
-        drive_no_concurrent=bool(args.drive_no_concurrent),
-        drive_no_overwrite=bool(args.drive_no_overwrite),
-        drive_quiet=bool(args.drive_quiet),
     )
 
     # -------------------------------------------------------------------------
