@@ -9,36 +9,25 @@ import os
 # ✅ VERY IMPORTANT: Force matplotlib headless backend (avoid tkinter warnings)
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-import re
-import sys
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+import re  # noqa: E402
+import sys  # noqa: E402
+from datetime import datetime  # noqa: E402
+from pathlib import Path  # noqa: E402
+from typing import Any, Dict, List, Tuple, Optional  # noqa: E402
 
 THIS = Path(__file__).resolve()
 REPO_ROOT = THIS.parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.render_images_au.sector_blocks.draw_mpl import (
+from scripts.render_images_au.sector_blocks.draw_mpl import (  # noqa: E402
     draw_block_table,
     parse_cutoff,
     get_market_time_info,
 )
-from scripts.render_images_au.sector_blocks.layout import get_layout
-from scripts.render_images_common.overview_mpl import render_overview_png
+from scripts.render_images_au.sector_blocks.layout import get_layout  # noqa: E402
+from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
 
-# ✅ Drive uploader (env-first / b64 supported by drive_uploader)
-from scripts.utils.drive_uploader import (
-    get_drive_service,
-    ensure_folder,
-    upload_dir,
-)
-
-DEFAULT_ROOT_FOLDER = (
-    os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
-    or "1wxOxKDRLZ15dwm-V2G25l_vjaHQ-f2aE"
-)
 
 # =============================================================================
 # Debug env switches (JP-style)
@@ -178,7 +167,6 @@ def _payload_ymd(payload: Dict[str, Any]) -> str:
         v = str(payload.get(k) or "").strip()
         if re.match(r"^\d{4}-\d{2}-\d{2}$", v):
             return v
-    # sometimes asof contains date
     for k in ("asof", "slot"):
         v = str(payload.get(k) or "").strip()
         m = re.search(r"(\d{4}-\d{2}-\d{2})", v)
@@ -242,59 +230,6 @@ def write_list_txt(outdir: Path) -> Path:
     list_path = outdir / "list.txt"
     list_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return list_path
-
-
-# =============================================================================
-# Drive subfolder helpers (keep)
-# =============================================================================
-def _first_ymd(payload: Dict[str, Any]) -> Optional[str]:
-    """
-    Prefer ymd for weekend runs; allow ymd_effective.
-    """
-    for k in ("ymd", "ymd_effective", "bar_date", "date"):
-        v = str(payload.get(k) or "").strip()
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", v):
-            return v
-
-    for k in ("asof", "slot"):
-        v = str(payload.get(k) or "").strip()
-        m = re.search(r"(\d{4}-\d{2}-\d{2})", v)
-        if m:
-            return m.group(1)
-
-    return None
-
-
-def _infer_run_tag(payload: Dict[str, Any]) -> str:
-    s = str(payload.get("slot") or payload.get("asof") or "").lower()
-
-    if "midday" in s or "noon" in s:
-        return "midday"
-    if "close" in s:
-        return "close"
-
-    m = re.search(r"(\d{1,2}):(\d{2})", s)
-    if m:
-        hh = int(m.group(1))
-        mm = int(m.group(2))
-        return f"{hh:02d}{mm:02d}"
-
-    return "run"
-
-
-def make_drive_subfolder_name(payload: Dict[str, Any], market: str) -> str:
-    """
-    Default folder: AU_2026-02-15_close
-    Fallback: AU_20260215_121530
-    """
-    ymd = _first_ymd(payload)
-    tag = _infer_run_tag(payload)
-
-    if ymd:
-        return f"{market}_{ymd}_{tag}"
-
-    now = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    return f"{market}_{now}"
 
 
 # =============================================================================
@@ -428,28 +363,8 @@ def main() -> int:
     # ✅ JP-style: allow one-switch disable debug env
     ap.add_argument("--no-debug", action="store_true", help="Disable overview/footer/font debug env")
 
-    # ✅ JP-style: Drive upload default ON
-    ap.set_defaults(upload_drive=True)
-    ap.add_argument("--upload-drive", dest="upload_drive", action="store_true", help="Enable Drive upload (default on)")
-    ap.add_argument("--no-upload-drive", dest="upload_drive", action="store_false", help="Disable Drive upload")
-
-    ap.add_argument("--drive-root-folder-id", default=DEFAULT_ROOT_FOLDER)
-    ap.add_argument("--drive-market", default="AU")
-
-    ap.add_argument("--drive-client-secret", default=None)
-    ap.add_argument("--drive-token", default=None)
-
-    # Subfolder strategy (default ON recommended)
-    ap.set_defaults(drive_subfolder_auto=True)
-    ap.add_argument("--drive-subfolder", default=None)
-    ap.add_argument("--drive-subfolder-auto", dest="drive_subfolder_auto", action="store_true")
-    ap.add_argument("--no-drive-subfolder-auto", dest="drive_subfolder_auto", action="store_false")
-
-    # Upload tuning
-    ap.add_argument("--drive-workers", type=int, default=8)
-    ap.add_argument("--drive-no-concurrent", action="store_true")
-    ap.add_argument("--drive-no-overwrite", action="store_true")
-    ap.add_argument("--drive-quiet", action="store_true")
+    # keep quiet flag for logs (not related to Drive anymore)
+    ap.add_argument("--quiet", action="store_true", help="Less logs")
 
     args = ap.parse_args()
 
@@ -472,6 +387,18 @@ def main() -> int:
     cutoff = parse_cutoff(payload)
     _, time_note = get_market_time_info(payload)
 
+    if not args.quiet:
+        ymd = _payload_ymd(payload) or "unknown"
+        slot = _payload_slot(payload) or "unknown"
+        print(f"[AU] payload={args.payload}")
+        print(f"[AU] ymd={ymd} slot={slot} outdir={outdir}")
+        print(f"[AU] universe={len(universe)}")
+        print(
+            "[AU] debug="
+            f"footer={os.getenv('OVERVIEW_DEBUG_FOOTER','0')} "
+            f"fonts={os.getenv('OVERVIEW_DEBUG_FONTS','0')}"
+        )
+
     # 1) Overview (first)
     if not args.no_overview:
         payload.setdefault("market", "AU")
@@ -487,8 +414,8 @@ def main() -> int:
         )
 
     # 2) Sector pages
-    movers = build_bigmove_by_sector(universe, args.ret_th)
-    peers = build_peers_by_sector(universe, args.ret_th)
+    movers = build_bigmove_by_sector(universe, float(args.ret_th))
+    peers = build_peers_by_sector(universe, float(args.ret_th))
 
     rows_top = max(1, int(args.rows_per_box))
     rows_peer = rows_top + 1
@@ -502,6 +429,7 @@ def main() -> int:
         top_pages = chunk(L_total, rows_top)
         peer_pages_all = chunk(P_all, rows_peer)
 
+        # Keep one extra page for peers after last mover page
         peer_cap = len(top_pages) + 1
         peer_pages = peer_pages_all[:peer_cap]
 
@@ -552,56 +480,11 @@ def main() -> int:
                 has_more_peers=has_more_peers,
             )
 
-    # ✅ list.txt (JP-style)
+    # 3) list.txt (JP-style)
     list_path = write_list_txt(outdir)
-    if not args.drive_quiet:
+    if not args.quiet:
         print(f"📝 Wrote list: {list_path}")
-
-    # 3) Drive upload (default ON)
-    if args.upload_drive:
-        if not args.drive_quiet:
-            print("\n🚀 Uploading PNGs to Google Drive...")
-
-        svc = get_drive_service(
-            client_secret_file=args.drive_client_secret,
-            token_file=args.drive_token,
-        )
-
-        root_id = str(args.drive_root_folder_id).strip()
-        market_name = str(args.drive_market or "AU").strip().upper()
-
-        market_folder_id = ensure_folder(svc, root_id, market_name)
-
-        subfolder: Optional[str] = None
-        if args.drive_subfolder:
-            subfolder = str(args.drive_subfolder).strip()
-        elif args.drive_subfolder_auto:
-            subfolder = make_drive_subfolder_name(payload, market=market_name)
-
-        if not args.drive_quiet:
-            if subfolder:
-                print(f"📁 Target Drive folder: root/{market_name}/{subfolder}/")
-            else:
-                print(f"📁 Target Drive folder: root/{market_name}/ (no subfolder)")
-
-        uploaded = upload_dir(
-            svc,
-            market_folder_id,
-            outdir,
-            pattern="*.png",
-            recursive=False,
-            overwrite=(not args.drive_no_overwrite),
-            verbose=(not args.drive_quiet),
-            concurrent=(not args.drive_no_concurrent),
-            workers=int(args.drive_workers),
-            subfolder_name=subfolder,
-        )
-
-        if not args.drive_quiet:
-            print(f"✅ Uploaded {uploaded} png(s)")
-
-    if not args.drive_quiet:
-        print("\n✅ AU render finished.")
+        print("\n✅ AU render finished. (Drive upload removed)")
     return 0
 
 
