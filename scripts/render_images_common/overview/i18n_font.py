@@ -191,6 +191,7 @@ def _debug_print_noto_paths() -> None:
 # Force-register TTC faces (critical on some CI images)
 # =============================================================================
 _CJK_TTC_PATHS = [
+    # Sans CJK
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc",
@@ -198,21 +199,19 @@ _CJK_TTC_PATHS = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-DemiLight.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Thin.ttc",
+    # Serif CJK (optional)
     "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
 ]
 
-# ✅ KR-only (keep as-is)
-_KR_TTC_BY_WEIGHT = {
-    "bold": "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-    "black": "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc",
-    "medium": "/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc",
-    "light": "/usr/share/fonts/opentype/noto/NotoSansCJK-Light.ttc",
-    "regular": "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-}
-
 
 def _try_add_noto_cjk_ttc() -> None:
+    """
+    On some GitHub runner + Matplotlib setups, fontManager scans TTC but only
+    registers one family name (often JP). However the TTC still contains all CJK glyphs.
+
+    Force-add TTC via fontManager.addfont() (idempotent).
+    """
     try:
         for p in _CJK_TTC_PATHS:
             if os.path.exists(p):
@@ -222,26 +221,6 @@ def _try_add_noto_cjk_ttc() -> None:
                     pass
     except Exception:
         pass
-
-
-def _pick_kr_ttc_path(weight: Optional[str]) -> Optional[str]:
-    w = (weight or "").strip().lower()
-    if w in {"heavy", "black"}:
-        w = "black"
-    elif w in {"bold"}:
-        w = "bold"
-    elif w in {"medium"}:
-        w = "medium"
-    elif w in {"light"}:
-        w = "light"
-    else:
-        w = "regular"
-
-    cand = [_KR_TTC_BY_WEIGHT.get(w), _KR_TTC_BY_WEIGHT.get("regular")]
-    for p in cand:
-        if p and os.path.exists(p):
-            return p
-    return None
 
 
 # =============================================================================
@@ -289,9 +268,10 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """
     Configure matplotlib fonts for rendering + bbox measurement.
 
-    KR tofu is handled in fontprops_for_text(fname=...).
-    For TW/JP/CN Han tofu on CI, we ensure 'Noto Sans CJK JP' is included early
-    as a universal CJK fallback (common that only JP family name is registered).
+    Key rule:
+    - If the market actually DISPLAY CJK/TH, the FIRST font MUST support that script.
+    - On GitHub runners, Noto CJK TTC is often registered ONLY as "Noto Sans CJK JP".
+      So we treat it as a universal CJK fallback to avoid DejaVu tofu warnings.
     """
     try:
         _try_add_noto_cjk_ttc()
@@ -336,14 +316,14 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
                     need_han = True
                     break
 
-        # ------------------------------------------------------------------
-        # ✅ KEY FIX for TW/CN/JP on CI:
-        # Put "Noto Sans CJK JP" early as universal CJK fallback.
-        # ------------------------------------------------------------------
+        # IMPORTANT:
+        # - On CI, "Noto Sans CJK JP" may be the ONLY registered family name for TTC.
+        # - It still covers Han/KR/SC/TC glyphs well enough for our use.
+        CJK_UNIVERSAL = ["Noto Sans CJK JP", "Noto Sans CJK"]
+
         primary_cn = [
             "Noto Sans CJK SC",
-            "Noto Sans CJK JP",
-            "Noto Sans CJK",
+            *CJK_UNIVERSAL,
             "Noto Sans SC",
             "Microsoft YaHei",
             "SimHei",
@@ -351,16 +331,25 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         ]
         primary_tw = [
             "Noto Sans CJK TC",
-            "Noto Sans CJK JP",
-            "Noto Sans CJK",
-            "Noto Sans TC",
             "Noto Sans CJK HK",
+            *CJK_UNIVERSAL,
+            "Noto Sans TC",
             "Noto Sans HK",
             "Microsoft JhengHei",
             "PingFang TC",
         ]
-        primary_jp = ["Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "Meiryo"]
-        primary_kr = ["Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic"]
+        primary_jp = [
+            "Noto Sans CJK JP",
+            "Noto Sans JP",
+            "Yu Gothic",
+            "Meiryo",
+        ]
+        primary_kr = [
+            "Noto Sans CJK KR",
+            *CJK_UNIVERSAL,
+            "Noto Sans KR",
+            "Malgun Gothic",
+        ]
 
         primary_th = [
             "Noto Sans Thai",
@@ -378,6 +367,7 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         profile = _get_font_profile()
         zh_primary = primary_cn if market == "CN" else primary_tw
 
+        # ---- Build order ----
         if market in {"TW", "CN", "JP", "KR", "TH"} or need_han or need_jp or need_kr or need_th:
             if market == "TH" or need_th:
                 order = primary_th + latin + zh_primary + primary_jp + primary_kr
@@ -402,13 +392,6 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
         if not font_list:
             return None
 
-        # ✅ hard guard: if TW/CN/JP but first is Latin, try to force JP CJK to the front
-        if market in {"TW", "CN", "JP"} and font_list:
-            head = font_list[0]
-            if head in {"Noto Sans", "DejaVu Sans"}:
-                if "Noto Sans CJK JP" in font_list:
-                    font_list = ["Noto Sans CJK JP"] + [x for x in font_list if x != "Noto Sans CJK JP"]
-
         plt.rcParams["font.family"] = "sans-serif"
         plt.rcParams["font.sans-serif"] = font_list
         plt.rcParams["axes.unicode_minus"] = False
@@ -422,7 +405,7 @@ def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
 
 
 # =============================================================================
-# Per-text FontProperties chooser (KR tofu-safe + TW/JP/CN Han safe)
+# Per-text FontProperties chooser (CRITICAL for bbox measurement)
 # =============================================================================
 def _pick_first_available(candidates: List[str]) -> Optional[str]:
     try:
@@ -443,11 +426,11 @@ def fontprops_for_text(
     weight: Optional[str] = None,
 ) -> FontProperties:
     """
-    Return FontProperties that avoids tofu.
+    Return a family fallback list so Matplotlib can fall back without switching
+    to DejaVu (missing glyph) and without bbox drift.
 
-    ✅ KR-only: Hangul uses TTC fname.
-    ✅ TW/JP/CN: Han list includes "Noto Sans CJK JP" early to avoid DejaVu fallback on CI.
-    ✅ JP gainbins: kanji-only text must NOT be routed to TC list; route to JP list.
+    IMPORTANT:
+    - Treat "Noto Sans CJK JP" as universal CJK fallback on CI.
     """
     try:
         setup_cjk_font(payload or {"market": market})
@@ -456,22 +439,7 @@ def fontprops_for_text(
 
     m = normalize_market(market or (payload or {}).get("market", "") if payload else market)
 
-    w_in = (weight or "").strip().lower() or None
-    w_norm = w_in
-    if w_norm in {"regular", "normal"}:
-        w_norm = "regular"
-    elif w_norm in {"medium"}:
-        w_norm = "medium"
-    elif w_norm in {"bold", "heavy", "black"}:
-        w_norm = "bold"
-
-    # ✅ KR-only: Hangul -> use TTC path if possible
-    if has_hangul(text):
-        p = _pick_kr_ttc_path(w_norm)
-        if p:
-            if w_norm is None:
-                return FontProperties(fname=p)
-            return FontProperties(fname=p, weight=w_norm)
+    CJK_UNIVERSAL = ["Noto Sans CJK JP", "Noto Sans CJK"]
 
     if has_thai(text):
         primary = [
@@ -481,21 +449,30 @@ def fontprops_for_text(
             "Noto Looped Thai UI",
             "Tahoma",
             "Leelawadee UI",
+            *CJK_UNIVERSAL,
             "DejaVu Sans",
         ]
     elif has_hangul(text):
-        primary = ["Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic", "DejaVu Sans"]
+        primary = [
+            "Noto Sans CJK KR",
+            *CJK_UNIVERSAL,
+            "Noto Sans KR",
+            "Malgun Gothic",
+            "DejaVu Sans",
+        ]
     elif has_kana(text):
-        primary = ["Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "Meiryo", "DejaVu Sans"]
+        primary = [
+            "Noto Sans CJK JP",
+            "Noto Sans JP",
+            "Yu Gothic",
+            "Meiryo",
+            "DejaVu Sans",
+        ]
     elif has_han(text):
-        # ✅ IMPORTANT: JP kanji-only should use JP fonts first
-        if m == "JP":
-            primary = ["Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "Meiryo", "DejaVu Sans"]
-        elif m == "CN":
+        if m == "CN":
             primary = [
                 "Noto Sans CJK SC",
-                "Noto Sans CJK JP",
-                "Noto Sans CJK",
+                *CJK_UNIVERSAL,
                 "Noto Sans SC",
                 "Microsoft YaHei",
                 "SimHei",
@@ -503,30 +480,40 @@ def fontprops_for_text(
                 "DejaVu Sans",
             ]
         else:
-            # TW/HK/Han
             primary = [
                 "Noto Sans CJK TC",
-                "Noto Sans CJK JP",
-                "Noto Sans CJK",
-                "Noto Sans TC",
                 "Noto Sans CJK HK",
+                *CJK_UNIVERSAL,
+                "Noto Sans TC",
                 "Noto Sans HK",
                 "Microsoft JhengHei",
                 "PingFang TC",
                 "DejaVu Sans",
             ]
     else:
-        primary = ["Noto Sans", "DejaVu Sans", "Arial Unicode MS"]
+        primary = [
+            "Noto Sans",
+            "DejaVu Sans",
+            "Arial Unicode MS",
+        ]
 
     families = _pick_available_list(primary)
     if not families:
         base = _pick_first_available(primary) or "sans-serif"
         families = [base]
 
-    if w_in is None:
+    w = (weight or "").strip().lower() or None
+    if w is None:
         return FontProperties(family=families)
 
-    return FontProperties(family=families, weight=w_norm)
+    if w in {"regular", "normal"}:
+        w = "regular"
+    elif w in {"medium"}:
+        w = "medium"
+    elif w in {"bold", "heavy", "black"}:
+        w = "bold"
+
+    return FontProperties(family=families, weight=w)
 
 
 # =============================================================================
