@@ -28,6 +28,13 @@ from scripts.render_images_au.sector_blocks.draw_mpl import (  # noqa: E402
 from scripts.render_images_au.sector_blocks.layout import get_layout  # noqa: E402
 from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
 
+# ✅ NEW: common sector-order utilities
+from scripts.render_images_common.sector_order import (  # noqa: E402
+    extract_overview_sector_order,
+    reorder_sectors_by_overview,
+    write_list_txt_ordered,
+)
+
 
 # =============================================================================
 # Debug env switches (JP-style)
@@ -75,10 +82,6 @@ def _bool(x: Any) -> bool:
         return False
     s = str(x).strip().lower()
     return s in ("1", "true", "yes", "y", "on")
-
-
-def _s(x: Any) -> str:
-    return str(x).strip() if x is not None else ""
 
 
 def load_payload(path: str) -> Dict[str, Any]:
@@ -206,7 +209,7 @@ def _default_outdir(payload: Dict[str, Any], market: str = "au") -> Path:
 
 
 # =============================================================================
-# list.txt writer (JP-style) + ordered writer (NEW)
+# list.txt writer (JP-style fallback)
 # =============================================================================
 def write_list_txt(outdir: Path) -> Path:
     """
@@ -227,33 +230,8 @@ def write_list_txt(outdir: Path) -> Path:
         return (is_overview, p.name)
 
     pngs_sorted = sorted(pngs, key=_key)
-
-    lines = [p.name for p in pngs_sorted]
     list_path = outdir / "list.txt"
-    list_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return list_path
-
-
-def write_list_txt_ordered(outdir: Path, ordered_paths: List[Path]) -> Path:
-    """
-    ✅ NEW: write list.txt in the exact order you want
-    (overview first + sector pages by overview sector order)
-    """
-    seen = set()
-    final: List[Path] = []
-    for p in ordered_paths:
-        try:
-            pp = Path(p)
-            if pp.is_file():
-                key = pp.name
-                if key not in seen:
-                    final.append(pp)
-                    seen.add(key)
-        except Exception:
-            continue
-
-    list_path = Path(outdir) / "list.txt"
-    list_path.write_text("\n".join([p.name for p in final]) + ("\n" if final else ""), encoding="utf-8")
+    list_path.write_text("\n".join([p.name for p in pngs_sorted]) + "\n", encoding="utf-8")
     return list_path
 
 
@@ -364,40 +342,6 @@ def build_peers_by_sector(universe: List[Dict[str, Any]], ret_th: float):
 
 
 # =============================================================================
-# ✅ NEW: overview sector order helpers
-# =============================================================================
-def normalize_sector_key(s: Any) -> str:
-    """
-    Normalize sector names for matching overview order:
-    - strip
-    - collapse whitespace
-    - lowercase
-    """
-    ss = _s(s)
-    ss = re.sub(r"\s+", " ", ss).strip().lower()
-    return ss
-
-
-def _extract_overview_sector_order(payload: Dict[str, Any]) -> List[str]:
-    raw = payload.get("_overview_sector_order", []) or []
-    if not isinstance(raw, list):
-        return []
-    out: List[str] = []
-    for x in raw:
-        k = normalize_sector_key(x)
-        if k:
-            out.append(k)
-    # uniq keep order
-    seen = set()
-    out2: List[str] = []
-    for k in out:
-        if k not in seen:
-            out2.append(k)
-            seen.add(k)
-    return out2
-
-
-# =============================================================================
 # Main (JP-style UX)
 # =============================================================================
 def main() -> int:
@@ -422,7 +366,6 @@ def main() -> int:
     # ✅ JP-style: allow one-switch disable debug env
     ap.add_argument("--no-debug", action="store_true", help="Disable overview/footer/font debug env")
 
-    # keep quiet flag for logs (not related to Drive anymore)
     ap.add_argument("--quiet", action="store_true", help="Less logs")
 
     args = ap.parse_args()
@@ -458,11 +401,10 @@ def main() -> int:
             f"fonts={os.getenv('OVERVIEW_DEBUG_FONTS','0')}"
         )
 
-    # We'll build an explicit render order list for list.txt
     ordered_for_list: List[Path] = []
+    overview_order_keys: List[str] = []
 
     # 1) Overview (first) + capture sector order
-    overview_order_keys: List[str] = []
     if not args.no_overview:
         payload.setdefault("market", "AU")
         payload.setdefault("asof", payload.get("asof") or payload.get("slot") or "")
@@ -477,17 +419,15 @@ def main() -> int:
                 metric=str(args.overview_metric),
             ) or []
 
-            # overview images should come first in list.txt
             ordered_for_list.extend([Path(p) for p in overview_paths if Path(p).is_file()])
 
-            # debug
             print(
                 "[AU][DEBUG] raw _overview_sector_order exists?:",
                 isinstance(payload.get("_overview_sector_order"), list),
             )
             print("[AU][DEBUG] raw overview order head:", (payload.get("_overview_sector_order", []) or [])[:20])
 
-            overview_order_keys = _extract_overview_sector_order(payload)
+            overview_order_keys = extract_overview_sector_order(payload)
             if overview_order_keys:
                 met_eff = str(payload.get("_overview_metric_eff") or "").strip()
                 print(
@@ -497,6 +437,7 @@ def main() -> int:
                 print("[AU] normalized overview order head:", overview_order_keys[:20])
             else:
                 print("[AU][WARN] overview order empty after normalization", flush=True)
+
         except Exception as e:
             print(f"[AU][WARN] overview skipped due to render error: {e}", flush=True)
 
@@ -507,36 +448,9 @@ def main() -> int:
     rows_top = max(1, int(args.rows_per_box))
     rows_peer = rows_top + 1
 
-    # =============================================================================
-    # ✅ NEW: reorder sectors by overview order (then append remaining sectors)
-    # =============================================================================
+    # ✅ reorder sectors by overview order (then append remaining sectors)
     sectors_movers = list((movers or {}).keys())
-
-    # Map normalized key -> original sector name(s)
-    key_to_sector: Dict[str, str] = {}
-    for sec in sectors_movers:
-        k = normalize_sector_key(sec)
-        # first wins (stable)
-        if k and k not in key_to_sector:
-            key_to_sector[k] = sec
-
-    ordered_sectors: List[str] = []
-    if overview_order_keys:
-        # add sectors that appear in overview order
-        for k in overview_order_keys:
-            sec = key_to_sector.get(k)
-            if sec and sec in (movers or {}):
-                ordered_sectors.append(sec)
-
-        # append remaining sectors (keep original insertion order from dict)
-        seen = set(normalize_sector_key(s) for s in ordered_sectors)
-        for sec in sectors_movers:
-            k = normalize_sector_key(sec)
-            if k not in seen:
-                ordered_sectors.append(sec)
-                seen.add(k)
-    else:
-        ordered_sectors = sectors_movers  # fallback
+    ordered_sectors = reorder_sectors_by_overview(sectors_movers, overview_order_keys) if overview_order_keys else sectors_movers
 
     for sector in ordered_sectors:
         L_total = (movers or {}).get(sector, []) or []
@@ -548,7 +462,6 @@ def main() -> int:
         top_pages = chunk(L_total, rows_top)
         peer_pages_all = chunk(P_all, rows_peer)
 
-        # Keep one extra page for peers after last mover page
         peer_cap = len(top_pages) + 1
         peer_pages = peer_pages_all[:peer_cap]
 
@@ -602,13 +515,12 @@ def main() -> int:
                 has_more_peers=has_more_peers,
             )
 
-            # ✅ record sector pages in the EXACT sequence we rendered
             if out_path.is_file():
                 ordered_for_list.append(out_path)
 
     # 3) list.txt
     if overview_order_keys:
-        list_path = write_list_txt_ordered(outdir, ordered_for_list)
+        list_path = write_list_txt_ordered(outdir, ordered_for_list, filename="list.txt")
     else:
         list_path = write_list_txt(outdir)
 
