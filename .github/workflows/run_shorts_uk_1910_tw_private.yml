@@ -1,0 +1,221 @@
+name: Run Shorts (UK @ 19:10 TW, private)
+
+on:
+  schedule:
+    # GitHub Actions cron uses UTC.
+    # 19:10 Asia/Taipei (UTC+8) => 11:10 UTC
+    - cron: "10 11 * * 1-5"
+
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "slot (open/midday/close)"
+        required: true
+        default: "midday"
+        type: choice
+        options:
+          - open
+          - midday
+          - close
+      images_ymd:
+        description: "images ymd (latest | YYYY-MM-DD)"
+        required: true
+        default: "latest"
+        type: string
+
+concurrency:
+  group: run_shorts_uk_1910tw_${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    name: run_shorts uk
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      MPLBACKEND: Agg
+      MPLCONFIGDIR: $RUNNER_TEMP/mpl-uk
+
+      RUN_SHORTS_DEBUG_TREE: "1"
+      OVERVIEW_DEBUG_FONTS: "1"
+      OVERVIEW_DEBUG_FOOTER: "1"
+
+      # Google Drive
+      GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+      GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
+      GDRIVE_CLIENT_SECRET_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_B64 }}
+      GDRIVE_ALLOW_INTERACTIVE: "0"
+
+      # YouTube
+      YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+      YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Echo schedule info
+        shell: bash
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "TW target=19:10 (UTC=11:10)"
+          echo "slot=${{ github.event.inputs.slot || 'midday' }}"
+          echo "images_ymd=${{ github.event.inputs.images_ymd || 'latest' }}"
+          echo "MPLCONFIGDIR=${MPLCONFIGDIR}"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ============================================================
+      # SYSTEM DEPENDENCIES + FULL FONT STACK (CJK/TH/Emoji)
+      #   - same as matrix to avoid tofu
+      # ============================================================
+      - name: Install system deps (FULL FONT STACK)
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          sudo apt-get update
+
+          # video/font infra
+          sudo apt-get install -y \
+            ffmpeg \
+            fontconfig
+
+          # core fallbacks (DejaVu)
+          sudo apt-get install -y \
+            fonts-dejavu-core \
+            fonts-dejavu-extra
+
+          # ✅ Noto stacks
+          sudo apt-get install -y \
+            fonts-noto-cjk \
+            fonts-noto-core || true
+
+          # emoji (some runners may not have it)
+          sudo apt-get install -y fonts-noto-color-emoji || true
+
+          # Optional but often helpful on runner images
+          sudo apt-get install -y \
+            fonts-noto-extra \
+            fonts-noto-ui-core \
+            fonts-noto-unhinted || true
+
+          # Some runner images provide this, some don't
+          sudo apt-get install -y fonts-noto-cjk-extra || true
+
+          # Rebuild fontconfig cache
+          sudo fc-cache -f -v
+
+          # Quick sanity listing
+          echo "---- fc-list (CJK/TC/SC/KR candidates) ----"
+          fc-list | grep -iE "noto sans (cjk|tc|sc|kr)|noto serif (cjk|tc|sc|kr)|noto sans (tc|sc|kr)" || true
+          echo "------------------------------------------"
+
+          # Clear matplotlib cache (global)
+          rm -rf ~/.cache/matplotlib ~/.config/matplotlib || true
+
+          # Clear isolated MPLCONFIGDIR (per job)
+          rm -rf "${MPLCONFIGDIR}" || true
+          mkdir -p "${MPLCONFIGDIR}"
+
+      - name: Install python deps
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements-ci.txt ]; then
+            pip install -r requirements-ci.txt
+          elif [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "::error::No requirements file found!"
+            exit 1
+          fi
+
+      - name: Rebuild matplotlib font manager (verify)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import os
+          import matplotlib
+          matplotlib.use("Agg")
+          from matplotlib import font_manager as fm
+          import matplotlib.pyplot as plt
+
+          print("MPLCONFIGDIR:", os.environ.get("MPLCONFIGDIR"))
+          fm._load_fontmanager(try_read_cache=False)
+
+          names = sorted({f.name for f in fm.fontManager.ttflist})
+          print("Fonts count:", len(names))
+
+          want = [
+              "Noto Sans",
+              "DejaVu Sans",
+              "Noto Sans CJK JP",
+              "Noto Sans CJK KR",
+              "Noto Sans CJK SC",
+              "Noto Sans CJK TC",
+              "Noto Sans KR",
+              "Noto Sans SC",
+              "Noto Sans TC",
+              "Noto Serif CJK JP",
+              "Noto Color Emoji",
+              "Noto Sans Thai",
+              "Noto Sans Thai UI",
+              "Noto Looped Thai",
+              "Noto Looped Thai UI",
+          ]
+
+          print("\n[FONT CHECK]")
+          for n in want:
+              print(f"{n:22} : {'OK' if n in names else 'MISSING'}")
+
+          print("\n[rcParams preview]")
+          print("  font.family     =", plt.rcParams.get("font.family"))
+          print("  font.sans-serif =", (plt.rcParams.get("font.sans-serif") or [])[:30])
+          PY
+
+      - name: Verify fontconfig families (fc-list)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "[fc-list grep]"
+          fc-list | grep -iE "noto sans (cjk|tc|sc|kr)|noto serif (cjk|tc|sc|kr)|noto sans (tc|sc|kr)" || true
+
+      - name: Ensure output directories
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p media/images media/videos outputs
+
+      - name: Run shorts (UK, private)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python scripts/run_shorts.py \
+            --market uk \
+            --slot "${{ github.event.inputs.slot || 'midday' }}" \
+            --full \
+            --privacy private \
+            --drive \
+            --drive-parent-id "${GDRIVE_ROOT_FOLDER_ID}" \
+            --drive-order after_youtube \
+            --drive-upload both \
+            --drive-images-mode zip \
+            --images-ymd "${{ github.event.inputs.images_ymd || 'latest' }}"
+
+      - name: Upload artifacts (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts_uk_${{ github.run_id }}
+          path: |
+            outputs/**
+            media/videos/**
+            media/images/**/list_video.txt
+          if-no-files-found: ignore
