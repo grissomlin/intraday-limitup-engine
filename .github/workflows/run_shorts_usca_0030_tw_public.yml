@@ -1,4 +1,4 @@
-name: Run Shorts (US+CA @ 00:30 TW, private)
+name: Run Shorts (US+CA @ 00:30 TW, public)
 
 on:
   schedule:
@@ -146,7 +146,7 @@ jobs:
           set -euxo pipefail
           mkdir -p media/images media/videos outputs
 
-      - name: Run shorts (private)
+      - name: Run shorts (public)
         shell: bash
         run: |
           set -euxo pipefail
@@ -154,7 +154,7 @@ jobs:
             --market ${{ matrix.market }} \
             --slot "${{ github.event.inputs.slot || 'midday' }}" \
             --full \
-            --privacy private \
+            --privacy public \
             --drive \
             --drive-parent-id "${GDRIVE_ROOT_FOLDER_ID}" \
             --drive-order after_youtube \
@@ -169,6 +169,6 @@ jobs:
           name: artifacts_${{ matrix.market }}_${{ github.run_id }}
           path: |
             outputs/**
-            media/videos/**
+            media/videos**
             media/images/**/list_video.txt
           if-no-files-found: ignore
