@@ -1,0 +1,121 @@
+name: Run Shorts (TH @ 15:00 TW, private)
+
+on:
+  schedule:
+    # GitHub Actions cron uses UTC.
+    # 15:00 Asia/Taipei (UTC+8) => 07:00 UTC
+    - cron: "0 7 * * 1-5"
+
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "slot (open/midday/close)"
+        required: true
+        default: "midday"
+        type: choice
+        options: [open, midday, close]
+      images_ymd:
+        description: "images ymd (latest | YYYY-MM-DD)"
+        required: true
+        default: "latest"
+        type: string
+
+concurrency:
+  group: run_shorts_th_1500tw_${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    name: run_shorts th
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      # matplotlib
+      MPLBACKEND: Agg
+      # isolate matplotlib cache (avoid cross-job font cache weirdness)
+      MPLCONFIGDIR: $RUNNER_TEMP/mpl-th
+
+      # optional debug
+      RUN_SHORTS_DEBUG_TREE: "1"
+      OVERVIEW_DEBUG_FONTS: "1"
+      OVERVIEW_DEBUG_FOOTER: "1"
+
+      # Google Drive (if you use --drive)
+      GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+      GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
+      GDRIVE_CLIENT_SECRET_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_B64 }}
+      GDRIVE_ALLOW_INTERACTIVE: "0"
+
+      # YouTube
+      YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+      YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Echo schedule info
+        shell: bash
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "TW target=15:00 (UTC=07:00)"
+          echo "slot=${{ github.event.inputs.slot || 'midday' }}"
+          echo "images_ymd=${{ github.event.inputs.images_ymd || 'latest' }}"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system deps (ffmpeg)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fontconfig
+          sudo fc-cache -f -v || true
+          rm -rf ~/.cache/matplotlib ~/.config/matplotlib || true
+          rm -rf "${MPLCONFIGDIR}" || true
+          mkdir -p "${MPLCONFIGDIR}"
+
+      - name: Install python deps
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements-ci.txt ]; then
+            pip install -r requirements-ci.txt
+          elif [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "::error::No requirements file found!"
+            exit 1
+          fi
+
+      - name: Run shorts (TH, private)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python scripts/run_shorts.py \
+            --market th \
+            --slot "${{ github.event.inputs.slot || 'midday' }}" \
+            --full \
+            --privacy private \
+            --drive \
+            --drive-parent-id "${GDRIVE_ROOT_FOLDER_ID}" \
+            --drive-order after_youtube \
+            --drive-upload both \
+            --drive-images-mode zip \
+            --images-ymd "${{ github.event.inputs.images_ymd || 'latest' }}"
+
+      - name: Upload artifacts (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts_th_${{ github.run_id }}
+          path: |
+            outputs/**
+            media/videos/**
+            media/images/**/list_video.txt
+          if-no-files-found: ignore
