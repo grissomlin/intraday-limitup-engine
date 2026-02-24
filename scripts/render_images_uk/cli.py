@@ -36,7 +36,6 @@ from scripts.render_images_uk.sector_blocks.draw_mpl import (
     get_market_time_info,
 )
 from scripts.render_images_uk.sector_blocks.layout import get_layout
-from scripts.render_images_common.overview_mpl import render_overview_png
 
 MARKET = "UK"
 
@@ -65,6 +64,10 @@ def _bool(x: Any) -> bool:
         return False
     s = str(x).strip().lower()
     return s in ("1", "true", "yes", "y", "on")
+
+
+def _s(x: Any) -> str:
+    return str(x).strip() if x is not None else ""
 
 
 def load_payload(path: str) -> Dict[str, Any]:
@@ -196,10 +199,8 @@ def _default_outdir_from_payload(payload: Dict[str, Any], market: str) -> Path:
 
 def write_list_txt(outdir: Path, market: str) -> Path:
     """
-    Write list.txt for video pipeline.
-    - Put overview images first
-    - Then all other pngs in lexicographic order
-    Each line: filename.png
+    Original behavior (filename sorted).
+    Kept for fallback mode.
     """
     pngs = sorted([p for p in outdir.glob("*.png") if p.is_file()], key=lambda p: p.name)
 
@@ -216,6 +217,57 @@ def write_list_txt(outdir: Path, market: str) -> Path:
 
     print(f"🧾 list.txt written: {list_path} (items={len(ordered)})")
     return list_path
+
+
+def write_list_txt_ordered(outdir: Path, ordered_paths: List[Path]) -> Path:
+    """
+    ✅ NEW: write list.txt in the exact order you want (overview first + sector pages by overview order)
+    """
+    seen = set()
+    final: List[Path] = []
+    for p in ordered_paths:
+        try:
+            pp = Path(p)
+            if pp.is_file():
+                key = pp.name
+                if key not in seen:
+                    final.append(pp)
+                    seen.add(key)
+        except Exception:
+            continue
+
+    list_path = outdir / "list.txt"
+    list_path.write_text("\n".join([p.name for p in final]) + ("\n" if final else ""), encoding="utf-8")
+    print(f"🧾 list.txt written (ordered): {list_path} (items={len(final)})")
+    return list_path
+
+
+# =============================================================================
+# ✅ NEW: overview sector order helpers (same idea as TH)
+# =============================================================================
+def normalize_sector_key(s: Any) -> str:
+    ss = _s(s)
+    ss = re.sub(r"\s+", " ", ss).strip().lower()
+    return ss
+
+
+def _extract_overview_sector_order(payload: Dict[str, Any]) -> List[str]:
+    raw = payload.get("_overview_sector_order", []) or []
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for x in raw:
+        k = normalize_sector_key(x)
+        if k:
+            out.append(k)
+    # uniq keep order
+    seen = set()
+    out2: List[str] = []
+    for k in out:
+        if k not in seen:
+            out2.append(k)
+            seen.add(k)
+    return out2
 
 
 # =============================================================================
@@ -385,19 +437,49 @@ def main() -> int:
     cutoff = parse_cutoff(payload)  # display ymd_effective preferred
     _, time_note = get_market_time_info(payload)
 
-    # 1) Overview (first)
+    # We'll build an explicit render order list for list.txt
+    ordered_for_list: List[Path] = []
+
+    # 1) Overview (first) + capture sector order
+    overview_order_keys: List[str] = []
     if not args.no_overview:
         payload.setdefault("market", MARKET)
         payload.setdefault("asof", payload.get("asof") or payload.get("slot") or "")
 
-        render_overview_png(
-            payload=payload,
-            out_dir=outdir,
-            width=1080,
-            height=1920,
-            page_size=int(args.overview_page_size),
-            metric=str(args.overview_metric),
-        )
+        try:
+            from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
+
+            overview_paths = render_overview_png(
+                payload=payload,
+                out_dir=outdir,
+                width=1080,
+                height=1920,
+                page_size=int(args.overview_page_size),
+                metric=str(args.overview_metric),
+            ) or []
+
+            # overview images should come first in list.txt
+            ordered_for_list.extend([Path(p) for p in overview_paths if Path(p).is_file()])
+
+            print(
+                "[UK][DEBUG] raw _overview_sector_order exists?:",
+                isinstance(payload.get("_overview_sector_order"), list),
+            )
+            print("[UK][DEBUG] raw overview order head:", (payload.get("_overview_sector_order", []) or [])[:20])
+
+            overview_order_keys = _extract_overview_sector_order(payload)
+            if overview_order_keys:
+                met_eff = str(payload.get("_overview_metric_eff") or "").strip()
+                print(
+                    f"[UK] overview sector order loaded: n={len(overview_order_keys)}"
+                    + (f" metric={met_eff}" if met_eff else "")
+                )
+                print("[UK] normalized overview order head:", overview_order_keys[:20])
+            else:
+                print("[UK][WARN] overview order empty after normalization", flush=True)
+
+        except Exception as e:
+            print(f"[UK][WARN] overview skipped due to import/render error: {e}", flush=True)
 
     # 2) Sector pages
     movers = build_bigmove_by_sector(universe, float(args.ret_th))
@@ -406,8 +488,36 @@ def main() -> int:
     rows_top = max(1, int(args.rows_per_box))
     rows_peer = rows_top + 1
 
-    for sector, L_total in movers.items():
-        P_all = peers.get(sector, [])
+    # =============================================================================
+    # ✅ NEW: reorder sectors by overview order (then append remaining sectors)
+    # =============================================================================
+    sectors_movers = list((movers or {}).keys())
+
+    key_to_sector: Dict[str, str] = {}
+    for sec in sectors_movers:
+        k = normalize_sector_key(sec)
+        if k and k not in key_to_sector:
+            key_to_sector[k] = sec
+
+    ordered_sectors: List[str] = []
+    if overview_order_keys:
+        for k in overview_order_keys:
+            sec = key_to_sector.get(k)
+            if sec and sec in (movers or {}):
+                ordered_sectors.append(sec)
+
+        seen = set(normalize_sector_key(s) for s in ordered_sectors)
+        for sec in sectors_movers:
+            k = normalize_sector_key(sec)
+            if k not in seen:
+                ordered_sectors.append(sec)
+                seen.add(k)
+    else:
+        ordered_sectors = sectors_movers  # fallback
+
+    for sector in ordered_sectors:
+        L_total = (movers or {}).get(sector, []) or []
+        P_all = peers.get(sector, []) or []
 
         big_total = len([x for x in L_total if not x.get("touched_only")])
         touch_total = len([x for x in L_total if x.get("touched_only")])
@@ -425,6 +535,8 @@ def main() -> int:
         sector_shown_total = big_total + touch_total
         sector_all_total = sector_shown_total + len(P_all)
 
+        safe_sector = safe_filename(sector)
+
         for i in range(total_pages):
             mover_rows = top_pages[i] if i < len(top_pages) else []
             peer_rows = peer_pages[i] if i < len(peer_pages) else []
@@ -437,10 +549,11 @@ def main() -> int:
 
             has_more_peers = (i == total_pages - 1) and (len(peer_pages_all) > len(peer_pages))
 
-            fname = f"uk_{safe_filename(sector)}_p{i+1}.png"
+            fname = f"uk_{safe_sector}_p{i+1}.png"
+            out_path = outdir / fname
 
             draw_block_table(
-                out_path=outdir / fname,
+                out_path=out_path,
                 layout=layout,
                 sector=sector,
                 cutoff=cutoff,
@@ -465,8 +578,17 @@ def main() -> int:
                 has_more_peers=has_more_peers,
             )
 
-    # ✅ list.txt (for video)
-    write_list_txt(outdir, market=MARKET)
+            # ✅ record sector pages in the EXACT sequence we rendered
+            if out_path.is_file():
+                ordered_for_list.append(out_path)
+
+    # =============================================================================
+    # list.txt
+    # =============================================================================
+    if overview_order_keys:
+        write_list_txt_ordered(outdir, ordered_for_list)
+    else:
+        write_list_txt(outdir, market=MARKET)
 
     print("\n✅ UK render finished (Drive upload removed).")
     return 0
