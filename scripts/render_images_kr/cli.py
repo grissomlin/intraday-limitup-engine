@@ -11,9 +11,6 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 # =============================================================================
 # ✅ DEFAULT DEBUG ON (overview + footer)
-# - OVERVIEW_DEBUG_FOOTER: footer 佈局/文字座標/行內容等
-# - OVERVIEW_DEBUG_FONTS : i18n_font debug（包含 rcParams['font.sans-serif'] order）
-# - OVERVIEW_DEBUG        : 若 repo 內還有總開關也順便開
 # =============================================================================
 os.environ.setdefault("OVERVIEW_DEBUG_FOOTER", "1")
 os.environ.setdefault("OVERVIEW_DEBUG_FONTS", "1")
@@ -37,10 +34,9 @@ from scripts.render_images_kr.sector_blocks.draw_mpl import (  # noqa: E402
 )
 from scripts.render_images_kr.sector_blocks.layout import get_layout  # noqa: E402
 
-# ✅ Common overview (optional)
 from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
 
-# ✅ shared ordering helpers (NO local duplicate funcs)
+# ✅ shared ordering helpers
 from scripts.render_images_common.sector_order import (  # noqa: E402
     normalize_sector_key,
     extract_overview_sector_order,
@@ -144,16 +140,6 @@ def write_list_txt(
     overview_prefix: str = "overview_sectors_",
     filename: str = "list.txt",
 ) -> Path:
-    """
-    Generate outdir/list.txt for render_video.py (concat order source).
-
-    Order:
-      1) overview pages: {overview_prefix}*_p*.{ext} (sorted)
-         fallback: {overview_prefix}*.{ext} (sorted)
-      2) other images in outdir: *.{ext} excluding those starting with overview_prefix (sorted)
-
-    Writes RELATIVE paths (relative to outdir), one per line.
-    """
     outdir = outdir.resolve()
     ext = (ext or "png").lstrip(".")
     overview_prefix = str(overview_prefix or "").strip() or "overview_sectors_"
@@ -183,6 +169,71 @@ def write_list_txt(
     list_path = outdir / filename
     list_path.write_text("\n".join(rel_lines) + ("\n" if rel_lines else ""), encoding="utf-8")
     return list_path
+
+
+# =============================================================================
+# ✅ NEW: robust overview sector order extractor (supports _overview_sector_orde)
+# =============================================================================
+def _extract_overview_order_any(payload: Dict[str, Any]) -> List[str]:
+    """
+    Prefer shared extract_overview_sector_order(), but also support repo typo keys:
+      - _overview_sector_orde (missing 'r')
+    Also check meta dict.
+    """
+    # 1) official helper (if it works)
+    try:
+        order = extract_overview_sector_order(payload)
+        if order:
+            return order
+    except Exception:
+        pass
+
+    # 2) direct keys (including typo)
+    for k in ("_overview_sector_orde", "_overview_sector_order"):
+        v = payload.get(k)
+        if isinstance(v, list) and v:
+            out: List[str] = []
+            for x in v:
+                s = _s(x)
+                if s and s not in out:
+                    out.append(s)
+            if out:
+                return out
+
+    # 3) meta keys
+    meta = payload.get("meta")
+    if isinstance(meta, dict):
+        for k in ("_overview_sector_orde", "_overview_sector_order"):
+            v = meta.get(k)
+            if isinstance(v, list) and v:
+                out2: List[str] = []
+                for x in v:
+                    s = _s(x)
+                    if s and s not in out2:
+                        out2.append(s)
+                if out2:
+                    return out2
+
+    return []
+
+
+def _kr_sector_key(sec: str) -> str:
+    """
+    Unicode-safe sector key:
+    - prefer normalize_sector_key() from shared module
+    - if it returns empty (some implementations strip non-ascii), fallback to casefold
+    """
+    s = _s(sec)
+    if not s:
+        return ""
+    k = ""
+    try:
+        k = normalize_sector_key(s) or ""
+    except Exception:
+        k = ""
+    if k:
+        return k
+    return s.strip().casefold()
 
 
 # =============================================================================
@@ -240,12 +291,10 @@ def clean_sector_name(s: Any) -> str:
 
 
 def is_limitup_locked_kr(r: Dict[str, Any]) -> bool:
-    # ✅ support new/old keys
     return _bool_any(r, "is_limitup30_locked", "is_limitup_locked")
 
 
 def is_limitup_touch_kr(r: Dict[str, Any]) -> bool:
-    # ✅ support new/old keys
     return _bool_any(r, "is_limitup30_touch", "is_limitup_touch")
 
 
@@ -254,31 +303,22 @@ def is_touch_only_kr(r: Dict[str, Any]) -> bool:
 
 
 def is_bigup10_kr(r: Dict[str, Any]) -> bool:
-    # ✅ snapshot_builder key
     return _bool_any(r, "is_bigup10", "is_bigup")
 
 
 def is_event_stock_kr(r: Dict[str, Any], ret_th: float) -> bool:
-    """Event stock if limitup/touch or ret >= threshold."""
     if is_limitup_locked_kr(r) or is_limitup_touch_kr(r):
         return True
     return _pct(r.get("ret")) >= float(ret_th)
 
 
 def badge_text_from_ret_kr(ret: float) -> str:
-    # Only for non-limitup stocks (>=10% but not limitup/touch) or peers.
     if ret >= 0.20:
         return "급등"
     return "강세"
 
 
 def yesterday_text_kr(r: Dict[str, Any]) -> str:
-    """
-    Yesterday status:
-    - Prefer payload status_line2 (snapshot_builder)
-    - Else use streak30_prev / streak10_prev
-    - Fallback: no signal
-    """
     sl2 = _s(r.get("status_line2"))
     if sl2:
         if sl2 in ("昨無", "어제없음", "어제 무", "없음"):
@@ -311,15 +351,7 @@ def get_new_listing_mark_kr(r: Dict[str, Any]) -> str:
 # =============================================================================
 # Builders
 # =============================================================================
-def build_events_by_sector_kr(
-    universe: List[Dict[str, Any]], ret_th: float
-) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Top box (event stocks):
-    - locked: 상한가
-    - touch-only: 상한가 터치
-    - else (>=ret_th): 급등/강세
-    """
+def build_events_by_sector_kr(universe: List[Dict[str, Any]], ret_th: float) -> Dict[str, List[Dict[str, Any]]]:
     out: Dict[str, List[Dict[str, Any]]] = {}
 
     for r in universe:
@@ -351,10 +383,7 @@ def build_events_by_sector_kr(
         new_mark = get_new_listing_mark_kr(r)
 
         line1 = f"{sym}  {name}"
-        if new_mark:
-            line2 = f"{badge} | {ytxt} | {new_mark}"
-        else:
-            line2 = f"{badge} | {ytxt}"
+        line2 = f"{badge} | {ytxt}" + (f" | {new_mark}" if new_mark else "")
 
         out.setdefault(sector, []).append(
             {
@@ -404,12 +433,6 @@ def build_peers_by_sector_kr(
     max_per_sector: int,
     ret_th_event: float,
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Bottom box (peers):
-    - only sectors that have event stocks
-    - exclude event stocks (limitup/touch or ret >= ret_th_event)
-    - include ret >= ret_min
-    """
     if not events_by_sector:
         return {}
 
@@ -443,10 +466,7 @@ def build_peers_by_sector_kr(
         new_mark = get_new_listing_mark_kr(r)
 
         line1 = f"{sym}  {name}"
-        if new_mark:
-            line2 = f"강세 | {ytxt} | {new_mark}"
-        else:
-            line2 = f"강세 | {ytxt}"
+        line2 = f"강세 | {ytxt}" + (f" | {new_mark}" if new_mark else "")
 
         out.setdefault(sector, []).append(
             {
@@ -470,70 +490,11 @@ def build_peers_by_sector_kr(
 
 
 # =============================================================================
-# Overview payload builders
-# =============================================================================
-def _build_sector_summary_from_events(
-    events_by_sector: Dict[str, List[Dict[str, Any]]]
-) -> List[Dict[str, Any]]:
-    """
-    ⚠️ NOTE:
-    This is an EVENTS-ONLY summary (sector_total == event count).
-    It must NOT be used to drive overview breadth badges.
-    Keep it only for debugging / legacy fallback.
-    """
-    rows: List[Dict[str, Any]] = []
-    for sector, es in (events_by_sector or {}).items():
-        locked_cnt = sum(1 for r in es if str(r.get("limitup_status")) == "locked")
-        touched_cnt = sum(1 for r in es if str(r.get("limitup_status")) == "touch")
-        bigmove10_cnt = sum(1 for r in es if str(r.get("limitup_status")) == "surge")
-        total_cnt = len(es or [])
-        rows.append(
-            {
-                "sector": sector,
-                "locked_cnt": int(locked_cnt),
-                "touched_cnt": int(touched_cnt),
-                "bigmove10_cnt": int(bigmove10_cnt),
-                "total_cnt": int(total_cnt),
-            }
-        )
-    return rows
-
-
-def _sector_summary_is_overview_ready(payload: Dict[str, Any]) -> bool:
-    """
-    ✅ Overview-ready sector_summary means:
-    - list[dict]
-    - has universe denominator: sector_total (or similar)
-    - has *_pct fields
-    """
-    ss = payload.get("sector_summary")
-    if not isinstance(ss, list) or not ss:
-        return False
-    r0 = ss[0]
-    if not isinstance(r0, dict):
-        return False
-
-    has_den = ("sector_total" in r0) or ("sector_cnt" in r0) or ("total_cnt" in r0)
-    has_pct = any(k in r0 for k in ("mix_pct", "locked_pct", "touched_pct", "bigmove10_pct"))
-    return bool(has_den and has_pct)
-
-
-def _apply_kr_overview_copy(payload: Dict[str, Any]) -> None:
-    payload["overview_title"] = payload.get("overview_title") or "업종별 이벤트 종목 수 (Top)"
-    payload["overview_footer"] = payload.get("overview_footer") or "KR 스냅샷"
-    payload["overview_note"] = (
-        payload.get("overview_note")
-        or "시장 제도 차이로 상한가/터치/급등(10%+)가 함께 표시될 수 있습니다"
-    )
-
-
-# =============================================================================
 # Main
 # =============================================================================
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--payload", required=True)
-
     ap.add_argument("--outdir", default=None)
 
     ap.add_argument("--theme", default="dark")
@@ -551,7 +512,7 @@ def main() -> int:
 
     ap.add_argument("--no-debug", action="store_true", help="overview/footer debug 비활성화")
 
-    # ✅ CHANGE: Drive upload is DEFAULT OFF.
+    # Drive upload (default off)
     ap.add_argument("--upload-drive", action="store_true", help="생성 후 Drive 업로드 (default: off)")
     ap.add_argument("--drive-root-folder-id", default=DEFAULT_ROOT_FOLDER)
     ap.add_argument("--drive-market", default="KR")
@@ -581,10 +542,7 @@ def main() -> int:
     ymd = _payload_ymd(payload) or "unknown"
     slot = _payload_slot(payload)
 
-    if args.outdir:
-        outdir = Path(args.outdir)
-    else:
-        outdir = REPO_ROOT / "media" / "images" / "kr" / ymd / slot
+    outdir = Path(args.outdir) if args.outdir else (REPO_ROOT / "media" / "images" / "kr" / ymd / slot)
     outdir.mkdir(parents=True, exist_ok=True)
 
     print(f"[KR] payload={args.payload}")
@@ -612,16 +570,11 @@ def main() -> int:
     payload.setdefault("market", "KR")
     payload.setdefault("asof", payload.get("asof") or payload.get("slot") or "")
 
-    payload["sector_summary_events"] = _build_sector_summary_from_events(events)
-    if not _sector_summary_is_overview_ready(payload):
-        payload["sector_summary"] = payload["sector_summary_events"]
-
-    _apply_kr_overview_copy(payload)
-
     # -------------------------------------------------------------------------
-    # 0) Overview first + capture _overview_sector_order (preferred)
+    # 0) Overview first + capture overview sector order
+    #     ✅ prefer _overview_sector_orde (typo) / _overview_sector_order
     # -------------------------------------------------------------------------
-    overview_sector_keys: List[str] = []
+    overview_keys_raw: List[str] = []
     if not args.no_overview:
         try:
             payload_for_overview = dict(payload)
@@ -637,60 +590,64 @@ def main() -> int:
             for p in (overview_paths or []):
                 print(f"[KR] wrote {p}")
 
-            # ✅ IMPORTANT: overview exports order into payload_for_overview
-            overview_sector_keys = extract_overview_sector_order(payload_for_overview)
+            overview_keys_raw = _extract_overview_order_any(payload_for_overview)
+            if not overview_keys_raw:
+                overview_keys_raw = _extract_overview_order_any(payload)
 
+            # Debug print
+            print(
+                "[KR][DEBUG] raw _overview_sector_orde exists?:",
+                isinstance(payload_for_overview.get("_overview_sector_orde"), list)
+                or (isinstance(payload_for_overview.get("meta"), dict) and isinstance(payload_for_overview["meta"].get("_overview_sector_orde"), list)),
+            )
             print(
                 "[KR][DEBUG] raw _overview_sector_order exists?:",
-                isinstance(payload_for_overview.get("_overview_sector_order"), list),
+                isinstance(payload_for_overview.get("_overview_sector_order"), list)
+                or (isinstance(payload_for_overview.get("meta"), dict) and isinstance(payload_for_overview["meta"].get("_overview_sector_order"), list)),
             )
-            print(
-                "[KR][DEBUG] raw overview order head:",
-                (payload_for_overview.get("_overview_sector_order", []) or [])[:20],
-            )
-            if overview_sector_keys:
-                met_eff = str(payload_for_overview.get("_overview_metric_eff") or "").strip()
-                print(
-                    f"[KR] overview sector order loaded: n={len(overview_sector_keys)}"
-                    + (f" metric={met_eff}" if met_eff else "")
-                )
-                print("[KR] normalized overview order head:", overview_sector_keys[:20])
+            print("[KR][DEBUG] raw overview order head:", (overview_keys_raw or [])[:20])
+
+            if overview_keys_raw:
+                print(f"[KR] overview sector order loaded: n={len(overview_keys_raw)}")
             else:
-                print("[KR][WARN] overview order empty after normalization", flush=True)
+                print("[KR][WARN] overview order NOT found (fallback to default).", flush=True)
 
         except Exception as e:
-            print(f"[KR] overview failed: {e}")
+            print(f"[KR] overview failed (continue): {e}")
 
     # -------------------------------------------------------------------------
-    # 1) Sector pages — ✅ order by overview keys first, then remaining
+    # 1) Sector pages — ✅ order by overview first
     # -------------------------------------------------------------------------
-    width, height = 1080, 1920
-    rows_top = max(1, int(args.rows_per_box))
-    rows_peer = rows_top + 1
-    CAP_PAGES = 5
-
-    # Base sector list: sectors that have events (top box)
-    sectors_raw: List[str] = list((events or {}).keys())
-    if not sectors_raw:
+    if not events:
         print("[KR] no event sectors; nothing to render.")
     else:
-        # Build normalized map
+        width, height = 1080, 1920
+        rows_top = max(1, int(args.rows_per_box))
+        rows_peer = rows_top + 1
+        CAP_PAGES = 5
+
+        sectors_raw = list(events.keys())
+
+        # Build normalized map from existing sectors
         norm_to_sector: Dict[str, str] = {}
         existing_norm_keys: List[str] = []
         for sec in sectors_raw:
-            k = normalize_sector_key(sec)
+            k = _kr_sector_key(sec)
             if not k:
                 continue
             existing_norm_keys.append(k)
             if k not in norm_to_sector:
                 norm_to_sector[k] = sec
 
-        if overview_sector_keys:
-            ordered_norm = reorder_keys_by_overview(existing_keys=existing_norm_keys, overview_keys=overview_sector_keys)
+        # Normalize overview keys too
+        overview_norm_keys = [_kr_sector_key(x) for x in (overview_keys_raw or []) if _kr_sector_key(x)]
+
+        if overview_norm_keys:
+            ordered_norm = reorder_keys_by_overview(existing_keys=existing_norm_keys, overview_keys=overview_norm_keys)
         else:
             ordered_norm = existing_norm_keys
 
-        # Resolve back to sector names (dedup)
+        # Resolve back to original sector names (dedup)
         sector_keys: List[str] = []
         seen = set()
         for k in ordered_norm:
@@ -699,6 +656,8 @@ def main() -> int:
                 continue
             sector_keys.append(sec)
             seen.add(sec)
+
+        print("[KR] sector render order head:", sector_keys[:20])
 
         for sector in sector_keys:
             E_total = (events or {}).get(sector, []) or []
@@ -720,7 +679,6 @@ def main() -> int:
             touch_total = sum(1 for r in E_total if str(r.get("limitup_status")) == "touch")
             hit_total = len(E_total)
 
-            # "shown" counts use prefix of E_show per page
             sector_fn = _sanitize_filename(sector)
 
             for i in range(total_pages):
@@ -764,18 +722,11 @@ def main() -> int:
                 )
                 print(f"[KR] wrote {out_path}")
 
-    print("✅ KR render finished.")
-
     # -------------------------------------------------------------------------
     # 1.5) Write list.txt (unified)
     # -------------------------------------------------------------------------
     try:
-        list_path = write_list_txt(
-            outdir,
-            ext="png",
-            overview_prefix="overview_sectors_",
-            filename="list.txt",
-        )
+        list_path = write_list_txt(outdir, ext="png", overview_prefix="overview_sectors_", filename="list.txt")
         print(f"[KR] wrote {list_path}")
     except Exception as e:
         print(f"[KR] list.txt generation failed (continue): {e}")
@@ -825,11 +776,11 @@ def main() -> int:
             print(f"✅ Uploaded {uploaded} png(s)", flush=True)
 
         except Exception as e:
-            # ✅ Never fail the render due to Drive
             print(f"[WARN] Drive upload failed (best-effort, continue): {e}", flush=True)
     else:
         print("\n[drive] upload skipped (default off).", flush=True)
 
+    print("\n✅ KR render finished.")
     return 0
 
 
