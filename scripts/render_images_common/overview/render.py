@@ -117,6 +117,52 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 # =============================================================================
+# ✅ NEW: export overview sector sort order back to payload
+# =============================================================================
+def _export_overview_sector_order(
+    payload: Optional[Dict[str, Any]],
+    *,
+    market: str,
+    metric_eff: str,
+    sector_rows_sorted: List[Dict[str, Any]],
+) -> None:
+    """
+    Export the final sector ordering (after sorting by value desc) so other renderers/cli
+    can generate sector pages in the SAME order as overview.
+
+    Writes into payload:
+      - payload["_overview_sector_order"] : List[str]  (sector names in final order)
+      - payload["_overview_metric_eff"]   : str        (effective metric used by overview)
+      - payload["_overview_market"]       : str        (normalized market)
+    """
+    if not isinstance(payload, dict):
+        return
+
+    try:
+        order = []
+        for r in (sector_rows_sorted or []):
+            if not isinstance(r, dict):
+                continue
+            s = str(r.get("sector", "") or "").strip()
+            if s:
+                order.append(s)
+
+        payload["_overview_sector_order"] = order
+        payload["_overview_metric_eff"] = str(metric_eff or "").strip()
+        payload["_overview_market"] = str(market or "").strip()
+
+        if _env_bool("OVERVIEW_DEBUG_ORDER", False):
+            print(
+                f"[OVERVIEW_DEBUG_ORDER] market={market} metric={metric_eff} n={len(order)} head={order[:20]}",
+                flush=True,
+            )
+    except Exception as e:
+        # Never break rendering because of export
+        if _env_bool("OVERVIEW_DEBUG_ORDER", False):
+            print(f"[OVERVIEW_DEBUG_ORDER] export failed: {type(e).__name__}: {e}", flush=True)
+
+
+# =============================================================================
 # Label / badge styles
 # =============================================================================
 def _sector_label_color(market: str) -> str:
@@ -753,6 +799,9 @@ def render_overview_png(
     gain_rows, lang_bins = get_gainbins_rows_and_lang(payload, market=market, lang=lang)
 
     if not sector_rows0:
+        # ✅ export empty order too (so caller can know "no order")
+        _export_overview_sector_order(payload, market=market, metric_eff=metric_eff, sector_rows_sorted=[])
+
         out_path = out_dir / f"overview_sectors_{metric_eff}_p1.png"
         _render_empty(
             payload=payload,
@@ -798,6 +847,9 @@ def render_overview_png(
         key=lambda r: compute_value(cn_row_for_mix(r, market, metric_eff), metric_eff),
         reverse=True,
     )
+
+    # ✅ NEW: export final order (THIS is the order you want TH sector pages to follow)
+    _export_overview_sector_order(payload, market=market, metric_eff=metric_eff, sector_rows_sorted=sector_rows)
 
     # -------------------------
     # DEBUG: final sector_rows
