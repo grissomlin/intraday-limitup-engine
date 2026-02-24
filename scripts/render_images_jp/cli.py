@@ -11,9 +11,6 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 # =============================================================================
 # ✅ DEFAULT DEBUG ON (overview + footer)
-# - OVERVIEW_DEBUG_FOOTER: 印 footer 佈局/文字座標/行內容等
-# - OVERVIEW_DEBUG_FONTS : 印 i18n_font debug（包含 rcParams['font.sans-serif'] order）
-# - OVERVIEW_DEBUG        : 若 repo 內還有總開關也順便開
 # =============================================================================
 os.environ.setdefault("OVERVIEW_DEBUG_FOOTER", "1")
 os.environ.setdefault("OVERVIEW_DEBUG_FONTS", "1")
@@ -38,6 +35,13 @@ from scripts.render_images_jp.sector_blocks.draw_mpl import (  # noqa: E402
 from scripts.render_images_jp.sector_blocks.layout import get_layout  # noqa: E402
 
 from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
+
+# ✅ shared ordering helpers (NO local duplicate funcs)
+from scripts.render_images_common.sector_order import (  # noqa: E402
+    normalize_sector_key,
+    extract_overview_sector_order,
+    reorder_keys_by_overview,
+)
 
 DEFAULT_ROOT_FOLDER = (
     os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
@@ -432,7 +436,6 @@ def main() -> int:
     ap.add_argument("--no-debug", action="store_true", help="overview/footer debug を無効化")
 
     # ✅ CHANGE: Drive upload is DEFAULT OFF.
-    # Enable explicitly with --upload-drive (so CI won't fail without creds).
     ap.add_argument("--upload-drive", action="store_true", help="生成後 Drive へアップロード (default: off)")
 
     ap.add_argument("--drive-root-folder-id", default=DEFAULT_ROOT_FOLDER)
@@ -489,8 +492,9 @@ def main() -> int:
     )
 
     # -------------------------------------------------------------------------
-    # 0) Overview first
+    # 0) Overview first + capture overview sector order
     # -------------------------------------------------------------------------
+    overview_sector_keys: List[str] = []
     if not args.no_overview:
         try:
             payload_for_overview = dict(payload)
@@ -510,18 +514,39 @@ def main() -> int:
             )
             for p in overview_paths:
                 print(f"[JP] wrote {p}")
+
+            # ✅ IMPORTANT: sector order is exported into payload_for_overview
+            overview_sector_keys = extract_overview_sector_order(payload_for_overview)
+
+            print(
+                "[JP][DEBUG] raw _overview_sector_order exists?:",
+                isinstance(payload_for_overview.get("_overview_sector_order"), list),
+            )
+            print("[JP][DEBUG] raw overview order head:", (payload_for_overview.get("_overview_sector_order", []) or [])[:20])
+            if overview_sector_keys:
+                met_eff = str(payload_for_overview.get("_overview_metric_eff") or "").strip()
+                print(
+                    f"[JP] overview sector order loaded: n={len(overview_sector_keys)}"
+                    + (f" metric={met_eff}" if met_eff else "")
+                )
+                print("[JP] normalized overview order head:", overview_sector_keys[:20])
+            else:
+                print("[JP][WARN] overview order empty after normalization", flush=True)
+
         except Exception as e:
             print(f"[JP] overview failed: {e}")
 
     # -------------------------------------------------------------------------
     # 1) Sector pages (mix top + peers bottom)
+    #    ✅ sector sort: prefer overview exported order
     # -------------------------------------------------------------------------
     top_rows = build_limitup_by_sector_jp(universe)
     peers = build_peers_by_sector_jp(universe)
     print(f"[JP] sectors(top)={len(top_rows)} sectors(peers)={len(peers)}")
 
+    # Determine sector set and base order
     if top_rows:
-        sector_keys = list(top_rows.keys())
+        sector_keys_raw = list(top_rows.keys())
     else:
 
         def _sec_key(sec: str) -> float:
@@ -530,8 +555,37 @@ def main() -> int:
                 return -1e9
             return max(float(x.get("ret", 0.0) or 0.0) for x in rr)
 
-        sector_keys = sorted(peers.keys(), key=_sec_key, reverse=True)[: max(1, int(args.max_sectors))]
-        print(f"[JP] fallback: top rows empty; use peers top {len(sector_keys)} sectors")
+        sector_keys_raw = sorted(peers.keys(), key=_sec_key, reverse=True)[: max(1, int(args.max_sectors))]
+        print(f"[JP] fallback: top rows empty; use peers top {len(sector_keys_raw)} sectors")
+
+    # Apply overview order if available
+    norm_to_sector: Dict[str, str] = {}
+    existing_norm_keys: List[str] = []
+    for sec in sector_keys_raw:
+        k = normalize_sector_key(sec)
+        if not k:
+            continue
+        existing_norm_keys.append(k)
+        if k not in norm_to_sector:
+            norm_to_sector[k] = sec
+
+    if overview_sector_keys:
+        ordered_norm_keys = reorder_keys_by_overview(existing_keys=existing_norm_keys, overview_keys=overview_sector_keys)
+    else:
+        ordered_norm_keys = existing_norm_keys
+
+    # Resolve back to original sector names (dedup)
+    sector_keys: List[str] = []
+    seen_sec = set()
+    for k in ordered_norm_keys:
+        sec = norm_to_sector.get(k)
+        if not sec or sec in seen_sec:
+            continue
+        sector_keys.append(sec)
+        seen_sec.add(sec)
+
+    # cap (keep behavior)
+    sector_keys = sector_keys[: max(1, int(args.max_sectors))]
 
     for sector in sector_keys:
         L_total = top_rows.get(sector, [])
