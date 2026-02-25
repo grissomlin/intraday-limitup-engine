@@ -36,10 +36,10 @@ from scripts.render_images_th.sector_blocks.draw_mpl import (  # noqa: E402
 )
 from scripts.render_images_th.sector_blocks.layout import get_layout  # noqa: E402
 
-DEFAULT_ROOT_FOLDER = (
-    os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
-    or "1wxOxKDRLZ15dwm-V2G25l_vjaHQ-f2aE"
-)
+# NOTE:
+# Drive upload has been removed from this CLI.
+# Keep env read for compatibility, but NO hard-coded fallback folder id.
+DEFAULT_ROOT_FOLDER = os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
 
 MARKET = "TH"
 
@@ -96,6 +96,59 @@ def pick_universe(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     if isinstance(rows, list) and rows:
         return rows
     return []
+
+
+def _env_on(name: str, default: str = "1") -> bool:
+    v = (os.getenv(name, default) or "").strip().lower()
+    return v in {"1", "true", "yes", "y", "on"}
+
+
+def filter_th_penny_universe(universe: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Apply TH penny filter for sector pages to match overview behavior.
+
+    Strategy:
+    - If TH_FILTER_PENNY is off -> return original
+    - Prefer using payload field `is_penny` (set by TH aggregator)
+    - Fallback: compute using close < TH_PENNY_PRICE_MAX
+    """
+    if not universe:
+        return universe
+
+    if not _env_on("TH_FILTER_PENNY", "1"):
+        return universe
+
+    penny_max = float(os.getenv("TH_PENNY_PRICE_MAX", "0.15"))
+    out: List[Dict[str, Any]] = []
+    kept = 0
+    dropped = 0
+
+    for r in universe:
+        try:
+            if isinstance(r, dict):
+                if "is_penny" in r:
+                    if _bool(r.get("is_penny")):
+                        dropped += 1
+                        continue
+                else:
+                    if _pct(r.get("close")) < penny_max:
+                        dropped += 1
+                        continue
+        except Exception:
+            # if something is weird, keep it (safer than dropping good rows)
+            pass
+
+        out.append(r)
+        kept += 1
+
+    if _env_on("TH_DEBUG_PENNY", "0"):
+        print("[TH][PENNY_FILTER]")
+        print("  TH_FILTER_PENNY =", True)
+        print("  TH_PENNY_PRICE_MAX =", penny_max)
+        print("  kept =", kept)
+        print("  dropped =", dropped)
+
+    return out
 
 
 def chunk(lst: List[Any], n: int) -> List[List[Any]]:
@@ -492,6 +545,13 @@ def main() -> int:
     universe = pick_universe(payload)
     if not universe:
         raise RuntimeError("No usable snapshot in payload (need snapshot_main/snapshot_all/...)")
+
+    # ✅ NEW: apply TH penny filter for sector pages (match overview)
+    before_n = len(universe)
+    universe = filter_th_penny_universe(universe)
+    after_n = len(universe)
+    if _env_on("TH_DEBUG_PENNY", "0"):
+        print(f"[TH][PENNY_FILTER] universe: {before_n} -> {after_n}")
 
     # ✅ CRITICAL: create outdir FIRST so run_shorts won't fail with 'missing'
     if args.outdir:
