@@ -11,7 +11,6 @@ import shutil
 import subprocess
 import sys
 import zipfile
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -395,7 +394,12 @@ def _drive_upload(
 ) -> None:
     """
     Upload artifacts to Google Drive under:
-      <PARENT>/<MARKET>/<YMD>/<SLOT>/
+      <PARENT>/<MARKET>/Latest/<SLOT>/
+
+    And keep only ONE "latest" per slot by overwriting fixed names:
+      - latest_<slot>.mp4
+      - latest_<slot>_images.zip
+      - list.txt (optional)
     """
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
@@ -417,34 +421,40 @@ def _drive_upload(
 
     market_upper = str(market_upper or "").strip().upper()
     ymd = str(ymd or "").strip()
-    slot = str(slot or "").strip()
+    slot = str(slot or "").strip().lower() or "midday"
 
     service = get_drive_service()
 
-    # Create nested folders: parent/MARKET/YMD/SLOT
+    # ✅ Create nested folders: parent/MARKET/Latest/SLOT
     market_folder = ensure_folder(service, parent_id, market_upper)
-    ymd_folder = ensure_folder(service, market_folder, ymd)
-    slot_folder = ensure_folder(service, ymd_folder, slot)
+    latest_folder = ensure_folder(service, market_folder, "Latest")
+    slot_folder = ensure_folder(service, latest_folder, slot)
 
     def want(name: str) -> bool:
         return upload_mode in (name, "both")
 
-    # Upload video
+    # Upload video (overwrite fixed name)
     if want("video"):
         if not out_mp4 or not out_mp4.exists():
             raise FileNotFoundError(f"video not found for drive upload: {out_mp4}")
 
+        fixed_mp4 = out_mp4.parent / f"latest_{slot}.mp4"
+        try:
+            shutil.copy2(out_mp4, fixed_mp4)
+        except Exception as e:
+            raise RuntimeError(f"failed to create fixed-name mp4 for drive upload: {fixed_mp4} err={e}") from e
+
         n = upload_dir(
             service,
             slot_folder,
-            out_mp4.parent,
-            pattern=out_mp4.name,
+            fixed_mp4.parent,
+            pattern=fixed_mp4.name,
             recursive=False,
             overwrite=True,
             verbose=True,
             concurrent=False,
         )
-        print(f"[drive] uploaded video: {out_mp4.name} (n={n})")
+        print(f"[drive] uploaded video: {fixed_mp4.name} (n={n})")
 
     # Upload images
     if want("images"):
@@ -452,8 +462,10 @@ def _drive_upload(
             raise FileNotFoundError(f"images_dir not found for drive upload: {images_dir}")
 
         if images_mode == "zip":
-            zip_path = REPO_ROOT / "media" / "archives" / market_upper.lower() / f"{ymd}_{slot}_images.zip"
+            # ✅ fixed zip name (overwrite)
+            zip_path = REPO_ROOT / "media" / "archives" / market_upper.lower() / f"latest_{slot}_images.zip"
             _zip_dir_to(zip_path, images_dir)
+
             n = upload_dir(
                 service,
                 slot_folder,
@@ -481,6 +493,7 @@ def _drive_upload(
                 )
                 print(f"[drive] uploaded list.txt (n={n2})")
         else:
+            # dir mode => still many files; but will overwrite same names.
             n1 = upload_dir(
                 service,
                 slot_folder,
@@ -603,7 +616,7 @@ def main() -> int:
     debug_tree = (not args.no_debug_tree) and _env_bool("RUN_SHORTS_DEBUG_TREE", "1")
 
     market_lower, market_upper = _normalize_market(args.market)
-    slot = str(args.slot).strip() or "midday"
+    slot = str(args.slot).strip().lower() or "midday"
 
     market_today_ymd_fn, market_now_hhmm_fn = _import_timekit()
 
@@ -855,6 +868,11 @@ def main() -> int:
         print("drive   : enabled")
         print("drive_parent_id:", (str(args.drive_parent_id)[:6] + "…" if args.drive_parent_id else "(missing)"))
         print("drive_order:", args.drive_order, "drive_upload:", args.drive_upload, "images_mode:", args.drive_images_mode)
+        print("drive_folder:", f"{market_upper}/Latest/{slot}")
+        if args.drive_upload in ("video", "both"):
+            print("drive_fixed_video:", f"latest_{slot}.mp4")
+        if args.drive_upload in ("images", "both") and args.drive_images_mode == "zip":
+            print("drive_fixed_images_zip:", f"latest_{slot}_images.zip")
     else:
         print("drive   : (disabled)")
 
