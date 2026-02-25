@@ -44,6 +44,13 @@ Each market runs independently inside a CI matrix job.
 
 ## Status
 
+Core functionality is complete and fully operational.
+
+Currently focusing on refining filtering logic, improving edge-case handling, and enhancing data quality across markets.
+
+Built through two months of iterative after-hours development.
+
 Built over two months of iterative development during evenings and weekends.  
 Actively maintained and continuously improving filtering logic and data quality.
+
 
