@@ -44,7 +44,9 @@ def _env_len(name: str) -> int:
 def _run(cmd: list[str], *, cwd: Optional[Path] = None) -> None:
     """
     Run subprocess with inherited env.
-    Also forces child python to output UTF-8 on Windows cp950 consoles.
+    - Stream stdout/stderr live (so GHA logs show progress)
+    - Keep tail buffer; on failure, print last N lines for debugging
+    - Forces child python to output UTF-8 on Windows cp950 consoles.
     """
     env = os.environ.copy()
     env.setdefault("PYTHONUTF8", "1")
@@ -65,8 +67,44 @@ def _run(cmd: list[str], *, cwd: Optional[Path] = None) -> None:
             flush=True,
         )
 
-    print("▶", " ".join(cmd))
-    subprocess.run(cmd, check=True, cwd=str(cwd) if cwd else None, env=env)
+    print("▶", " ".join(cmd), flush=True)
+
+    tail_n = int(os.getenv("RUN_SHORTS_TAIL_LINES", "200") or "200")
+    tail: list[str] = []
+
+    def _push(line: str) -> None:
+        tail.append(line)
+        if len(tail) > tail_n:
+            tail.pop(0)
+
+    # Merge stderr into stdout to preserve ordering in CI logs
+    p = subprocess.Popen(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
+    )
+
+    assert p.stdout is not None
+    for line in p.stdout:
+        print(line, end="", flush=True)
+        _push(line.rstrip("\n"))
+
+    rc = p.wait()
+    if rc != 0:
+        print("\n[RUN_FAIL] command failed:", flush=True)
+        print("▶", " ".join(cmd), flush=True)
+        print(f"[RUN_FAIL] exit_code={rc}", flush=True)
+        print(f"[RUN_FAIL] last {min(len(tail), tail_n)} log lines:", flush=True)
+        print("----- tail begin -----", flush=True)
+        for x in tail:
+            print(x, flush=True)
+        print("----- tail end -----", flush=True)
+        raise subprocess.CalledProcessError(rc, cmd)
 
 
 def _normalize_market(m: str) -> Tuple[str, str]:
