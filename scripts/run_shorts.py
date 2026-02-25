@@ -61,7 +61,8 @@ def _run(cmd: list[str], *, cwd: Optional[Path] = None) -> None:
             f" GITHUB_ACTIONS={gha!s} CI={ci!s}"
             f" GDRIVE_ALLOW_INTERACTIVE={allow_int!s}"
             f" TOKEN_JSON_B64(len)={_env_len('GDRIVE_TOKEN_JSON_B64')}"
-            f" CLIENT_SECRET_JSON_B64(len)={_env_len('GDRIVE_CLIENT_SECRET_JSON_B64')}",
+            f" CLIENT_SECRET_JSON_B64(len)={_env_len('GDRIVE_CLIENT_SECRET_JSON_B64')}"
+            f" ROOT_FOLDER_ID(len)={_env_len('GDRIVE_ROOT_FOLDER_ID')}",
             flush=True,
         )
 
@@ -357,7 +358,7 @@ def _tree(
 
 
 # =============================================================================
-# Google Drive helpers (kept for backward compatibility, but DISABLED by default)
+# Google Drive helpers (enabled via --drive)
 # =============================================================================
 def _zip_dir_to(zip_path: Path, src_dir: Path) -> Path:
     """
@@ -390,22 +391,11 @@ def _drive_upload(
     images_dir: Optional[Path],
     upload_mode: str,  # video/images/both
     images_mode: str,  # zip/dir
-    drive_subdir_policy: str,  # market/ymd/slot
     workers: int = 8,
 ) -> None:
     """
-    Upload artifacts to Google Drive without blocking YouTube (caller decides order).
-    Folder strategy:
-      parent/
-        <MARKET>/
-          <YMD>/
-            <SLOT>/
-              video.mp4
-              images.zip OR images/*.png
-
-    NOTE:
-      This function is kept for compatibility, but the pipeline can be forced
-      to disable Drive uploads (see main()).
+    Upload artifacts to Google Drive under:
+      <PARENT>/<MARKET>/<YMD>/<SLOT>/
     """
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
@@ -421,11 +411,17 @@ def _drive_upload(
 
     parent_id = str(drive_parent_id).strip()
     if not parent_id:
-        raise RuntimeError("--drive-parent-id is required when --drive is enabled")
+        raise RuntimeError(
+            "Drive parent folder id is missing. Provide --drive-parent-id or set env GDRIVE_ROOT_FOLDER_ID."
+        )
+
+    market_upper = str(market_upper or "").strip().upper()
+    ymd = str(ymd or "").strip()
+    slot = str(slot or "").strip()
 
     service = get_drive_service()
 
-    # Create nested folders
+    # Create nested folders: parent/MARKET/YMD/SLOT
     market_folder = ensure_folder(service, parent_id, market_upper)
     ymd_folder = ensure_folder(service, market_folder, ymd)
     slot_folder = ensure_folder(service, ymd_folder, slot)
@@ -437,6 +433,7 @@ def _drive_upload(
     if want("video"):
         if not out_mp4 or not out_mp4.exists():
             raise FileNotFoundError(f"video not found for drive upload: {out_mp4}")
+
         n = upload_dir(
             service,
             slot_folder,
@@ -468,9 +465,22 @@ def _drive_upload(
                 concurrent=False,
             )
             print(f"[drive] uploaded images zip: {zip_path.name} (n={n})")
-        else:
-            from scripts.utils.drive_uploader import upload_dir  # type: ignore
 
+            # Optional: upload list.txt too (helps debugging/replay)
+            list_txt = images_dir / "list.txt"
+            if list_txt.exists():
+                n2 = upload_dir(
+                    service,
+                    slot_folder,
+                    list_txt.parent,
+                    pattern=list_txt.name,
+                    recursive=False,
+                    overwrite=True,
+                    verbose=False,
+                    concurrent=False,
+                )
+                print(f"[drive] uploaded list.txt (n={n2})")
+        else:
             n1 = upload_dir(
                 service,
                 slot_folder,
@@ -482,8 +492,9 @@ def _drive_upload(
                 concurrent=True,
                 workers=int(workers),
             )
+            print(f"[drive] uploaded images: root_pngs={n1}")
+
             sec_dir = images_dir / "sectors"
-            n2 = 0
             if sec_dir.exists():
                 n2 = upload_dir(
                     service,
@@ -497,12 +508,12 @@ def _drive_upload(
                     workers=int(workers),
                     subfolder_name="sectors",
                 )
-            print(f"[drive] uploaded images: root={n1} sectors={n2}")
+                print(f"[drive] uploaded images: sectors_pngs={n2}")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="One-shot Shorts pipeline: main.py -> render_images -> render_video -> youtube upload"
+        description="One-shot Shorts pipeline: main.py -> render_images -> render_video -> youtube upload -> (optional) drive upload"
     )
 
     ap.add_argument("--market", required=True, help="jp/kr/tw/th/cn/us/uk/au/ca/hk/in ...")
@@ -555,20 +566,24 @@ def main() -> int:
         help="Force refresh: delete existing payload/done/images/video for the resolved ymd before running.",
     )
 
-    # Google Drive upload switches (kept for backward compatibility)
+    # Google Drive upload switches (shared across all markets)
     ap.add_argument("--drive", action="store_true", help="Upload artifacts to Google Drive (default: off)")
-    ap.add_argument("--drive-parent-id", default="", help="Google Drive folder id to store outputs (required if --drive)")
+    ap.add_argument(
+        "--drive-parent-id",
+        default=os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip(),
+        help="Google Drive folder id to store outputs (default: env GDRIVE_ROOT_FOLDER_ID)",
+    )
     ap.add_argument(
         "--drive-order",
         default="after_youtube",
         choices=["after_video", "after_youtube", "end"],
-        help="When to upload to Drive. Default: after_youtube (so YouTube speed not impacted).",
+        help="When to upload to Drive. Default: after_youtube.",
     )
     ap.add_argument(
         "--drive-upload",
-        default="video",
+        default="both",
         choices=["video", "images", "both"],
-        help="What to upload to Drive. Default: video.",
+        help="What to upload to Drive. Default: both (video + images).",
     )
     ap.add_argument(
         "--drive-images-mode",
@@ -584,15 +599,6 @@ def main() -> int:
     ap.add_argument("--debug-tree-max", type=int, default=250)
 
     args = ap.parse_args()
-
-    # =============================================================================
-    # ✅ Force-disable Google Drive upload (no-op even if --drive is passed)
-    # - Keeps CLI args for backward compatibility (workflows won't break)
-    # - Prevents any import/credential check of drive_uploader.py
-    # =============================================================================
-    if getattr(args, "drive", False):
-        print("[WARN] Google Drive upload is disabled in run_shorts.py (ignoring --drive flags).", flush=True)
-        args.drive = False
 
     debug_tree = (not args.no_debug_tree) and _env_bool("RUN_SHORTS_DEBUG_TREE", "1")
 
@@ -761,7 +767,20 @@ def main() -> int:
         if not out_mp4.exists():
             raise FileNotFoundError(f"video not generated: {out_mp4}")
 
-        # Drive upload is disabled (args.drive already forced False above)
+        # Drive upload after video (optional)
+        if args.drive and args.drive_order == "after_video":
+            print("[drive] uploading after video ...", flush=True)
+            _drive_upload(
+                drive_parent_id=str(args.drive_parent_id),
+                market_upper=market_upper,
+                ymd=ymd,
+                slot=slot,
+                out_mp4=out_mp4 if out_mp4.exists() else None,
+                images_dir=images_dir if images_dir.exists() else None,
+                upload_mode=str(args.drive_upload),
+                images_mode=str(args.drive_images_mode),
+                workers=int(args.drive_workers),
+            )
 
     # 5) YouTube upload + playlist
     if not args.skip_upload:
@@ -790,9 +809,35 @@ def main() -> int:
             cmd += ["--skip-playlist"]
         _run(cmd, cwd=REPO_ROOT)
 
-        # Drive upload is disabled (args.drive already forced False above)
+        # Drive upload AFTER youtube (recommended)
+        if args.drive and args.drive_order == "after_youtube":
+            print("[drive] uploading after youtube ...", flush=True)
+            _drive_upload(
+                drive_parent_id=str(args.drive_parent_id),
+                market_upper=market_upper,
+                ymd=ymd,
+                slot=slot,
+                out_mp4=out_mp4 if out_mp4.exists() else None,
+                images_dir=images_dir if images_dir.exists() else None,
+                upload_mode=str(args.drive_upload),
+                images_mode=str(args.drive_images_mode),
+                workers=int(args.drive_workers),
+            )
 
-    # Drive upload end is disabled (args.drive already forced False above)
+    # Drive upload at end (optional)
+    if args.drive and args.drive_order == "end":
+        print("[drive] uploading at end ...", flush=True)
+        _drive_upload(
+            drive_parent_id=str(args.drive_parent_id),
+            market_upper=market_upper,
+            ymd=ymd,
+            slot=slot,
+            out_mp4=out_mp4 if out_mp4.exists() else None,
+            images_dir=images_dir if images_dir.exists() else None,
+            upload_mode=str(args.drive_upload),
+            images_mode=str(args.drive_images_mode),
+            workers=int(args.drive_workers),
+        )
 
     print("\n[OK] All done.")
     print("platform:", platform.platform())
@@ -806,7 +851,12 @@ def main() -> int:
         print("upload  : done")
     else:
         print("upload  : (skipped)")
-    print("drive   : (disabled)")
+    if args.drive:
+        print("drive   : enabled")
+        print("drive_parent_id:", (str(args.drive_parent_id)[:6] + "…" if args.drive_parent_id else "(missing)"))
+        print("drive_order:", args.drive_order, "drive_upload:", args.drive_upload, "images_mode:", args.drive_images_mode)
+    else:
+        print("drive   : (disabled)")
 
     if debug_tree:
         # Show the exact locations that matter when debugging missing payload/images
