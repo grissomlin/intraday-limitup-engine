@@ -3,7 +3,7 @@
 """DB -> raw snapshot builder for CA (open movers style, like UK).
 
 Output:
-- snapshot_open: movers by close ret >= CA_RET_TH
+- snapshot_open: movers by close ret >= CA_RET_TH (with abs_move gate)
 - peers_by_sector: non-movers peers (for sector pages)
 - move_band / move_key (render layer translates via i18n)
 
@@ -103,10 +103,11 @@ CA_ROWS_PER_BOX = int(os.getenv("CA_ROWS_PER_BOX", "6"))
 CA_PEER_EXTRA_PAGES = int(os.getenv("CA_PEER_EXTRA_PAGES", "1"))
 CA_BADGE_FALLBACK_LANG = (os.getenv("CA_BADGE_FALLBACK_LANG", "en") or "en").strip().lower()
 
+# ✅ NEW: absolute move gate (avoid penny 1-tick noise)
+# Example: prev_close=0.05 -> close=0.06 is +20% but only +0.01, too noisy.
+CA_MIN_ABS_MOVE = float(os.getenv("CA_MIN_ABS_MOVE", "0.02"))
+
 # ✅ choose CA market timezone (DEFAULT: Toronto = market standard)
-# Override example:
-#   CA_MARKET_TZ=America/Vancouver  # if you really want PT
-#   CA_MARKET_TZ=America/New_York   # align like US
 CA_MARKET_TZ = (os.getenv("CA_MARKET_TZ") or "America/Toronto").strip()
 
 
@@ -239,6 +240,7 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
                 "enable_open_watchlist": True,
                 "ret_th": CA_RET_TH,
                 "touch_th": CA_TOUCH_TH,
+                "min_abs_move": CA_MIN_ABS_MOVE,
                 "rows_per_box": CA_ROWS_PER_BOX,
                 "peer_extra_pages": CA_PEER_EXTRA_PAGES,
             },
@@ -269,9 +271,27 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
     skipped_no_prev = int((~m).sum())
     df = df[m].copy()
 
+    # ✅ NEW: absolute moves (close & high)
+    df["abs_move"] = (df["close"] - df["prev_close"]).astype(float)
+    df["abs_move_high"] = (df["high"] - df["prev_close"]).astype(float)
+
+    # touch / hit logic with abs_move gate
     df["touch_ret"] = (df["high"] / df["prev_close"]) - 1.0
-    df["touched_th"] = df["touch_ret"].notna() & (df["touch_ret"] >= CA_TOUCH_TH)
-    df["hit_close"] = df["ret"].notna() & (df["ret"] >= CA_RET_TH)
+
+    df["touched_th"] = (
+        df["touch_ret"].notna()
+        & (df["touch_ret"] >= CA_TOUCH_TH)
+        & df["abs_move_high"].notna()
+        & (df["abs_move_high"] >= CA_MIN_ABS_MOVE)
+    )
+
+    df["hit_close"] = (
+        df["ret"].notna()
+        & (df["ret"] >= CA_RET_TH)
+        & df["abs_move"].notna()
+        & (df["abs_move"] >= CA_MIN_ABS_MOVE)
+    )
+
     df["touched_only"] = df["touched_th"] & (~df["hit_close"])
 
     df.loc[~df["hit_close"], "streak"] = 0
@@ -299,13 +319,12 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
 
         parts: List[str] = []
         if touched_only:
-            parts.append(f"touched ≥{int(CA_TOUCH_TH * 100)}% (close < {int(CA_RET_TH * 100)}%)")
-            parts.append(f"prev close < {int(CA_RET_TH * 100)}%")
+            parts.append(f"touched ≥{int(CA_TOUCH_TH * 100)}% & abs≥{CA_MIN_ABS_MOVE:.2f}")
         elif hit_today and hit_prev == 1:
-            parts.append(f"{int(CA_RET_TH * 100)}%+ streak: {streak}")
+            parts.append(f"{int(CA_RET_TH * 100)}%+ & abs≥{CA_MIN_ABS_MOVE:.2f} streak: {streak}")
             parts.append(f"prev streak: {streak_prev}")
         elif hit_today and hit_prev == 0:
-            parts.append(f"close ≥{int(CA_RET_TH * 100)}%")
+            parts.append(f"close ≥{int(CA_RET_TH * 100)}% & abs≥{CA_MIN_ABS_MOVE:.2f}")
             parts.append("prev not hit")
 
         snapshot_open.append(
@@ -333,6 +352,8 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
                 "move_key": str(r.get("move_key") or ""),
                 "badge_text": str(r.get("badge_text") or ""),
                 "badge_level": int(r.get("badge_level") or 0),
+                "abs_move": float(r.get("abs_move") or 0.0),
+                "abs_move_high": float(r.get("abs_move_high") or 0.0),
                 "limit_type": "open_limit",
                 "status_text": " | ".join(parts),
             }
@@ -379,6 +400,8 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
                     "move_key": str(rr.get("move_key") or ""),
                     "badge_text": str(rr.get("badge_text") or ""),
                     "badge_level": int(rr.get("badge_level") or 0),
+                    "abs_move": float(rr.get("abs_move") or 0.0),
+                    "abs_move_high": float(rr.get("abs_move_high") or 0.0),
                     "limit_type": "open_limit",
                     "status_text": "",
                 }
@@ -400,6 +423,7 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
             "enable_open_watchlist": True,
             "ret_th": CA_RET_TH,
             "touch_th": CA_TOUCH_TH,
+            "min_abs_move": CA_MIN_ABS_MOVE,
             "rows_per_box": CA_ROWS_PER_BOX,
             "peer_extra_pages": CA_PEER_EXTRA_PAGES,
             "badge_fallback_lang": CA_BADGE_FALLBACK_LANG,
