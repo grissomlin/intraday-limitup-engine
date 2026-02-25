@@ -61,7 +61,9 @@ def _db_path() -> Path:
     return Path(os.getenv("CA_DB_PATH", os.path.join(os.path.dirname(__file__), "ca_stock_warehouse.db")))
 
 
+# =============================================================================
 # shared helpers
+# =============================================================================
 try:
     from scripts.render_images_common.move_bands import move_badge  # (band, key)
 except Exception:
@@ -97,6 +99,9 @@ except Exception:
             return default or key
 
 
+# =============================================================================
+# Config
+# =============================================================================
 CA_RET_TH = float(os.getenv("CA_RET_TH", "0.10"))
 CA_TOUCH_TH = float(os.getenv("CA_TOUCH_TH", "0.10"))
 CA_ROWS_PER_BOX = int(os.getenv("CA_ROWS_PER_BOX", "6"))
@@ -111,6 +116,9 @@ CA_MIN_ABS_MOVE = float(os.getenv("CA_MIN_ABS_MOVE", "0.02"))
 CA_MARKET_TZ = (os.getenv("CA_MARKET_TZ") or "America/Toronto").strip()
 
 
+# =============================================================================
+# Helpers
+# =============================================================================
 def _pick_latest_leq(conn: sqlite3.Connection, ymd: str) -> Optional[str]:
     row = conn.execute("SELECT MAX(date) FROM stock_prices WHERE date <= ?", (ymd,)).fetchone()
     return row[0] if row and row[0] else None
@@ -120,6 +128,9 @@ def _ceil_div(a: int, b: int) -> int:
     return (a + b - 1) // b if b > 0 else 0
 
 
+# =============================================================================
+# Main
+# =============================================================================
 def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None) -> Dict[str, Any]:
     # ✅ single UTC timestamp for this payload (avoid local TZ leakage)
     dt_utc = datetime.now(timezone.utc)
@@ -253,6 +264,9 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
             "meta": {"db_path": str(db_path), "ymd_effective": ymd_effective, "time": meta_time},
         }
 
+    # -------------------------------------------------------------------------
+    # Normalize fields
+    # -------------------------------------------------------------------------
     df["name"] = df["name"].fillna("Unknown")
     df["sector"] = df["sector"].fillna("Unknown").replace("", "Unknown")
     df["market_detail"] = df["market_detail"].fillna("Unknown")
@@ -271,11 +285,15 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
     skipped_no_prev = int((~m).sum())
     df = df[m].copy()
 
-    # ✅ NEW: absolute moves (close & high)
+    # -------------------------------------------------------------------------
+    # ✅ Absolute moves (close & high)
+    # -------------------------------------------------------------------------
     df["abs_move"] = (df["close"] - df["prev_close"]).astype(float)
     df["abs_move_high"] = (df["high"] - df["prev_close"]).astype(float)
 
+    # -------------------------------------------------------------------------
     # touch / hit logic with abs_move gate
+    # -------------------------------------------------------------------------
     df["touch_ret"] = (df["high"] / df["prev_close"]) - 1.0
 
     df["touched_th"] = (
@@ -294,10 +312,12 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
 
     df["touched_only"] = df["touched_th"] & (~df["hit_close"])
 
+    # streak normalize
     df.loc[~df["hit_close"], "streak"] = 0
     mask_first = df["hit_close"] & (df["hit_prev"] == 0)
     df.loc[mask_first, "streak"] = 1
 
+    # badges
     badges = df["ret"].fillna(0.0).apply(lambda x: move_badge(float(x)))
     df["move_band"] = badges.apply(lambda t: int(t[0]) if t and len(t) >= 1 else -1)
     df["move_key"] = badges.apply(lambda t: str(t[1]) if t and len(t) >= 2 else "")
@@ -305,6 +325,9 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
     df["badge_level"] = df["move_band"].where(df["move_band"] >= 0, 0).astype(int)
     df["badge_text"] = df["move_key"].apply(lambda k: _t(CA_BADGE_FALLBACK_LANG, k, default="") if k else "")
 
+    # -------------------------------------------------------------------------
+    # snapshot_open (movers + touched-only)
+    # -------------------------------------------------------------------------
     snapshot_open: List[Dict[str, Any]] = []
     for _, r in df.iterrows():
         prev_close = float(r["prev_close"] or 0.0)
@@ -359,6 +382,12 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
             }
         )
 
+    # -------------------------------------------------------------------------
+    # peers_by_sector (sector pages)
+    # NOTE: df already has abs_move gate applied via hit/touch definitions.
+    # We keep all non-hit rows as peers (so sector pages have context),
+    # but they still carry abs_move fields for debug.
+    # -------------------------------------------------------------------------
     df_sort = df.copy()
     df_sort["ret_sort"] = df_sort["ret"].fillna(-999.0)
     df_sort["touch_sort"] = df_sort["touch_ret"].fillna(-999.0)
@@ -373,6 +402,7 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path: Optional[Path] = None)
         peer_cap = CA_ROWS_PER_BOX * (mover_pages + max(0, CA_PEER_EXTRA_PAGES))
 
         g2 = g.sort_values(["ret_sort", "touch_sort"], ascending=[False, False]).head(peer_cap)
+
         rows: List[Dict[str, Any]] = []
         for _, rr in g2.iterrows():
             rows.append(
