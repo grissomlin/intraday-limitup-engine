@@ -1,4 +1,4 @@
-name: Run Shorts (Asia fixed TW time, private)
+name: Run Shorts (Asia fixed TW time, schedule=public + manual)
 
 on:
   schedule:
@@ -18,16 +18,46 @@ on:
         default: "midday"
         type: choice
         options: [open, midday, close]
+
       images_ymd:
         description: "images ymd (latest | YYYY-MM-DD)"
         required: true
         default: "latest"
         type: string
-      markets:
-        description: "markets: jp,kr,cn,th or all"
+
+      privacy:
+        description: "YouTube privacy (manual only)"
+        required: true
+        default: "private"
+        type: choice
+        options: [private, public, unlisted]
+
+      markets_all:
+        description: "Run ALL markets (jp, kr, cn, th)"
         required: false
-        default: "all"
-        type: string
+        type: boolean
+        default: true
+
+      market_jp:
+        description: "JP"
+        required: false
+        type: boolean
+        default: false
+      market_kr:
+        description: "KR"
+        required: false
+        type: boolean
+        default: false
+      market_cn:
+        description: "CN"
+        required: false
+        type: boolean
+        default: false
+      market_th:
+        description: "TH"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: run_shorts_asia_fixed_${{ github.ref }}
@@ -46,6 +76,7 @@ jobs:
       matrix_json: ${{ steps.plan.outputs.matrix_json }}
       slot: ${{ steps.plan.outputs.slot }}
       images_ymd: ${{ steps.plan.outputs.images_ymd }}
+      privacy: ${{ steps.plan.outputs.privacy }}
 
     steps:
       - name: Setup Python (for plan)
@@ -61,15 +92,34 @@ jobs:
           import json, os
           from datetime import datetime, timezone
 
-          event = os.getenv("GITHUB_EVENT_NAME","")
+          event = (os.getenv("GITHUB_EVENT_NAME","") or "").strip()
           cron = (os.getenv("SCHEDULE_CRON","") or "").strip()
 
+          # workflow_dispatch inputs come as env: INPUT_<NAME> (upper)
           in_slot = (os.getenv("INPUT_SLOT","") or "").strip().lower()
           in_images_ymd = (os.getenv("INPUT_IMAGES_YMD","") or "").strip()
-          in_markets = (os.getenv("INPUT_MARKETS","") or "").strip().lower().replace(" ","")
+          in_privacy = (os.getenv("INPUT_PRIVACY","") or "").strip().lower()
 
+          def _b(name: str, default=False) -> bool:
+              v = (os.getenv(name,"") or "").strip().lower()
+              if v in ("1","true","yes","y","on"): return True
+              if v in ("0","false","no","n","off",""): return default
+              return default
+
+          in_all = _b("INPUT_MARKETS_ALL", default=True)
+          b_jp = _b("INPUT_MARKET_JP", default=False)
+          b_kr = _b("INPUT_MARKET_KR", default=False)
+          b_cn = _b("INPUT_MARKET_CN", default=False)
+          b_th = _b("INPUT_MARKET_TH", default=False)
+
+          # defaults
           slot = in_slot if (event=="workflow_dispatch" and in_slot) else "midday"
           images_ymd = in_images_ymd if (event=="workflow_dispatch" and in_images_ymd) else "latest"
+
+          privacy_allowed = {"private","public","unlisted"}
+          privacy = in_privacy if (event=="workflow_dispatch" and in_privacy) else "private"
+          if privacy not in privacy_allowed:
+              privacy = "private"
 
           ALL = ["jp","kr","cn","th"]
           now_utc = datetime.now(timezone.utc)
@@ -77,20 +127,16 @@ jobs:
           chosen = []
 
           if event == "workflow_dispatch":
-              if (not in_markets) or in_markets in ("all","*"):
+              # ✅ manual: checkbox selection
+              if in_all:
                   chosen = ALL[:]
               else:
-                  parts = [p for p in in_markets.split(",") if p]
-                  bad = [p for p in parts if p not in ALL]
-                  if bad:
-                      raise SystemExit(f"Invalid market(s): {bad}. Allowed: {ALL} or all")
-                  seen = set()
-                  for p in parts:
-                      if p not in seen:
-                          chosen.append(p)
-                          seen.add(p)
+                  if b_jp: chosen.append("jp")
+                  if b_kr: chosen.append("kr")
+                  if b_cn: chosen.append("cn")
+                  if b_th: chosen.append("th")
           else:
-              # ✅ Primary: map by cron expression that triggered this run (immune to GitHub lag)
+              # ✅ schedule: map by cron expression (immune to GitHub lag)
               mapping = {
                   "0 2 * * 1-5": ["jp","kr"],
                   "0 3 * * 1-5": ["cn"],
@@ -98,18 +144,24 @@ jobs:
               }
               chosen = mapping.get(cron, [])
 
-              # ✅ Fallback (rare): if cron not available, use a time WINDOW not exact minute
+              # ✅ fallback window (rare): allow start delay
               if not chosen:
                   h = now_utc.hour
-                  # windows allow GitHub start delay; adjust as you like
                   if 1 <= h <= 2:
-                      chosen = ["jp","kr"]   # around 02:00 UTC
+                      chosen = ["jp","kr"]
                   elif 2 <= h <= 3:
-                      chosen = ["cn"]       # around 03:00 UTC
+                      chosen = ["cn"]
                   elif 4 <= h <= 5:
-                      chosen = ["th"]       # around 05:00 UTC
+                      chosen = ["th"]
                   else:
                       chosen = []
+
+              # ✅ IMPORTANT: schedule ALWAYS public
+              privacy = "public"
+
+          # de-dup keep order
+          seen=set()
+          chosen=[x for x in chosen if (x not in seen and not seen.add(x))]
 
           matrix = {"include": [{"market": x} for x in chosen]}
           should_run = "true" if chosen else "false"
@@ -120,6 +172,7 @@ jobs:
               f.write("matrix_json=" + json.dumps(matrix) + "\n")
               f.write(f"slot={slot}\n")
               f.write(f"images_ymd={images_ymd}\n")
+              f.write(f"privacy={privacy}\n")
 
           print("[PLAN]")
           print("  event      =", event)
@@ -129,6 +182,7 @@ jobs:
           print("  should_run =", should_run)
           print("  slot       =", slot)
           print("  images_ymd =", images_ymd)
+          print("  privacy    =", privacy)
           print("  matrix     =", json.dumps(matrix))
           PY
 
@@ -171,6 +225,7 @@ jobs:
           echo "market=${{ matrix.market }}"
           echo "slot=${{ needs.plan.outputs.slot }}"
           echo "images_ymd=${{ needs.plan.outputs.images_ymd }}"
+          echo "privacy=${{ needs.plan.outputs.privacy }}"
           echo "now_utc=$(date -u '+%F %T %Z')"
           TZ=Asia/Taipei date '+now_tw=%F %T %Z' || true
           echo "MPLCONFIGDIR=${MPLCONFIGDIR}"
@@ -229,7 +284,7 @@ jobs:
           set -euxo pipefail
           mkdir -p media/images media/videos outputs
 
-      - name: Run shorts (private)
+      - name: Run shorts
         shell: bash
         run: |
           set -euxo pipefail
@@ -237,7 +292,7 @@ jobs:
             --market ${{ matrix.market }} \
             --slot "${{ needs.plan.outputs.slot }}" \
             --full \
-            --privacy private \
+            --privacy "${{ needs.plan.outputs.privacy }}" \
             --drive \
             --drive-parent-id "${GDRIVE_ROOT_FOLDER_ID}" \
             --drive-order after_youtube \
