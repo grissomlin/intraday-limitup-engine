@@ -26,10 +26,6 @@ on:
         default: "all"
         type: string
 
-  # ✅ Optional: enable schedule if you want always-on automation
-  # schedule:
-  #   - cron: "*/10 * * * *"
-
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -94,14 +90,17 @@ jobs:
       OVERVIEW_DEBUG_FONTS: "1"
       OVERVIEW_DEBUG_FOOTER: "1"
 
-      # ✅ Google Drive (root + creds)
+      # Drive root folder (your choice)
       GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
-      GDRIVE_TOKEN_JSON_B64: ${{ secrets.GDRIVE_TOKEN_JSON_B64 }}
-      GDRIVE_CLIENT_SECRET_JSON_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_JSON_B64 }}
 
-      # ✅ YouTube
+      # YouTube secrets
       YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
       YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
+
+      # (Optional) Drive creds if your drive_uploader reads these
+      # If you don't have these secrets, leaving them here is OK (empty env var)
+      GDRIVE_TOKEN_JSON_B64: ${{ secrets.GDRIVE_TOKEN_JSON_B64 }}
+      GDRIVE_CLIENT_SECRET_JSON_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_JSON_B64 }}
 
     steps:
       - uses: actions/checkout@v4
@@ -148,18 +147,13 @@ jobs:
           # Some runner images provide this, some don't
           sudo apt-get install -y fonts-noto-cjk-extra || true
 
-          # Rebuild fontconfig cache
           sudo fc-cache -f -v
 
-          # Quick sanity listing (shows whether TC/KR/SC exist and how they are NAMED)
           echo "---- fc-list (CJK/TC/SC/KR candidates) ----"
           fc-list | grep -iE "noto sans (cjk|tc|sc|kr)|noto serif (cjk|tc|sc|kr)|noto sans (tc|sc|kr)" || true
           echo "------------------------------------------"
 
-          # Clear matplotlib cache (global)
           rm -rf ~/.cache/matplotlib ~/.config/matplotlib || true
-
-          # Clear isolated MPLCONFIGDIR (per job)
           rm -rf "${MPLCONFIGDIR}" || true
           mkdir -p "${MPLCONFIGDIR}"
 
@@ -178,7 +172,7 @@ jobs:
           fi
 
       # ============================================================
-      # FORCE MATPLOTLIB FONT REBUILD + VERIFY (matplotlib view)
+      # FONT VERIFY (matplotlib view)
       # ============================================================
       - name: Rebuild matplotlib font manager (verify)
         shell: bash
@@ -189,39 +183,14 @@ jobs:
           import matplotlib
           matplotlib.use("Agg")
           from matplotlib import font_manager as fm
-          import matplotlib.pyplot as plt
 
           print("MPLCONFIGDIR:", os.environ.get("MPLCONFIGDIR"))
           fm._load_fontmanager(try_read_cache=False)
 
           names = sorted({f.name for f in fm.fontManager.ttflist})
           print("Fonts count:", len(names))
-
-          want = [
-              "Noto Sans",
-              "DejaVu Sans",
-              "Noto Sans CJK JP",
-              "Noto Sans CJK KR",
-              "Noto Sans CJK SC",
-              "Noto Sans CJK TC",
-              "Noto Sans KR",
-              "Noto Sans SC",
-              "Noto Sans TC",
-              "Noto Serif CJK JP",
-              "Noto Color Emoji",
-              "Noto Sans Thai",
-              "Noto Sans Thai UI",
-              "Noto Looped Thai",
-              "Noto Looped Thai UI",
-          ]
-
-          print("\n[FONT CHECK]")
-          for n in want:
-              print(f"{n:22} : {'OK' if n in names else 'MISSING'}")
-
-          print("\n[rcParams preview]")
-          print("  font.family     =", plt.rcParams.get("font.family"))
-          print("  font.sans-serif =", (plt.rcParams.get("font.sans-serif") or [])[:30])
+          print("Thai sample:", [n for n in names if "thai" in n.lower()][:30])
+          print("CJK sample :", [n for n in names if "cjk" in n.lower()][:30])
           PY
 
       - name: Verify fontconfig families (fc-list)
@@ -238,53 +207,46 @@ jobs:
           mkdir -p media/images media/videos outputs
 
       # ============================================================
-      # RUN SHORTS (default: upload YouTube + Drive if secrets exist)
+      # RUN SHORTS (restore "token-only upload works" behavior)
       # ============================================================
       - name: Run shorts
         shell: bash
         run: |
           set -euxo pipefail
 
-          # Determine whether secrets exist (do NOT print secret content)
-          yt_ok=1
-          if [ -z "${YOUTUBE_TOKEN_JSON:-}" ] || [ -z "${YOUTUBE_PLAYLIST_MAP_JSON:-}" ]; then
-            yt_ok=0
-          fi
+          # ✅ Debug lengths (no secret content)
+          echo "YT_TOKEN_LEN=${#YOUTUBE_TOKEN_JSON}  YT_PLAYLIST_LEN=${#YOUTUBE_PLAYLIST_MAP_JSON}"
 
-          drive_ok=1
-          if [ -z "${GDRIVE_ROOT_FOLDER_ID:-}" ] || [ -z "${GDRIVE_TOKEN_JSON_B64:-}" ]; then
-            drive_ok=0
-          fi
-
+          # Base args (same as your original)
           args=(
             --market ${{ matrix.market }}
             --slot ${{ inputs.slot }}
             --full
+            --drive
+            --drive-parent-id "${GDRIVE_ROOT_FOLDER_ID}"
+            --drive-order after_youtube
+            --drive-upload both
+            --drive-images-mode zip
             --images-ymd ${{ inputs.images_ymd }}
           )
 
-          if [ $yt_ok -eq 1 ]; then
-            echo "[upload] YouTube enabled"
-          else
-            echo "[upload] YouTube DISABLED (missing secrets) -> --skip-upload"
+          # ✅ Key change: only require YOUTUBE_TOKEN_JSON to upload
+          if [ -z "${YOUTUBE_TOKEN_JSON:-}" ]; then
+            echo "::warning::Missing YOUTUBE_TOKEN_JSON -> skip upload"
             args+=( --skip-upload )
-          fi
-
-          if [ $drive_ok -eq 1 ]; then
-            echo "[upload] Drive enabled"
-            args+=(
-              --drive
-              --drive-parent-id "${GDRIVE_ROOT_FOLDER_ID}"
-              --drive-order after_youtube
-              --drive-upload both
-              --drive-images-mode zip
-            )
           else
-            echo "[upload] Drive DISABLED (missing secrets)"
+            # If playlist map missing, still upload but skip playlist (old behavior friendly)
+            if [ -z "${YOUTUBE_PLAYLIST_MAP_JSON:-}" ]; then
+              echo "::warning::Missing YOUTUBE_PLAYLIST_MAP_JSON -> will skip playlist"
+              args+=( --skip-playlist )
+            fi
           fi
 
           python scripts/run_shorts.py "${args[@]}"
 
+      # ============================================================
+      # UPLOAD ARTIFACTS
+      # ============================================================
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
