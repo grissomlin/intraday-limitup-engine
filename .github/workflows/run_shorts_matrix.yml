@@ -20,45 +20,63 @@ on:
         default: "latest"
         type: string
 
-      # ✅ NEW: preset selector (no typing)
-      markets_preset:
-        description: "markets preset (no typing)"
-        required: true
-        default: "all"
-        type: choice
-        options:
-          - all
-          - asia        # cn tw jp kr th hk
-          - west        # us ca au uk
-          - eu          # uk (placeholder for future)
-          - single      # choose ONE market from dropdown
-          - custom      # use custom_markets string
-
-      # ✅ NEW: single market dropdown
-      market_single:
-        description: "single market (used only when markets_preset=single)"
-        required: true
-        default: "jp"
-        type: choice
-        options:
-          - cn
-          - tw
-          - jp
-          - kr
-          - th
-          - hk
-          - us
-          - ca
-          - uk
-          - au
-          - in
-
-      # ✅ NEW: optional custom string (only for custom)
-      custom_markets:
-        description: "custom markets (comma-separated, only used when markets_preset=custom)"
+      # ✅ Markets (checkbox style via boolean inputs)
+      m_cn:
+        description: "CN"
         required: false
-        default: ""
-        type: string
+        type: boolean
+        default: true
+      m_tw:
+        description: "TW"
+        required: false
+        type: boolean
+        default: true
+      m_jp:
+        description: "JP"
+        required: false
+        type: boolean
+        default: true
+      m_kr:
+        description: "KR"
+        required: false
+        type: boolean
+        default: true
+      m_th:
+        description: "TH"
+        required: false
+        type: boolean
+        default: true
+      m_hk:
+        description: "HK"
+        required: false
+        type: boolean
+        default: true
+
+      m_us:
+        description: "US"
+        required: false
+        type: boolean
+        default: true
+      m_ca:
+        description: "CA"
+        required: false
+        type: boolean
+        default: true
+      m_uk:
+        description: "UK"
+        required: false
+        type: boolean
+        default: true
+      m_au:
+        description: "AU"
+        required: false
+        type: boolean
+        default: true
+      m_in:
+        description: "IN"
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   prepare:
@@ -68,73 +86,49 @@ jobs:
       markets_normalized: ${{ steps.set-matrix.outputs.markets_normalized }}
 
     steps:
-      - name: Build matrix
+      - name: Build matrix from checkboxes
         id: set-matrix
         shell: bash
         run: |
           set -euo pipefail
 
           ALL="cn tw jp kr th hk us ca uk au in"
-          ASIA="cn tw jp kr th hk"
-          WEST="us ca au uk"
-          EU="uk"
-
-          preset="${{ inputs.markets_preset }}"
-          single="${{ inputs.market_single }}"
-          custom="${{ inputs.custom_markets }}"
-
-          preset="$(echo "$preset" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
-          single="$(echo "$single" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
-          custom="$(echo "$custom" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
-
           selected=""
 
-          case "$preset" in
-            all)
-              selected="$ALL"
-              ;;
-            asia)
-              selected="$ASIA"
-              ;;
-            west)
-              selected="$WEST"
-              ;;
-            eu)
-              selected="$EU"
-              ;;
-            single)
-              if [ -z "$single" ]; then
-                echo "::error::market_single is required when markets_preset=single"
-                exit 1
-              fi
-              if echo " $ALL " | grep -q " $single "; then
-                selected="$single"
-              else
-                echo "::error::Invalid market_single '$single'"
-                exit 1
-              fi
-              ;;
-            custom)
-              if [ -z "$custom" ]; then
-                echo "::error::custom_markets is required when markets_preset=custom"
-                exit 1
-              fi
-              IFS=',' read -r -a arr <<< "$custom"
-              for m in "${arr[@]}"; do
-                if echo " $ALL " | grep -q " $m "; then
-                  selected="$selected $m"
-                else
-                  echo "::error::Invalid market '$m' in custom_markets"
-                  exit 1
-                fi
-              done
-              selected="$(echo "$selected" | xargs)"
-              ;;
-            *)
-              echo "::error::Unknown markets_preset '$preset'"
+          add_if_true () {
+            local flag="$1"
+            local mkt="$2"
+            if [ "$flag" = "true" ]; then
+              selected="$selected $mkt"
+            fi
+          }
+
+          add_if_true "${{ inputs.m_cn }}" "cn"
+          add_if_true "${{ inputs.m_tw }}" "tw"
+          add_if_true "${{ inputs.m_jp }}" "jp"
+          add_if_true "${{ inputs.m_kr }}" "kr"
+          add_if_true "${{ inputs.m_th }}" "th"
+          add_if_true "${{ inputs.m_hk }}" "hk"
+          add_if_true "${{ inputs.m_us }}" "us"
+          add_if_true "${{ inputs.m_ca }}" "ca"
+          add_if_true "${{ inputs.m_uk }}" "uk"
+          add_if_true "${{ inputs.m_au }}" "au"
+          add_if_true "${{ inputs.m_in }}" "in"
+
+          selected="$(echo "$selected" | xargs)"
+
+          # ✅ If user unchecked everything, default to ALL (same behavior as your old "all")
+          if [ -z "$selected" ]; then
+            selected="$ALL"
+          fi
+
+          # Validate (defensive)
+          for m in $selected; do
+            if ! echo " $ALL " | grep -q " $m "; then
+              echo "::error::Invalid market '$m'"
               exit 1
-              ;;
-          esac
+            fi
+          done
 
           json='{"market":['
           first=1
@@ -158,7 +152,6 @@ jobs:
 
     env:
       MPLBACKEND: Agg
-      # ✅ isolate matplotlib config/cache per matrix job
       MPLCONFIGDIR: $RUNNER_TEMP/mpl-${{ matrix.market }}
 
       RUN_SHORTS_DEBUG_TREE: "1"
@@ -168,9 +161,8 @@ jobs:
       # Drive root folder
       GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
 
-      # YouTube secrets
+      # YouTube token (required for upload)
       YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
-      YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
 
       # (Optional) Drive creds
       GDRIVE_TOKEN_JSON_B64: ${{ secrets.GDRIVE_TOKEN_JSON_B64 }}
@@ -195,13 +187,7 @@ jobs:
           sudo apt-get install -y fonts-noto-color-emoji || true
           sudo apt-get install -y fonts-noto-extra fonts-noto-ui-core fonts-noto-unhinted || true
           sudo apt-get install -y fonts-noto-cjk-extra || true
-
           sudo fc-cache -f -v
-
-          echo "---- fc-list (CJK/TC/SC/KR candidates) ----"
-          fc-list | grep -iE "noto sans (cjk|tc|sc|kr)|noto serif (cjk|tc|sc|kr)|noto sans (tc|sc|kr)" || true
-          echo "------------------------------------------"
-
           rm -rf ~/.cache/matplotlib ~/.config/matplotlib || true
           rm -rf "${MPLCONFIGDIR}" || true
           mkdir -p "${MPLCONFIGDIR}"
@@ -217,25 +203,6 @@ jobs:
             pip install -r requirements.txt
           fi
 
-      - name: Rebuild matplotlib font manager (verify)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          python - <<'PY'
-          import os
-          import matplotlib
-          matplotlib.use("Agg")
-          from matplotlib import font_manager as fm
-
-          print("MPLCONFIGDIR:", os.environ.get("MPLCONFIGDIR"))
-          fm._load_fontmanager(try_read_cache=False)
-
-          names = sorted({f.name for f in fm.fontManager.ttflist})
-          print("Fonts count:", len(names))
-          print("Thai sample:", [n for n in names if "thai" in n.lower()][:30])
-          print("CJK sample :", [n for n in names if "cjk" in n.lower()][:30])
-          PY
-
       - name: Ensure output directories
         shell: bash
         run: |
@@ -246,7 +213,9 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          echo "YT_TOKEN_LEN=${#YOUTUBE_TOKEN_JSON}  YT_PLAYLIST_LEN=${#YOUTUBE_PLAYLIST_MAP_JSON}"
+
+          echo "markets_selected=${{ needs.prepare.outputs.markets_normalized }}"
+          echo "YT_TOKEN_LEN=${#YOUTUBE_TOKEN_JSON}"
 
           args=(
             --market ${{ matrix.market }}
@@ -260,16 +229,14 @@ jobs:
             --images-ymd ${{ inputs.images_ymd }}
           )
 
+          # ✅ Only require token to upload. Playlist map uses repo file by default.
           if [ -z "${YOUTUBE_TOKEN_JSON:-}" ]; then
             echo "::warning::Missing YOUTUBE_TOKEN_JSON -> skip upload"
             args+=( --skip-upload )
-          else
-            if [ -z "${YOUTUBE_PLAYLIST_MAP_JSON:-}" ]; then
-              echo "::warning::Missing YOUTUBE_PLAYLIST_MAP_JSON -> will skip playlist"
-              args+=( --skip-playlist )
-            fi
           fi
 
+          # ✅ Do NOT skip playlist just because secret missing.
+          # scripts/run_shorts.py already defaults to config/youtube_playlists.json
           python scripts/run_shorts.py "${args[@]}"
 
       - name: Upload artifacts
