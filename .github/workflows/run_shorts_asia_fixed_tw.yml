@@ -36,6 +36,11 @@ concurrency:
 jobs:
   plan:
     runs-on: ubuntu-latest
+
+    # ✅ Let python know which cron fired (stable even if runner starts late)
+    env:
+      SCHEDULE_CRON: ${{ github.event.schedule }}
+
     outputs:
       should_run: ${{ steps.plan.outputs.should_run }}
       matrix_json: ${{ steps.plan.outputs.matrix_json }}
@@ -57,6 +62,8 @@ jobs:
           from datetime import datetime, timezone
 
           event = os.getenv("GITHUB_EVENT_NAME","")
+          cron = (os.getenv("SCHEDULE_CRON","") or "").strip()
+
           in_slot = (os.getenv("INPUT_SLOT","") or "").strip().lower()
           in_images_ymd = (os.getenv("INPUT_IMAGES_YMD","") or "").strip()
           in_markets = (os.getenv("INPUT_MARKETS","") or "").strip().lower().replace(" ","")
@@ -65,11 +72,10 @@ jobs:
           images_ymd = in_images_ymd if (event=="workflow_dispatch" and in_images_ymd) else "latest"
 
           ALL = ["jp","kr","cn","th"]
-
           now_utc = datetime.now(timezone.utc)
-          h, m = now_utc.hour, now_utc.minute
 
           chosen = []
+
           if event == "workflow_dispatch":
               if (not in_markets) or in_markets in ("all","*"):
                   chosen = ALL[:]
@@ -78,27 +84,36 @@ jobs:
                   bad = [p for p in parts if p not in ALL]
                   if bad:
                       raise SystemExit(f"Invalid market(s): {bad}. Allowed: {ALL} or all")
-                  # keep order, de-dup
                   seen = set()
                   for p in parts:
                       if p not in seen:
                           chosen.append(p)
                           seen.add(p)
           else:
-              # schedule mapping by UTC time
-              if (h, m) == (2, 0):
-                  chosen = ["jp","kr"]
-              elif (h, m) == (3, 0):
-                  chosen = ["cn"]
-              elif (h, m) == (5, 0):
-                  chosen = ["th"]
-              else:
-                  chosen = []
+              # ✅ Primary: map by cron expression that triggered this run (immune to GitHub lag)
+              mapping = {
+                  "0 2 * * 1-5": ["jp","kr"],
+                  "0 3 * * 1-5": ["cn"],
+                  "0 5 * * 1-5": ["th"],
+              }
+              chosen = mapping.get(cron, [])
+
+              # ✅ Fallback (rare): if cron not available, use a time WINDOW not exact minute
+              if not chosen:
+                  h = now_utc.hour
+                  # windows allow GitHub start delay; adjust as you like
+                  if 1 <= h <= 2:
+                      chosen = ["jp","kr"]   # around 02:00 UTC
+                  elif 2 <= h <= 3:
+                      chosen = ["cn"]       # around 03:00 UTC
+                  elif 4 <= h <= 5:
+                      chosen = ["th"]       # around 05:00 UTC
+                  else:
+                      chosen = []
 
           matrix = {"include": [{"market": x} for x in chosen]}
           should_run = "true" if chosen else "false"
 
-          # write outputs directly (no grep/tee)
           out_path = os.environ["GITHUB_OUTPUT"]
           with open(out_path, "a", encoding="utf-8") as f:
               f.write(f"should_run={should_run}\n")
@@ -108,6 +123,7 @@ jobs:
 
           print("[PLAN]")
           print("  event      =", event)
+          print("  schedule   =", cron)
           print("  now_utc    =", now_utc.isoformat(timespec="seconds"))
           print("  chosen     =", chosen)
           print("  should_run =", should_run)
@@ -151,6 +167,7 @@ jobs:
         shell: bash
         run: |
           echo "event=${{ github.event_name }}"
+          echo "schedule=${{ github.event.schedule }}"
           echo "market=${{ matrix.market }}"
           echo "slot=${{ needs.plan.outputs.slot }}"
           echo "images_ymd=${{ needs.plan.outputs.images_ymd }}"
