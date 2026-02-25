@@ -28,7 +28,79 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+
+    # ✅ which cron triggered this run (immune to GitHub runner lag)
+    env:
+      SCHEDULE_CRON: ${{ github.event.schedule }}
+
+    outputs:
+      should_run: ${{ steps.plan.outputs.should_run }}
+      slot: ${{ steps.plan.outputs.slot }}
+      images_ymd: ${{ steps.plan.outputs.images_ymd }}
+
+    steps:
+      - name: Setup Python (for plan)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from datetime import datetime, timezone
+          import re
+
+          event = os.getenv("GITHUB_EVENT_NAME","")
+          cron = (os.getenv("SCHEDULE_CRON","") or "").strip()
+
+          # workflow_dispatch inputs (Actions exposes them as INPUT_*)
+          in_slot = (os.getenv("INPUT_SLOT","") or "").strip().lower()
+          in_images_ymd = (os.getenv("INPUT_IMAGES_YMD","") or "").strip()
+
+          # defaults
+          slot = in_slot if (event=="workflow_dispatch" and in_slot) else "midday"
+          images_ymd = in_images_ymd if (event=="workflow_dispatch" and in_images_ymd) else "latest"
+
+          now_utc = datetime.now(timezone.utc)
+
+          # schedule run gating (anti-lag):
+          # - if schedule is exactly our cron => run
+          # - fallback: if cron missing, allow a time WINDOW around 11:10 UTC (runner lag safe)
+          should_run = False
+          if event == "workflow_dispatch":
+              should_run = True
+          else:
+              if cron == "10 11 * * 1-5":
+                  should_run = True
+              else:
+                  # fallback window: 11:00~12:59 UTC (tolerate delays)
+                  h = now_utc.hour
+                  if 11 <= h <= 12:
+                      should_run = True
+
+          out_path = os.environ["GITHUB_OUTPUT"]
+          with open(out_path, "a", encoding="utf-8") as f:
+              f.write(f"should_run={'true' if should_run else 'false'}\n")
+              f.write(f"slot={slot}\n")
+              f.write(f"images_ymd={images_ymd}\n")
+
+          print("[PLAN]")
+          print("  event      =", event)
+          print("  schedule   =", cron)
+          print("  now_utc    =", now_utc.isoformat(timespec="seconds"))
+          print("  should_run =", should_run)
+          print("  slot       =", slot)
+          print("  images_ymd =", images_ymd)
+          PY
+
   run:
+    needs: plan
+    if: needs.plan.outputs.should_run == 'true'
     name: run_shorts uk
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -59,9 +131,12 @@ jobs:
         shell: bash
         run: |
           echo "event=${{ github.event_name }}"
+          echo "schedule=${{ github.event.schedule }}"
           echo "TW target=19:10 (UTC=11:10)"
-          echo "slot=${{ github.event.inputs.slot || 'midday' }}"
-          echo "images_ymd=${{ github.event.inputs.images_ymd || 'latest' }}"
+          echo "slot=${{ needs.plan.outputs.slot }}"
+          echo "images_ymd=${{ needs.plan.outputs.images_ymd }}"
+          echo "now_utc=$(date -u '+%F %T %Z')"
+          TZ=Asia/Taipei date '+now_tw=%F %T %Z' || true
           echo "MPLCONFIGDIR=${MPLCONFIGDIR}"
 
       - name: Setup Python
@@ -71,7 +146,6 @@ jobs:
 
       # ============================================================
       # SYSTEM DEPENDENCIES + FULL FONT STACK (CJK/TH/Emoji)
-      #   - same as matrix to avoid tofu
       # ============================================================
       - name: Install system deps (FULL FONT STACK)
         shell: bash
@@ -199,7 +273,7 @@ jobs:
           set -euxo pipefail
           python scripts/run_shorts.py \
             --market uk \
-            --slot "${{ github.event.inputs.slot || 'midday' }}" \
+            --slot "${{ needs.plan.outputs.slot }}" \
             --full \
             --privacy public \
             --drive \
@@ -207,7 +281,7 @@ jobs:
             --drive-order after_youtube \
             --drive-upload both \
             --drive-images-mode zip \
-            --images-ymd "${{ github.event.inputs.images_ymd || 'latest' }}"
+            --images-ymd "${{ needs.plan.outputs.images_ymd }}"
 
       - name: Upload artifacts (always)
         if: always()
