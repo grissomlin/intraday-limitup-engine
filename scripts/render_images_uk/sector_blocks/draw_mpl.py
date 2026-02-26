@@ -93,7 +93,6 @@ def _compact_utc_offset(s: str) -> str:
         return ""
     m = re.match(r"^([+-])\s*(\d{1,2})(?::?(\d{2}))?$", s0)
     if not m:
-        # if already like "+01" or "+01:30" or "(UTC+01)" etc, just return original trimmed
         return s0
     sign, hh, mm = m.group(1), m.group(2), m.group(3)
     hh2 = hh.zfill(2)
@@ -134,7 +133,6 @@ def get_market_time_info(payload: Dict[str, Any]) -> Tuple[str, str]:
     finished_at = _safe_str(meta_time.get("market_finished_at") or "")
     hm = _safe_str(meta_time.get("market_finished_hm") or "")
     if not hm:
-        # fallback: generated_at / asof
         updated_market = finished_at or _safe_str(payload.get("generated_at") or "")
         hm = _parse_hhmm_from_iso(updated_market) or _safe_str(payload.get("asof") or "")
 
@@ -166,12 +164,29 @@ def get_ret_color(ret: float, theme: str = "light") -> str:
     return "#2f9e44" if ret >= 0 else "#c92a2a"
 
 
+# ✅ UK: match AU color tiers (distinct families, easy to distinguish)
 def pick_big_tag(ret_decimal: float) -> Tuple[str, str]:
+    """
+    6 tiers with clearly distinct color families:
+
+    10–20%  : MOVER  (Blue)
+    20–30%  : JUMP   (Green)
+    30–40%  : SURGE  (Purple)
+    40–50%  : RALLY  (Orange)
+    50–100% : ROCKET (Red)
+    100%+   : MOON   (Gold)
+    """
     if ret_decimal >= 1.00:
-        return ("MOON", "#f59f00")
+        return ("MOON", "#f59f00")        # Gold
+    if ret_decimal >= 0.50:
+        return ("ROCKET", "#e03131")      # Red
+    if ret_decimal >= 0.40:
+        return ("RALLY", "#f76707")       # Orange
     if ret_decimal >= 0.30:
-        return ("SURGE", "#fa5252")
-    return ("MOVER", "#4dabf7")
+        return ("SURGE", "#7048e8")       # Purple
+    if ret_decimal >= 0.20:
+        return ("JUMP", "#2f9e44")        # Green
+    return ("MOVER", "#4dabf7")           # Blue
 
 
 def draw_block_table(
@@ -300,22 +315,19 @@ def draw_block_table(
     title_txt = _fit_center_ellipsis(sector, title_x0, title_x1, title_y, fontsize=layout.title_fs)
     ax.text(0.5, title_y, title_txt, ha="center", va="top", fontsize=layout.title_fs, color=fg, weight="bold")
 
-    # Subtitle (time_note) — ✅ support 2 lines (like AU)
+    # Subtitle (time_note) — support 2 lines (like AU)
     subtitle = (time_note or "").strip()
     if subtitle:
         lines = [ln.strip() for ln in subtitle.split("\n") if ln.strip()]
         sub_x0, sub_x1 = 0.06, 0.94
         base_y = layout.header_subtitle_y
 
-        # first line (closer to title)
         if len(lines) >= 1:
             l1 = lines[0]
             fs1 = _fit_center_shrink(l1, sub_x0, sub_x1, base_y, fontsize=layout.subtitle_fs, min_fs=16)
             ax.text(0.5, base_y, l1, ha="center", va="top", fontsize=fs1, color=sub, weight="bold", alpha=0.90)
 
-        # second line (slightly lower)
         if len(lines) >= 2:
-            # fixed offset in axis coords (stable across sizes; tuned to keep within header area)
             y2 = base_y - 0.035
             l2 = lines[1]
             fs2 = _fit_center_shrink(l2, sub_x0, sub_x1, y2, fontsize=max(16, layout.subtitle_fs - 2), min_fs=14)
