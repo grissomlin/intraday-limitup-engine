@@ -5,8 +5,9 @@ on:
     # GitHub Actions cron uses UTC.
     # JP/KR @ 10:00 TW => 02:00 UTC
     - cron: "0 2 * * 1-5"
-    # CN @ 11:00 TW => 03:00 UTC
-    - cron: "0 3 * * 1-5"
+    # CN @ 10:30 TW => 02:30 UTC
+    - cron: "30 2 * * 1-5"
+   
     # TH @ 13:00 TW => 05:00 UTC
     - cron: "0 5 * * 1-5"
 
