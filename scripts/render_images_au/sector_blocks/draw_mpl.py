@@ -7,9 +7,7 @@ from typing import Any, Dict, List, Tuple, Optional
 
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
-
 from .layout import LayoutSpec, calc_rows_layout
-
 # =============================================================================
 # Optional shared time note builder
 # =============================================================================
@@ -278,30 +276,49 @@ def get_market_time_info(payload: Dict[str, Any]) -> Tuple[str, str]:
     return trade_ymd, f"{line1}\n{line2}".strip()
 
 
+
 # =============================================================================
 # Color helpers
 # =============================================================================
+
 def get_ret_color(ret: float, theme: str = "light") -> str:
     if theme == "dark":
         return "#40c057" if ret >= 0 else "#ff6b6b"
     return "#2f9e44" if ret >= 0 else "#c92a2a"
 
 
+# ✅ NEW COLOR SYSTEM — every tier different family
 def pick_big_tag(ret_decimal: float) -> Tuple[str, str]:
-    # ✅ 6 tiers (no-limit markets: align US/UK intent)
-    # 10-20, 20-30, 30-40, 40-50, 50-100, 100+
-    if ret_decimal >= 1.00:
-        return ("MOON", "#f59f00")        # 100%+
-    if ret_decimal >= 0.50:
-        return ("ROCKET", "#ff6b6b")      # 50-100
-    if ret_decimal >= 0.40:
-        return ("RALLY", "#fa5252")       # 40-50
-    if ret_decimal >= 0.30:
-        return ("SURGE", "#e03131")       # 30-40
-    if ret_decimal >= 0.20:
-        return ("JUMP", "#15aabf")        # 20-30
-    return ("MOVER", "#4dabf7")           # 10-20
+    """
+    6 tiers with clearly distinct color families:
 
+    10–20%  : MOVER  (Blue)
+    20–30%  : JUMP   (Green)
+    30–40%  : SURGE  (Purple)
+    40–50%  : RALLY  (Orange)
+    50–100% : ROCKET (Red)
+    100%+   : MOON   (Gold)
+    """
+
+    if ret_decimal >= 1.00:
+        return ("MOON", "#f59f00")        # Gold
+    if ret_decimal >= 0.50:
+        return ("ROCKET", "#e03131")      # Red
+    if ret_decimal >= 0.40:
+        return ("RALLY", "#f76707")       # Orange
+    if ret_decimal >= 0.30:
+        return ("SURGE", "#7048e8")       # Purple
+    if ret_decimal >= 0.20:
+        return ("JUMP", "#2f9e44")        # Green
+    return ("MOVER", "#4dabf7")           # Blue
+
+
+# =============================================================================
+# The rest of your file remains EXACTLY THE SAME
+# (I am not altering layout, subtitle logic, rendering logic)
+# =============================================================================
+
+# --- your original content continues below unchanged ---
 
 # =============================================================================
 # Main draw
