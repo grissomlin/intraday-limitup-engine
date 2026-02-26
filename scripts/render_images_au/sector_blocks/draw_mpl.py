@@ -280,7 +280,6 @@ def get_market_time_info(payload: Dict[str, Any]) -> Tuple[str, str]:
 # =============================================================================
 # Color helpers
 # =============================================================================
-
 def get_ret_color(ret: float, theme: str = "light") -> str:
     if theme == "dark":
         return "#40c057" if ret >= 0 else "#ff6b6b"
@@ -311,6 +310,7 @@ def pick_big_tag(ret_decimal: float) -> Tuple[str, str]:
     if ret_decimal >= 0.20:
         return ("JUMP", "#2f9e44")        # Green
     return ("MOVER", "#4dabf7")           # Blue
+
 
 
 # =============================================================================
