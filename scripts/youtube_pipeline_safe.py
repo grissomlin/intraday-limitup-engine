@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import unicodedata
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -179,6 +180,38 @@ def to_ps_arg_text(s: str) -> str:
     return s.replace("\n", "`n")
 
 
+def write_latest_meta(*, market: str, ymd: str, slot: str, video_id: str, privacy: str) -> Path:
+    """
+    Write outputs/latest_meta.json for Drive dashboard to read.
+
+    This file will be uploaded to Drive:
+      {MARKET}/Latest/{slot}/latest_meta.json
+
+    Schema (stable):
+      - market, ymd, slot
+      - youtube_video_id, privacy
+      - youtube_url
+      - updated_utc
+    """
+    Path("outputs").mkdir(exist_ok=True)
+
+    vid = str(video_id or "").strip()
+    obj = {
+        "market": str(market or "").strip().upper(),
+        "ymd": str(ymd or "").strip(),
+        "slot": str(slot or "").strip().lower(),
+        "youtube_video_id": vid,
+        "privacy": str(privacy or "").strip().lower(),
+        "youtube_url": f"https://www.youtube.com/watch?v={vid}" if vid else "",
+        "updated_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    }
+
+    out_path = Path("outputs/latest_meta.json")
+    out_path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"Saved: {out_path.as_posix()}")
+    return out_path
+
+
 # ===============================
 # Environment-aware loaders
 # ===============================
@@ -323,11 +356,20 @@ def main():
             "--playlist-id", playlist_id,
         ])
 
+    # 3) Save outputs for downstream steps (Drive dashboard, etc.)
     Path("outputs").mkdir(exist_ok=True)
     Path("outputs/last_video_id.txt").write_text(video_id, encoding="utf-8")
+    write_latest_meta(
+        market=args.market,
+        ymd=args.ymd,
+        slot=args.slot,
+        video_id=video_id,
+        privacy=privacy,
+    )
 
     print("\n[OK] Pipeline completed.")
     print("Saved: outputs/last_video_id.txt")
+    print("Saved: outputs/latest_meta.json")
 
 
 if __name__ == "__main__":
