@@ -15,7 +15,8 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-DEFAULT_SCOPES = ["https://www.googleapis.com/auth/drive"]
+# ✅ Prefer minimal scope to reduce invalid_scope when refreshing existing tokens
+DEFAULT_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 _THIS = Path(__file__).resolve()
 _REPO_ROOT = _THIS.parents[2]
@@ -146,8 +147,14 @@ def _debug_decode_json_fields(label: str, raw: str, *, required: list[str]) -> N
     try:
         obj = json.loads(raw)
         if isinstance(obj, dict):
-            _debug(f"[drive_auth][{label}] parsed as plain JSON; has_fields=" +
-                   str({k: (k in obj and bool(obj.get(k))) for k in required}))
+            _debug(
+                f"[drive_auth][{label}] parsed as plain JSON; has_fields="
+                + str({k: (k in obj and bool(obj.get(k))) for k in required})
+            )
+            # also safe-print scopes length if present
+            sc = obj.get("scopes")
+            if isinstance(sc, list):
+                _debug(f"[drive_auth][{label}] scopes_count={len(sc)}")
             return
     except Exception:
         pass
@@ -164,8 +171,13 @@ def _debug_decode_json_fields(label: str, raw: str, *, required: list[str]) -> N
         if not isinstance(obj, dict):
             _debug(f"[drive_auth][{label}] decoded JSON is not dict")
             return
-        _debug(f"[drive_auth][{label}] parsed as base64(JSON); has_fields=" +
-               str({k: (k in obj and bool(obj.get(k))) for k in required}))
+        _debug(
+            f"[drive_auth][{label}] parsed as base64(JSON); has_fields="
+            + str({k: (k in obj and bool(obj.get(k))) for k in required})
+        )
+        sc = obj.get("scopes")
+        if isinstance(sc, list):
+            _debug(f"[drive_auth][{label}] scopes_count={len(sc)}")
     except Exception as e:
         _debug(f"[drive_auth][{label}] json load failed after base64: {type(e).__name__}: {str(e)[:120]}")
         # Safe hint: first char only
@@ -278,6 +290,19 @@ def _save_creds_anywhere(creds: Credentials, token_file: Optional[str | Path]) -
             pass
 
 
+def _token_scopes(cfg: Optional[dict]) -> Optional[list[str]]:
+    """
+    If token json contains scopes, prefer it to avoid invalid_scope on refresh.
+    """
+    if not cfg:
+        return None
+    s = cfg.get("scopes")
+    if isinstance(s, list) and s and all(isinstance(x, str) for x in s):
+        out = [x.strip() for x in s if x.strip()]
+        return out or None
+    return None
+
+
 def get_drive_service(
     *,
     scopes: Optional[list[str]] = None,
@@ -312,8 +337,6 @@ def get_drive_service(
     token_cfg_file = _read_json_file(token_path)
 
     # Safe decode checks (only when GDRIVE_DEBUG=1)
-    # We want to know whether token includes refresh_token etc, without printing secrets.
-    # Prefer the first non-empty raw env among supported names.
     raw_token = (
         (os.getenv(env_token_key) or "").strip()
         or (os.getenv(f"{env_token_key}_B64") or "").strip()
@@ -355,10 +378,14 @@ def get_drive_service(
 
     # 1) token: env first, then file
     if token_cfg_env:
-        creds = Credentials.from_authorized_user_info(token_cfg_env, scopes=scopes)
+        eff_scopes = _token_scopes(token_cfg_env) or scopes
+        _debug(f"[drive_auth] effective_scopes(env)={eff_scopes}")
+        creds = Credentials.from_authorized_user_info(token_cfg_env, scopes=eff_scopes)
         token_source = "env"
     elif token_cfg_file:
-        creds = Credentials.from_authorized_user_info(token_cfg_file, scopes=scopes)
+        eff_scopes = _token_scopes(token_cfg_file) or scopes
+        _debug(f"[drive_auth] effective_scopes(file)={eff_scopes}")
+        creds = Credentials.from_authorized_user_info(token_cfg_file, scopes=eff_scopes)
         token_source = "file"
 
     # 2) refresh if needed
@@ -373,7 +400,17 @@ def get_drive_service(
                 _save_creds_anywhere(c, token_path)
                 return c
             except Exception as e:
+                # ✅ Provide clearer hint for invalid_scope
+                msg = str(e)
                 _debug(f"[drive_auth] refresh failed (source={source}): {e}")
+                if "invalid_scope" in msg:
+                    _debug(
+                        "[drive_auth] HINT: invalid_scope usually means your refresh_token was "
+                        "issued for DIFFERENT scopes than this run. "
+                        "Fix by either:\n"
+                        "  (A) Make token scopes match (prefer token's own scopes), or\n"
+                        "  (B) Re-authorize locally for Drive with scope drive.file and store new token."
+                    )
                 return None
         _debug(f"[drive_auth] creds invalid but not refreshable (source={source})")
         return None
@@ -383,7 +420,9 @@ def get_drive_service(
 
     # 2.5) If env path failed, fallback to file token
     if (not creds or not creds.valid) and token_cfg_file and token_source != "file":
-        creds2 = Credentials.from_authorized_user_info(token_cfg_file, scopes=scopes)
+        eff_scopes = _token_scopes(token_cfg_file) or scopes
+        _debug(f"[drive_auth] effective_scopes(fallback_file)={eff_scopes}")
+        creds2 = Credentials.from_authorized_user_info(token_cfg_file, scopes=eff_scopes)
         creds2 = _try_refresh(creds2, source="file") or None
         if creds2 and creds2.valid:
             creds = creds2
@@ -398,7 +437,7 @@ def get_drive_service(
                 "Provide BOTH:\n"
                 "  - GDRIVE_CLIENT_SECRET_JSON (or *_B64 / *_JSON_B64)\n"
                 "  - GDRIVE_TOKEN_JSON (or *_B64 / *_JSON_B64) (must include refresh_token)\n"
-                "If your refresh_token is expired/revoked, re-authorize locally with:\n"
+                "If your refresh_token is expired/revoked OR scope mismatch (invalid_scope), re-authorize locally with:\n"
                 "  GDRIVE_ALLOW_INTERACTIVE=1\n"
             )
 
