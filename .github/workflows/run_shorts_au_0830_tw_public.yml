@@ -50,7 +50,7 @@ jobs:
           import os
           from datetime import datetime, timezone
 
-          event = os.getenv("GITHUB_EVENT_NAME","")
+          event = (os.getenv("GITHUB_EVENT_NAME","") or "").strip()
           cron = (os.getenv("SCHEDULE_CRON","") or "").strip()
 
           in_slot = (os.getenv("INPUT_SLOT","") or "").strip().lower()
@@ -62,21 +62,25 @@ jobs:
           now_utc = datetime.now(timezone.utc)
 
           # ✅ lag-proof gating
-          # Prefer cron-string match (most reliable).
-          # Fallback: allow a safe window so queue delays won't skip.
           should_run = False
           if event == "workflow_dispatch":
               should_run = True
           else:
+              # Prefer cron-string match (most reliable).
               if cron in ("30 0 * * 1-5", "0 2 * * 1-5"):
                   should_run = True
               else:
-                  # Fallback windows:
-                  # - for 00:30 UTC target: allow 00~02 UTC
-                  # - for 02:00 UTC target: allow 02~04 UTC
+                  # Fallback windows (narrow, avoid accidental runs):
+                  # - 00:30 UTC target => allow 00:00~01:20 UTC
+                  # - 02:00 UTC target => allow 01:40~03:20 UTC
                   h = now_utc.hour
-                  if 0 <= h <= 2 or 2 <= h <= 4:
+                  m = now_utc.minute
+                  if (h == 0) or (h == 1 and m <= 20):
                       should_run = True
+                  elif (h == 1 and m >= 40) or (h == 2) or (h == 3 and m <= 20):
+                      should_run = True
+                  else:
+                      should_run = False
 
           out_path = os.environ["GITHUB_OUTPUT"]
           with open(out_path, "a", encoding="utf-8") as f:
@@ -110,8 +114,15 @@ jobs:
 
       # Google Drive
       GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+
+      # Existing secrets (keep)
       GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
       GDRIVE_CLIENT_SECRET_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_B64 }}
+
+      # ✅ ADD ALIASES: drive_auth.py expects *_JSON_B64 in headless mode
+      GDRIVE_TOKEN_JSON_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
+      GDRIVE_CLIENT_SECRET_JSON_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_B64 }}
+
       GDRIVE_ALLOW_INTERACTIVE: "0"
 
       # YouTube
@@ -133,6 +144,17 @@ jobs:
           echo "now_utc=$(date -u '+%F %T %Z')"
           TZ=Asia/Taipei date '+now_tw=%F %T %Z' || true
           echo "MPLCONFIGDIR=${MPLCONFIGDIR}"
+
+      # (Optional but useful) safe debug: confirms Drive envs exist (does not print secrets)
+      - name: Debug Drive env presence (safe)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          for k in ("GDRIVE_CLIENT_SECRET_JSON_B64","GDRIVE_TOKEN_JSON_B64","GDRIVE_CLIENT_SECRET_B64","GDRIVE_TOKEN_B64"):
+              v = (os.getenv(k) or "").strip()
+              print(f"{k}: present={bool(v)} len={len(v)}")
+          PY
 
       - name: Setup Python
         uses: actions/setup-python@v5
