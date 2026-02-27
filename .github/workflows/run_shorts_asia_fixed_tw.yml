@@ -141,7 +141,7 @@ jobs:
               # ✅ schedule: map by cron expression (immune to GitHub lag)
               mapping = {
                   "0 2 * * 1-5": ["jp","kr"],
-                  "30 2 * * 1-5": ["cn"],   # ✅ FIX: CN is 02:30 UTC
+                  "30 2 * * 1-5": ["cn"],
                   "0 5 * * 1-5": ["th"],
               }
               chosen = mapping.get(cron, [])
@@ -215,8 +215,15 @@ jobs:
 
       # Google Drive
       GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+
+      # Keep existing names (your repo uses these somewhere)
       GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
       GDRIVE_CLIENT_SECRET_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_B64 }}
+
+      # ✅ ADD ALIASES: drive_auth.py expects *_JSON_B64 in headless mode
+      GDRIVE_TOKEN_JSON_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
+      GDRIVE_CLIENT_SECRET_JSON_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_B64 }}
+
       GDRIVE_ALLOW_INTERACTIVE: "0"
 
       # YouTube
@@ -238,6 +245,17 @@ jobs:
           echo "now_utc=$(date -u '+%F %T %Z')"
           TZ=Asia/Taipei date '+now_tw=%F %T %Z' || true
           echo "MPLCONFIGDIR=${MPLCONFIGDIR}"
+
+      # (Optional) safe debug: confirms Drive envs exist (no secret content)
+      - name: Debug Drive env presence (safe)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          for k in ("GDRIVE_CLIENT_SECRET_JSON_B64","GDRIVE_TOKEN_JSON_B64","GDRIVE_CLIENT_SECRET_B64","GDRIVE_TOKEN_B64"):
+              v = (os.getenv(k) or "").strip()
+              print(f"{k}: present={bool(v)} len={len(v)}")
+          PY
 
       - name: Setup Python
         uses: actions/setup-python@v5
