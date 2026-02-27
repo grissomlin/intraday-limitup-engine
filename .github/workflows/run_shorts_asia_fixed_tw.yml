@@ -5,9 +5,10 @@ on:
     # GitHub Actions cron uses UTC.
     # JP/KR @ 10:00 TW => 02:00 UTC
     - cron: "0 2 * * 1-5"
+
     # CN @ 10:30 TW => 02:30 UTC
     - cron: "30 2 * * 1-5"
-   
+
     # TH @ 13:00 TW => 05:00 UTC
     - cron: "0 5 * * 1-5"
 
@@ -140,19 +141,26 @@ jobs:
               # ✅ schedule: map by cron expression (immune to GitHub lag)
               mapping = {
                   "0 2 * * 1-5": ["jp","kr"],
-                  "0 3 * * 1-5": ["cn"],
+                  "30 2 * * 1-5": ["cn"],   # ✅ FIX: CN is 02:30 UTC
                   "0 5 * * 1-5": ["th"],
               }
               chosen = mapping.get(cron, [])
 
-              # ✅ fallback window (rare): allow start delay
+              # ✅ fallback window (rare): allow runner start delay without mixing JP/KR and CN
               if not chosen:
                   h = now_utc.hour
-                  if 1 <= h <= 2:
+                  m = now_utc.minute
+
+                  # JP/KR window around 02:00 UTC (allow some delay)
+                  if h == 2 and m < 20:
                       chosen = ["jp","kr"]
-                  elif 2 <= h <= 3:
+
+                  # CN window around 02:30 UTC (allow some delay)
+                  elif h == 2 and m >= 20 and m <= 55:
                       chosen = ["cn"]
-                  elif 4 <= h <= 5:
+
+                  # TH window around 05:00 UTC
+                  elif h == 5:
                       chosen = ["th"]
                   else:
                       chosen = []
