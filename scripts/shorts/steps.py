@@ -320,6 +320,25 @@ def drive_upload(
                 )
                 print(f"[drive] uploaded images: sectors_pngs={n2}", flush=True)
 
+    # -------------------------------------------------
+    # Upload latest_meta.json (optional, for dashboard)
+    # -------------------------------------------------
+    meta_path = REPO_ROOT / "outputs" / "latest_meta.json"
+    if meta_path.exists():
+        n_meta = upload_dir(
+            service,
+            slot_folder,
+            meta_path.parent,
+            pattern=meta_path.name,
+            recursive=False,
+            overwrite=True,
+            verbose=False,
+            concurrent=False,
+        )
+        print(f"[drive] uploaded latest_meta.json (n={n_meta})", flush=True)
+    else:
+        print("[drive] latest_meta.json not found (skip)", flush=True)
+
 
 def resolve_payload_and_maybe_realign(
     *,
@@ -416,5 +435,6 @@ def summary_print(
             print("drive_fixed_video:", f"latest_{slot}.mp4", flush=True)
         if drive_upload_mode in ("images", "both") and drive_images_mode == "zip":
             print("drive_fixed_images_zip:", f"latest_{slot}_images.zip", flush=True)
+        print("drive_meta:", "latest_meta.json (if produced)", flush=True)
     else:
         print("drive   : (disabled)", flush=True)
