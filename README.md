@@ -179,5 +179,28 @@ Actively maintained and continuously improving.
 
 ⚠ Disclaimer
 
+<img width="1080" height="1920" alt="us_Consumer_Discretionary_p1" src="https://github.com/user-attachments/assets/38ef2614-66ff-4709-931d-eaf45c4a2fbb" />
+<img width="1080" height="1920" alt="overview_sectors_bigmove10_p1" src="https://github.com/user-attachments/assets/7b0a2801-bd14-43c2-b041-79c635ec9984" />
+<img width="1080" height="1920" alt="tw_化學工業_p1" src="https://github.com/user-attachments/assets/66927bc5-fbbd-450b-a9b6-4d8813ab8121" />
+<img width="1080" height="1920" alt="overview_sectors_mix_p1" src="https://github.com/user-attachments/assets/48d53cef-b4d1-4b72-a01d-d684ee505f41" />
+<img width="1080" height="1920" alt="overview_sectors_mix_p1" src="https://github.com/user-attachments/assets/0336c85f-d76b-4345-9d16-4fb35e730e13" />
+<img width="1080" height="1920" alt="cn_磨具磨料_p1" src="https://github.com/user-attachments/assets/ac97ff2c-dd6e-4c56-9400-f30623c4a3dc" />
+<img width="1080" height="1920" alt="overview_sectors_mix_p1" src="https://github.com/user-attachments/assets/619e7953-8956-40e8-abf4-a92a6dcb1c9c" />
+<img width="1080" height="1920" alt="kr_펄프_종이_및_판지_제조업_p1" src="https://github.com/user-attachments/assets/a31b6413-711a-41e0-a9df-9ad740cc253c" />
+<img width="1080" height="1920" alt="th_Industrial_Materials___Machinery_p1" src="https://github.com/user-attachments/assets/a3e6933f-2379-490e-889c-150175110508" />
+<img width="1080" height="1920" alt="overview_sectors_mix_p1" src="https://github.com/user-attachments/assets/c5b1ba96-5041-4610-95a9-42af604e1132" />
+<img width="1080" height="1920" alt="overview_sectors_bigmove10_p1" src="https://github.com/user-attachments/assets/7b1f8d43-dcfa-4c3c-84ed-25463a712190" />
+<img width="1080" height="1920" alt="ca_Technology_p1" src="https://github.com/user-attachments/assets/b95efc0a-d6d5-4b4e-8109-083bfab59368" />
+<img width="1080" height="1920" alt="overview_sectors_mix_p1" src="https://github.com/user-attachments/assets/b3e40b9d-f28b-4d6a-9212-0c9a28861b89" />
+<img width="1080" height="1920" alt="jp_Wholesale_Trade_p1" src="https://github.com/user-attachments/assets/ef016239-d77d-48a4-afa7-b24384e64f23" />
+<img width="1080" height="1920" alt="overview_sectors_bigmove10_p1" src="https://github.com/user-attachments/assets/0cf0cfa2-91e7-4ace-b81b-d90d23feb0c3" />
+<img width="1080" height="1920" alt="au_Utilities_p1" src="https://github.com/user-attachments/assets/d49b5219-d8e9-4d8b-a869-1073b7ea210c" />
+
+
+
+
+
+
 For research and educational purposes only.
 Not investment advice.
+
