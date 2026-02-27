@@ -1,0 +1,24 @@
+name: TikTok Upload (dispatch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "open/midday/close"
+        required: true
+        default: "midday"
+        type: choice
+        options: [open, midday, close]
+      markets:
+        description: "Comma-separated markets, e.g. TH,JP,US"
+        required: true
+        default: "TH"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Echo inputs
+        run: |
+          echo "slot=${{ inputs.slot }}"
+          echo "markets=${{ inputs.markets }}"
