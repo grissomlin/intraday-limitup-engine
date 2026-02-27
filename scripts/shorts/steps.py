@@ -321,7 +321,7 @@ def drive_upload(
                 print(f"[drive] uploaded images: sectors_pngs={n2}", flush=True)
 
     # -------------------------------------------------
-    # Upload latest_meta.json (optional, for dashboard)
+    # ✅ Upload latest_meta.json (optional, for dashboard)
     # -------------------------------------------------
     meta_path = REPO_ROOT / "outputs" / "latest_meta.json"
     if meta_path.exists():
