@@ -98,9 +98,83 @@ def _fingerprint_token_cfg(cfg: dict) -> str:
     return f"rt_sha10={_sha10(rt)} cid_sha10={_sha10(cid)} expiry={exp}"
 
 
+def _debug_env_presence(env_client_secret_key: str, env_token_key: str) -> None:
+    """
+    Safe debug (no secret content):
+    - prints whether each env exists and its length
+    - prints first 2 chars to detect empty/"***" masking weirdness
+    Enabled only when GDRIVE_DEBUG=1
+    """
+    if not _env_on("GDRIVE_DEBUG"):
+        return
+
+    def _p(k: str) -> str:
+        v = (os.getenv(k) or "")
+        vv = v.strip()
+        return f"{k}: present={bool(vv)} len={len(vv)} head2={vv[:2]!r}"
+
+    keys = [
+        env_client_secret_key,
+        f"{env_client_secret_key}_B64",
+        f"{env_client_secret_key}_JSON_B64",
+        # legacy shortcuts used in workflows
+        "GDRIVE_CLIENT_SECRET_B64",
+        env_token_key,
+        f"{env_token_key}_B64",
+        f"{env_token_key}_JSON_B64",
+        # legacy shortcuts used in workflows
+        "GDRIVE_TOKEN_B64",
+    ]
+    _debug("[drive_auth][env_presence] " + " | ".join(_p(k) for k in keys))
+
+
+def _debug_decode_json_fields(label: str, raw: str, *, required: list[str]) -> None:
+    """
+    Safe debug:
+    - try base64 decode + json loads, then report which required fields exist
+    - does NOT print token values
+    Enabled only when GDRIVE_DEBUG=1
+    """
+    if not _env_on("GDRIVE_DEBUG"):
+        return
+
+    if not raw:
+        _debug(f"[drive_auth][{label}] raw empty")
+        return
+
+    # try plain JSON
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict):
+            _debug(f"[drive_auth][{label}] parsed as plain JSON; has_fields=" +
+                   str({k: (k in obj and bool(obj.get(k))) for k in required}))
+            return
+    except Exception:
+        pass
+
+    # try base64(JSON)
+    try:
+        dec = base64.b64decode(raw).decode("utf-8", errors="replace")
+    except Exception as e:
+        _debug(f"[drive_auth][{label}] base64 decode failed: {type(e).__name__}: {str(e)[:120]}")
+        return
+
+    try:
+        obj = json.loads(dec)
+        if not isinstance(obj, dict):
+            _debug(f"[drive_auth][{label}] decoded JSON is not dict")
+            return
+        _debug(f"[drive_auth][{label}] parsed as base64(JSON); has_fields=" +
+               str({k: (k in obj and bool(obj.get(k))) for k in required}))
+    except Exception as e:
+        _debug(f"[drive_auth][{label}] json load failed after base64: {type(e).__name__}: {str(e)[:120]}")
+        # Safe hint: first char only
+        _debug(f"[drive_auth][{label}] decoded_head1={dec[:1]!r}")
+
+
 def _load_env_json(name: str) -> Optional[dict]:
     """
-    支援四種來源（依序）：
+    支援多種來源（依序）：
     1) 直接 JSON：NAME={"a":1}
     2) 標準 B64：NAME_B64=base64(json)
     3) 你目前在用的：NAME_JSON_B64（例如 GDRIVE_TOKEN_JSON_B64）
@@ -125,7 +199,7 @@ def _load_env_json(name: str) -> Optional[dict]:
         except Exception as e:
             raise RuntimeError(f"Env {name}_B64 is not valid base64 JSON: {e}")
 
-    # 3) NAME_JSON_B64 (your current convention)
+    # 3) NAME_JSON_B64
     s_json_b64 = (os.getenv(f"{name}_JSON_B64") or "").strip()
     if s_json_b64:
         try:
@@ -229,9 +303,39 @@ def get_drive_service(
 
     token_path = Path(token_file) if token_file else DEFAULT_TOKEN_FILE
 
+    # Safe env presence debug
+    _debug_env_presence(env_client_secret_key, env_token_key)
+
+    # Load configs from env (supports plain/b64/json_b64/legacy)
     secret_cfg = _load_env_json(env_client_secret_key)
     token_cfg_env = _load_env_json(env_token_key)
     token_cfg_file = _read_json_file(token_path)
+
+    # Safe decode checks (only when GDRIVE_DEBUG=1)
+    # We want to know whether token includes refresh_token etc, without printing secrets.
+    # Prefer the first non-empty raw env among supported names.
+    raw_token = (
+        (os.getenv(env_token_key) or "").strip()
+        or (os.getenv(f"{env_token_key}_B64") or "").strip()
+        or (os.getenv(f"{env_token_key}_JSON_B64") or "").strip()
+        or (os.getenv("GDRIVE_TOKEN_B64") or "").strip()
+    )
+    raw_secret = (
+        (os.getenv(env_client_secret_key) or "").strip()
+        or (os.getenv(f"{env_client_secret_key}_B64") or "").strip()
+        or (os.getenv(f"{env_client_secret_key}_JSON_B64") or "").strip()
+        or (os.getenv("GDRIVE_CLIENT_SECRET_B64") or "").strip()
+    )
+    _debug_decode_json_fields(
+        "TOKEN_ENV",
+        raw_token,
+        required=["client_id", "client_secret", "refresh_token", "token_uri"],
+    )
+    _debug_decode_json_fields(
+        "CLIENT_SECRET_ENV",
+        raw_secret,
+        required=["installed", "web"],
+    )
 
     now_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
     _debug(
