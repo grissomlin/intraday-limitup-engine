@@ -4,8 +4,9 @@ on:
   schedule:
     # GitHub Actions cron uses UTC.
     # 00:30 Asia/Taipei (UTC+8) => 16:30 UTC (previous day)
-    # To run Mon-Fri 00:30 TW, schedule Sun-Thu 16:30 UTC:
-    - cron: "30 16 * * 0-4"
+    # We want TW Tue-Sat 00:30 (cover US/CA Mon-Fri trading days)
+    # So UTC should run Mon-Fri 16:30 => weekday 1-5
+    - cron: "30 16 * * 1-5"
 
   workflow_dispatch:
     inputs:
@@ -169,6 +170,6 @@ jobs:
           name: artifacts_${{ matrix.market }}_${{ github.run_id }}
           path: |
             outputs/**
-            media/videos**
+            media/videos/**
             media/images/**/list_video.txt
           if-no-files-found: ignore
