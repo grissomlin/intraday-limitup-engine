@@ -212,6 +212,7 @@ def drive_upload(
     slot: str,
     out_mp4: Optional[Path],
     images_dir_path: Optional[Path],
+    payload_path: Optional[Path],  # ✅ NEW: optional payload upload
     upload_mode: str,
     images_mode: str,
     workers: int = 8,
@@ -238,6 +239,9 @@ def drive_upload(
     def want(name: str) -> bool:
         return upload_mode in (name, "both")
 
+    # --------------------------
+    # Upload video
+    # --------------------------
     if want("video"):
         if not out_mp4 or not out_mp4.exists():
             raise FileNotFoundError(f"video not found for drive upload: {out_mp4}")
@@ -257,6 +261,9 @@ def drive_upload(
         )
         print(f"[drive] uploaded video: {fixed_mp4.name} (n={n})", flush=True)
 
+    # --------------------------
+    # Upload images
+    # --------------------------
     if want("images"):
         if not images_dir_path or not images_dir_path.exists():
             raise FileNotFoundError(f"images_dir not found for drive upload: {images_dir_path}")
@@ -319,6 +326,33 @@ def drive_upload(
                     subfolder_name="sectors",
                 )
                 print(f"[drive] uploaded images: sectors_pngs={n2}", flush=True)
+
+    # --------------------------
+    # ✅ Upload payload.json (debug only)
+    # --------------------------
+    if payload_path is not None:
+        if payload_path.exists():
+            # 固定檔名，方便你每次都拿得到「最新」payload
+            fixed_payload = payload_path.parent / f"latest_{slot}.payload.json"
+            try:
+                shutil.copy2(payload_path, fixed_payload)
+            except Exception:
+                # fallback: if copy fails, just upload original
+                fixed_payload = payload_path
+
+            n_payload = upload_dir(
+                service,
+                slot_folder,
+                fixed_payload.parent,
+                pattern=fixed_payload.name,
+                recursive=False,
+                overwrite=True,
+                verbose=True,
+                concurrent=False,
+            )
+            print(f"[drive] uploaded payload: {fixed_payload.name} (n={n_payload})", flush=True)
+        else:
+            print(f"[drive] payload_path not found (skip): {payload_path}", flush=True)
 
     # -------------------------------------------------
     # ✅ Upload latest_meta.json (optional, for dashboard)
@@ -435,6 +469,7 @@ def summary_print(
             print("drive_fixed_video:", f"latest_{slot}.mp4", flush=True)
         if drive_upload_mode in ("images", "both") and drive_images_mode == "zip":
             print("drive_fixed_images_zip:", f"latest_{slot}_images.zip", flush=True)
+        print("drive_payload:", f"latest_{slot}.payload.json (if enabled)", flush=True)
         print("drive_meta:", "latest_meta.json (if produced)", flush=True)
     else:
         print("drive   : (disabled)", flush=True)
