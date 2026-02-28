@@ -14,6 +14,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# =============================================================================
+# ✅ GLOBAL SWITCH (edit here)
+# - True  : when --drive is enabled, also upload payload.json to Google Drive
+# - False : do NOT upload payload.json
+# =============================================================================
+UPLOAD_PAYLOAD_TO_DRIVE = True
+
 import argparse
 import os
 import re
@@ -228,6 +235,7 @@ def main() -> int:
                 slot=slot,
                 out_mp4=out_mp4,
                 images_dir_path=images_dir_path,
+                payload_path=(payload if UPLOAD_PAYLOAD_TO_DRIVE else None),
                 upload_mode=str(args.drive_upload),
                 images_mode=str(args.drive_images_mode),
                 workers=int(args.drive_workers),
@@ -269,6 +277,7 @@ def main() -> int:
                 slot=slot,
                 out_mp4=out_mp4,
                 images_dir_path=images_dir_path,
+                payload_path=(payload if UPLOAD_PAYLOAD_TO_DRIVE else None),
                 upload_mode=str(args.drive_upload),
                 images_mode=str(args.drive_images_mode),
                 workers=int(args.drive_workers),
@@ -283,6 +292,7 @@ def main() -> int:
             slot=slot,
             out_mp4=out_mp4 if out_mp4.exists() else None,
             images_dir_path=images_dir_path if images_dir_path.exists() else None,
+            payload_path=(payload if UPLOAD_PAYLOAD_TO_DRIVE else None),
             upload_mode=str(args.drive_upload),
             images_mode=str(args.drive_images_mode),
             workers=int(args.drive_workers),
