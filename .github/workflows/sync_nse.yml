@@ -24,7 +24,7 @@ jobs:
 
       - name: Execute Download Script
         env:
-          # 建議優先試用你 2 天前更新的那個完整 JSON Secret
+          # 這裡換成你 2 天前更新且認為最完整的 Secret 名稱
           GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_JSON_B64 }}
           IN_STOCKLIST: ${{ secrets.IN_STOCKLIST }}
         run: python stocksymboldownload/download_nse.py
