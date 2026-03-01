@@ -3,8 +3,7 @@ name: NSE Data Sync
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 4 * * *'
-
+    - cron: '0 4 * * *'  # 這才是台灣時間中午 12:00
 jobs:
   download_job:
     runs-on: ubuntu-latest
