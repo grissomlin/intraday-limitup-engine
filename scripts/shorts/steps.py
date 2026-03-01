@@ -465,7 +465,12 @@ def resolve_payload_and_maybe_realign(
 
         if not fb.exists():
             if debug_tree:
-                tree(REPO_ROOT / "data" / "cache" / market_lower, enabled=True, max_depth=debug_depth, max_items=debug_max)
+                tree(
+                    REPO_ROOT / "data" / "cache" / market_lower,
+                    enabled=True,
+                    max_depth=debug_depth,
+                    max_items=debug_max,
+                )
             raise FileNotFoundError(f"payload not found after force rebuild: {fb}")
 
     return fb, ymd2
@@ -495,11 +500,20 @@ def summary_print(
     if drive_enabled:
         print("drive   : enabled", flush=True)
         print("drive_parent_id:", (str(drive_parent_id)[:6] + "…" if drive_parent_id else "(missing)"), flush=True)
-        print("drive_order:", drive_order, "drive_upload:", drive_upload_mode, "images_mode:", drive_images_mode, flush=True)
+        print(
+            "drive_order:",
+            drive_order,
+            "drive_upload:",
+            drive_upload_mode,
+            "images_mode:",
+            drive_images_mode,
+            flush=True,
+        )
         print("drive_folder:", f"{market_upper}/Latest/{slot}", flush=True)
         if drive_upload_mode in ("video", "both"):
             print("drive_fixed_video:", f"latest_{slot}.mp4", flush=True)
-        if drive_upload_mode in ("images", "both") and drive_drive_images_mode == "zip":
+        # ✅ FIX: drive_drive_images_mode -> drive_images_mode
+        if drive_upload_mode in ("images", "both") and drive_images_mode == "zip":
             print("drive_fixed_images_zip:", f"latest_{slot}_images.zip", flush=True)
         print("drive_payload:", f"latest_{slot}.payload.json (if enabled)", flush=True)
         print("drive_meta:", "latest_meta.json (if produced)", flush=True)
