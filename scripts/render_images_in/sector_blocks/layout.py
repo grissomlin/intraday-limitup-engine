@@ -26,6 +26,7 @@ class LayoutSpec:
     # -------------------------
     # Boxes
     # -------------------------
+    # Keep same as CN layout (already good)
     top_box_y0: float = 0.885
     top_box_y1: float = 0.485
     bot_box_y0: float = 0.465
@@ -88,16 +89,25 @@ def calc_rows_layout(y_top: float, y_bottom: float, max_rows: int, *, two_line: 
     return y_start, row_h
 
 
+# -----------------------------------------------------------------------------
+# Presets
+# - Keep simple: IN uses two_line=True (name + line2)
+# - Add "us" to avoid surprises if CLI default uses --layout us
+# -----------------------------------------------------------------------------
 PRESETS: Dict[str, LayoutSpec] = {
-    # keep presets simple
     "in": LayoutSpec(two_line=True),
+    "us": LayoutSpec(two_line=True),
     "default": LayoutSpec(two_line=True),
 }
 
 
 def get_layout(name: str) -> LayoutSpec:
+    """
+    Resolve layout preset.
+    Unknown keys fallback to "in" (safe default).
+    """
     k = (name or "").strip().lower() or "in"
-    if k not in PRESETS:
-        # fallback to in
-        return PRESETS["in"]
-    return PRESETS[k]
+    if k in PRESETS:
+        return PRESETS[k]
+    # fallback: accept "default" name too
+    return PRESETS.get("in", PRESETS["default"])
