@@ -12,99 +12,124 @@ from googleapiclient.http import MediaIoBaseUpload
 from google.auth.transport.requests import Request
 import sys
 
-# 變數設定
+# 環境變數設定
 GDRIVE_TOKEN_B64 = os.environ.get("GDRIVE_TOKEN_B64")
 GDRIVE_ROOT_FOLDER_ID = os.environ.get("IN_STOCKLIST") 
 
-# NSE 檔案連結
+# NSE 檔案來源
 URL_EQUITY_L = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
 URL_SEC_LIST = "https://nsearchives.nseindia.com/content/equities/sec_list.csv"
 
 def get_drive_service():
     if not GDRIVE_TOKEN_B64:
-        raise ValueError("缺少 GDRIVE_TOKEN_B64 Secrets")
-    token_json = json.loads(base64.b64decode(GDRIVE_TOKEN_B64).decode("utf-8"))
-    creds = Credentials.from_authorized_user_info(token_json, scopes=["https://www.googleapis.com/auth/drive"])
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-    return build("drive", "v3", credentials=creds)
+        raise ValueError("❌ 找不到 GDRIVE_TOKEN_B64 環境變數")
+
+    try:
+        decoded_data = base64.b64decode(GDRIVE_TOKEN_B64).decode("utf-8")
+        token_info = json.loads(decoded_data)
+    except Exception as e:
+        raise ValueError(f"❌ Base64 解碼或 JSON 解析失敗: {e}")
+
+    # 【核心修正】不手動指定 Scopes，直接讀取 Token 檔案內建的權限
+    # 這樣可以避開 invalid_scope 報錯
+    try:
+        creds = Credentials.from_authorized_user_info(token_info)
+        
+        if creds.expired and creds.refresh_token:
+            print("🔄 Token 已過期，嘗試自動刷新...")
+            try:
+                creds.refresh(Request())
+            except Exception as refresh_err:
+                print(f"❌ Token 刷新失敗，請檢查 Client ID/Secret 是否正確: {refresh_err}")
+                raise
+                
+        return build("drive", "v3", credentials=creds)
+    except Exception as e:
+        print(f"❌ 憑證初始化失敗: {e}")
+        raise
 
 def delete_existing_file(service, file_name, folder_id):
-    query = f"name = '{file_name}' and '{folder_id}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-    for item in results.get('files', []):
-        print(f"正在清理舊檔案: {item['name']}")
-        service.files().delete(fileId=item['id'], supportsAllDrives=True).execute()
+    """清理資料夾內同名的舊檔案，確保只保留最新版"""
+    try:
+        query = f"name = '{file_name}' and '{folder_id}' in parents and trashed = false"
+        results = service.files().list(q=query, fields="files(id, name)", 
+                                     supportsAllDrives=True, 
+                                     includeItemsFromAllDrives=True).execute()
+        for item in results.get('files', []):
+            print(f"正在清理舊檔案: {item['name']} (ID: {item['id']})")
+            service.files().delete(fileId=item['id'], supportsAllDrives=True).execute()
+    except Exception as e:
+        print(f"⚠️ 清理舊檔案時發生輕微錯誤 (可能無舊檔): {e}")
 
 def run():
     try:
+        if not GDRIVE_ROOT_FOLDER_ID:
+            print("❌ 錯誤: 找不到 IN_STOCKLIST 資料夾 ID")
+            sys.exit(1)
+
         service = get_drive_service()
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.nseindia.com/"}
 
-        # 1. 下載基本資訊 (EQUITY_L)
-        print("下載 EQUITY_L.csv...")
-        res1 = requests.get(URL_EQUITY_L, headers=headers)
-        df_base = pd.read_csv(io.BytesIO(res1.content))
+        # 1. 下載資料
+        print("📥 正在從 NSE 下載原始清單...")
+        res_base = requests.get(URL_EQUITY_L, headers=headers, timeout=30)
+        res_band = requests.get(URL_SEC_LIST, headers=headers, timeout=30)
+        
+        df_base = pd.read_csv(io.BytesIO(res_base.content))
+        df_band = pd.read_csv(io.BytesIO(res_band.content))
+        
         df_base.columns = df_base.columns.str.strip()
-
-        # 2. 下載漲跌幅限制 (sec_list)
-        print("下載 sec_list.csv (Price Band)...")
-        res2 = requests.get(URL_SEC_LIST, headers=headers)
-        df_band = pd.read_csv(io.BytesIO(res2.content))
         df_band.columns = df_band.columns.str.strip()
 
-        # 3. 合併基本資料與漲跌幅
-        # 使用 Symbol 作為連結鍵
-        df_merged = pd.merge(df_base[['SYMBOL', 'NAME OF COMPANY', 'ISIN NUMBER']], 
-                             df_band[['Symbol', 'Band', 'Remarks']], 
-                             left_on='SYMBOL', right_on='Symbol', how='left')
-        df_merged.drop(columns=['Symbol'], inplace=True)
+        # 2. 合併資料 (Merge)
+        print("🔗 正在整合漲跌幅限制 (Price Band)...")
+        df_merged = pd.merge(
+            df_base[['SYMBOL', 'NAME OF COMPANY']], 
+            df_band[['Symbol', 'Band', 'Remarks']], 
+            left_on='SYMBOL', right_on='Symbol', how='left'
+        ).drop(columns=['Symbol'])
 
-        # 4. 抓取 Yahoo 行業分類 (為了節省 Actions 時間，這裡演示抓取邏輯)
-        print(f"開始抓取行業資料，總數: {len(df_merged)}")
+        # 3. 抓取 yfinance 行業資訊
+        print(f"🔍 開始抓取行業資訊 (總計 {len(df_merged)} 檔)...")
         industry_data = []
-        
-        # 建立 ticker 欄位
-        df_merged["ticker"] = df_merged["SYMBOL"].astype(str) + ".NS"
-
-        # 這裡建議在 Actions 執行時可以考慮分批或限制數量，若要全抓需約 20 分鐘
         for i, row in df_merged.iterrows():
-            ticker = row["ticker"]
-            if i % 100 == 0: print(f"已處理 {i} 檔...")
+            ticker = f"{row['SYMBOL']}.NS"
+            if i % 100 == 0: print(f"進度: {i}/{len(df_merged)}")
             
             try:
-                # 僅獲取必要資訊
+                # 僅抓取基礎 info
                 info = yf.Ticker(ticker).info
                 industry_data.append({
-                    "SYMBOL": row["SYMBOL"],
-                    "sector": info.get("sector", "N/A"),
-                    "industry": info.get("industry", "N/A")
+                    "SYMBOL": row['SYMBOL'],
+                    "sector": info.get("sector", "Unclassified"),
+                    "industry": info.get("industry", "Unclassified")
                 })
             except:
-                industry_data.append({"SYMBOL": row["SYMBOL"], "sector": "Error", "industry": "Error"})
-            time.sleep(0.1) # 稍微節流
+                industry_data.append({"SYMBOL": row['SYMBOL'], "sector": "Error", "industry": "Error"})
+            
+            time.sleep(0.15) # 稍微節流避免被 Yahoo 封鎖
 
         df_industry = pd.DataFrame(industry_data)
         df_final = pd.merge(df_merged, df_industry, on="SYMBOL", how="left")
 
-        # 5. 儲存並上傳至 Google Drive
-        final_file_name = "NSE_Master_Stock_List.csv"
-        print(f"準備上傳: {final_file_name}")
-        
+        # 4. 上傳至 Google Drive
+        final_file_name = "NSE_Stock_Master_Data.csv"
         delete_existing_file(service, final_file_name, GDRIVE_ROOT_FOLDER_ID)
-        
+
         csv_buffer = io.BytesIO()
         df_final.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
         csv_buffer.seek(0)
-        
-        media = MediaIoBaseUpload(csv_buffer, mimetype='text/csv')
+
+        media = MediaIoBaseUpload(csv_buffer, mimetype='text/csv', resumable=True)
         file_metadata = {'name': final_file_name, 'parents': [GDRIVE_ROOT_FOLDER_ID]}
+        
+        print(f"📤 正在上傳最終整合檔案...")
         service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
         
-        print("✅ 任務成功完成！")
+        print("✅ 任務完成！")
 
     except Exception as e:
-        print(f"❌ 錯誤: {str(e)}")
+        print(f"❌ 執行過程中發生錯誤: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
