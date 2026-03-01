@@ -436,3 +436,16 @@ RUNNERS: Dict[str, Callable[[argparse.Namespace, Path, str, dict], Dict[str, Any
     "jp": run_market_jp,
     "kr": run_market_kr,
 }
+
+# -----------------------------------------------------------------------------
+# ✅ Alias keys (so argparse choices include them, and they map to the same runner)
+# main.py uses: choices=list(RUNNERS.keys())
+# So we add aliases directly in RUNNERS (all point to run_market_in).
+# -----------------------------------------------------------------------------
+RUNNERS.update(
+    {
+        "india": run_market_in,
+        "nse": run_market_in,
+        "bse": run_market_in,
+    }
+)
