@@ -5,16 +5,26 @@ from __future__ import annotations
 import argparse
 import json
 import os
-
-# ✅ VERY IMPORTANT: Force matplotlib headless backend (avoid tkinter warnings)
-os.environ.setdefault("MPLBACKEND", "Agg")
-
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+# ✅ headless backend
+os.environ.setdefault("MPLBACKEND", "Agg")
+
+# =============================================================================
+# ✅ DEFAULT DEBUG ON (overview + footer) — align CN/JP/KR/TW
+# =============================================================================
+os.environ.setdefault("OVERVIEW_DEBUG_FOOTER", "1")
+os.environ.setdefault("OVERVIEW_DEBUG_FONTS", "1")
+os.environ.setdefault("OVERVIEW_DEBUG", "1")
+
+# Optional: try disable gainbins
+os.environ.setdefault("OVERVIEW_GAINBINS", "0")
+os.environ.setdefault("OVERVIEW_ENABLE_GAINBINS", "0")
+os.environ.setdefault("OVERVIEW_DISABLE_GAINBINS", "1")
+os.environ.setdefault("OVERVIEW_NO_GAINBINS", "1")
 
 THIS = Path(__file__).resolve()
 REPO_ROOT = THIS.parents[2]
@@ -31,23 +41,19 @@ from scripts.render_images_common.header_mpl import get_market_time_info  # noqa
 # overview (common)
 from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
 
-# ✅ Drive uploader (env-first / b64 supported by drive_uploader)
-from scripts.utils.drive_uploader import (  # noqa: E402
-    get_drive_service,
-    ensure_folder,
-    upload_dir,
+# ✅ shared ordering helpers
+from scripts.render_images_common.sector_order import (  # noqa: E402
+    normalize_sector_key,
+    extract_overview_sector_order,
+    reorder_keys_by_overview,
 )
 
-DEFAULT_ROOT_FOLDER = (
-    os.getenv("GDRIVE_ROOT_FOLDER_ID", "").strip()
-    or "1wxOxKDRLZ15dwm-V2G25l_vjaHQ-f2aE"
-)
-
-MARKET = "IN"
+# aggregator (no re-download)
+from markets.india.aggregator import aggregate as in_aggregate  # noqa: E402
 
 
 # =============================================================================
-# Utils
+# Small utils
 # =============================================================================
 def _pct(x: Any) -> float:
     try:
@@ -68,10 +74,11 @@ def _bool(x: Any) -> bool:
         return x
     if x is None:
         return False
-    return str(x).strip().lower() in ("1", "true", "yes", "y", "on")
+    s = str(x).strip().lower()
+    return s in ("1", "true", "yes", "y", "on")
 
 
-def _s(x: Any) -> str:
+def _safe_str(x: Any) -> str:
     return str(x).strip() if x is not None else ""
 
 
@@ -83,18 +90,41 @@ def load_payload(path: str) -> Dict[str, Any]:
 
 
 def pick_universe(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Prefer full-market universe first, so peers can be computed correctly.
-    Support raw payload and agg payload that still carries snapshots.
-    """
-    for k in ("snapshot_main", "snapshot_all", "snapshot_open", "snapshot"):
-        rows = payload.get(k) or []
+    for key in ("snapshot_all", "snapshot_main", "snapshot_open", "snapshot"):
+        rows = payload.get(key) or []
         if isinstance(rows, list) and rows:
             return rows
-    rows = payload.get("universe") or []
-    if isinstance(rows, list) and rows:
-        return rows
     return []
+
+
+def _payload_ymd(payload: Dict[str, Any]) -> str:
+    return _safe_str(payload.get("ymd_effective") or payload.get("ymd") or "")
+
+
+def _payload_slot(payload: Dict[str, Any]) -> str:
+    s = _safe_str(payload.get("slot") or "")
+    return s or "unknown"
+
+
+def _payload_cutoff_str(payload: Dict[str, Any]) -> str:
+    return _safe_str(payload.get("cutoff") or payload.get("asof") or payload.get("slot") or "close")
+
+
+def _sanitize_filename(s: str) -> str:
+    s = _safe_str(s)
+    if not s:
+        return "unknown"
+    s = s.replace(" ", "_")
+    s = re.sub(r"[^\w\u4e00-\u9fff\-]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s or "unknown"
+
+
+def _norm_sector_name(s: str) -> str:
+    ss = _safe_str(s or "")
+    if ss.strip() in ("", "—", "-", "--", "－", "–"):
+        return "Unclassified"
+    return ss
 
 
 def chunk(lst: List[Any], n: int) -> List[List[Any]]:
@@ -102,163 +132,137 @@ def chunk(lst: List[Any], n: int) -> List[List[Any]]:
     return [lst[i : i + n] for i in range(0, len(lst), n)]
 
 
-def clean_sector_name(s: Any) -> str:
-    ss = _s(s) or "Unclassified"
-    ss = re.sub(r"\s+", " ", ss).strip()
-    if ss in ("-", "--", "—", "–", "－", ""):
-        ss = "Unclassified"
-    return ss
+# =============================================================================
+# Time note builder (IN one-line)
+# India Trading Day YYYY-MM-DD  Updated YYYY-MM-DD HH:MM
+# =============================================================================
+def _split_ymd_from_dt(s: str) -> str:
+    s = _safe_str(s)
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    return ""
 
 
-def _payload_cutoff_str(payload: Dict[str, Any]) -> str:
-    """
-    draw_mpl signature keeps cutoff for compat; this returns a simple string.
-    """
-    return _s(payload.get("cutoff") or payload.get("asof") or payload.get("slot") or "close") or "close"
+def build_in_time_note(payload: Dict[str, Any]) -> str:
+    trade_ymd = _payload_ymd(payload)
+
+    meta = payload.get("meta") or {}
+    tmeta = meta.get("time") or {}
+    if not isinstance(tmeta, dict):
+        tmeta = {}
+
+    hm = _safe_str(tmeta.get("market_finished_hm") or "")
+    finished_at = _safe_str(tmeta.get("market_finished_at") or "")
+    update_ymd = _split_ymd_from_dt(finished_at) or trade_ymd
+
+    if not hm:
+        _, _, _, hhmm = get_market_time_info(payload, market="IN")
+        hm = _safe_str(hhmm)
+
+    if hm:
+        return f"India Trading Day {trade_ymd}  Updated {update_ymd} {hm}"
+    return f"India Trading Day {trade_ymd}"
 
 
 # =============================================================================
-# Drive subfolder helpers (same style as TH)
+# list.txt generator (unified)
 # =============================================================================
-def _first_ymd(payload: Dict[str, Any]) -> Optional[str]:
-    for k in ("bar_date", "ymd", "ymd_effective", "date"):
-        v = str(payload.get(k) or "").strip()
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", v):
-            return v
-
-    for k in ("asof", "slot"):
-        v = str(payload.get(k) or "").strip()
-        m = re.search(r"(\d{4}-\d{2}-\d{2})", v)
-        if m:
-            return m.group(1)
-    return None
-
-
-def _infer_run_tag(payload: Dict[str, Any]) -> str:
-    s = str(payload.get("slot") or payload.get("asof") or "").lower()
-    if "open" in s:
-        return "open"
-    if "midday" in s or "noon" in s:
-        return "midday"
-    if "close" in s:
-        return "close"
-
-    m = re.search(r"(\d{1,2}):(\d{2})", s)
-    if m:
-        hh = int(m.group(1))
-        mm = int(m.group(2))
-        return f"{hh:02d}{mm:02d}"
-    return "run"
-
-
-def make_drive_subfolder_name(payload: Dict[str, Any], market: str) -> str:
-    ymd = _first_ymd(payload)
-    tag = _infer_run_tag(payload)
-    if ymd:
-        return f"{market}_{ymd}_{tag}"
-    now = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    return f"{market}_{now}"
-
-
-# =============================================================================
-# Builders (IN: event = ret >= threshold)
-# =============================================================================
-def is_event_stock_in(r: Dict[str, Any], ret_th: float) -> bool:
-    # India: use pure return threshold as "event"
-    return _pct(r.get("ret")) >= float(ret_th)
-
-
-def build_events_by_sector_in(
-    universe: List[Dict[str, Any]],
-    ret_th: float,
-) -> Dict[str, List[Dict[str, Any]]]:
-    out: Dict[str, List[Dict[str, Any]]] = {}
-
-    for r in universe:
-        if not is_event_stock_in(r, ret_th):
-            continue
-
-        sector = clean_sector_name(r.get("sector"))
-        sym = _s(r.get("symbol"))
-        if not sym:
-            continue
-
-        name = _s(r.get("name") or sym)
-        ret = _pct(r.get("ret"))
-
-        # line1/line2 for draw_mpl
-        line1 = f"{sym}  {name}"
-        # keep line2 short; your draw_mpl will show Limit XX% near ret text (right side)
-        line2 = ""  # optional: you can put "Prev strong / news" here later
-
-        out.setdefault(sector, []).append(
-            {
-                "symbol": sym,
-                "name": name,
-                "sector": sector,
-                "ret": ret,
-                "ret_pct": ret * 100.0,
-
-                # ✅ classify as "big" so draw_mpl uses the big bucket + draws ret on line2
-                "limitup_status": "big",
-
-                "line1": line1,
-                "line2": line2,
-
-                # fields used by your _limit_text_en helper:
-                "limit_pct_effective": r.get("limit_pct_effective"),
-                "limit_pct": r.get("limit_pct"),
-                "limit_rate": r.get("limit_rate"),
-                "band": r.get("band"),
-            }
-        )
-
-    for k in out:
-        out[k].sort(key=lambda x: -(x.get("ret") or 0.0))
-
-    return out
-
-
-def build_peers_by_sector_in(
-    universe: List[Dict[str, Any]],
-    events_by_sector: Dict[str, List[Dict[str, Any]]],
+def write_list_txt(
+    outdir: Path,
     *,
-    ret_min: float,
-    max_per_sector: int,
-    ret_th_event: float,
-) -> Dict[str, List[Dict[str, Any]]]:
-    if not events_by_sector:
-        return {}
+    ext: str = "png",
+    overview_prefix: str = "overview_sectors_",
+    filename: str = "list.txt",
+) -> Path:
+    outdir = outdir.resolve()
+    ext = (ext or "png").lstrip(".")
+    overview_prefix = str(overview_prefix or "").strip() or "overview_sectors_"
 
-    event_syms = {
-        _s(rr.get("symbol"))
-        for rows in events_by_sector.values()
-        for rr in (rows or [])
-        if _s(rr.get("symbol"))
-    }
-    sectors = set(events_by_sector.keys())
+    items: List[Path] = []
+
+    paged = sorted(outdir.glob(f"{overview_prefix}*_p*.{ext}"), key=lambda p: p.name)
+    if paged:
+        items.extend(paged)
+    else:
+        single_or_any = sorted(outdir.glob(f"{overview_prefix}*.{ext}"), key=lambda p: p.name)
+        items.extend(single_or_any)
+
+    others = sorted(outdir.glob(f"*.{ext}"), key=lambda p: p.name)
+    others = [p for p in others if not p.name.startswith(overview_prefix)]
+    items.extend(others)
+
+    seen = set()
+    rel_lines: List[str] = []
+    for p in items:
+        pp = p.resolve()
+        if pp in seen:
+            continue
+        seen.add(pp)
+        rel_lines.append(pp.relative_to(outdir).as_posix())
+
+    list_path = outdir / filename
+    list_path.write_text("\n".join(rel_lines) + ("\n" if rel_lines else ""), encoding="utf-8")
+    return list_path
+
+
+# =============================================================================
+# Builders (India)
+# - Use snapshot_main (full universe) and flags computed by aggregator
+# - status:
+#     hit   = locked
+#     touch = touched_only (touch but not locked)
+#     big   = >=10% and NOT touch_any
+# =============================================================================
+def _touch_any_in(r: Dict[str, Any]) -> bool:
+    if "is_limitup_touch_any" in r:
+        return _bool(r.get("is_limitup_touch_any", False))
+    return _bool(r.get("is_limitup_touch", False))
+
+
+def _bombed_in(r: Dict[str, Any]) -> bool:
+    # India: "touch only" behaves like CN bombed/touch-only
+    if "is_limitup_opened" in r:
+        return _bool(r.get("is_limitup_opened", False))
+    return _touch_any_in(r) and (not _bool(r.get("is_limitup_locked", False)))
+
+
+def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     out: Dict[str, List[Dict[str, Any]]] = {}
 
     for r in universe:
-        sym = _s(r.get("symbol"))
-        if not sym or sym in event_syms:
+        is_locked = _bool(r.get("is_limitup_locked", False))
+        touch_any = _touch_any_in(r)
+        touch_only = _bombed_in(r)
+
+        ret = _pct(r.get("ret", 0.0))
+        big10 = bool(_bool(r.get("is_surge_ge10", False)) and (not touch_any))
+
+        if not (is_locked or touch_only or big10):
             continue
 
-        sector = clean_sector_name(r.get("sector"))
-        if sector not in sectors:
-            continue
+        sector = _norm_sector_name(_safe_str(r.get("sector") or "Unclassified"))
+        sym = _safe_str(r.get("symbol") or "")
+        name = _safe_str(r.get("name") or sym)
 
-        # exclude event stocks from peers
-        if is_event_stock_in(r, float(ret_th_event)):
-            continue
+        # limit rate (ratio) for pill: from aggregator (limit_rate) or band_pct
+        limit_rate = r.get("limit_rate", None)
+        if limit_rate is None:
+            limit_rate = r.get("band_pct", None)
 
-        ret = _pct(r.get("ret"))
-        if ret < float(ret_min):
-            continue
-
-        name = _s(r.get("name") or sym)
-        line1 = f"{sym}  {name}"
-        line2 = ""
+        badge_text = ""
+        status = "hit"
+        if big10:
+            badge_text = "10%+"
+            status = "big"
+            line2 = "Big Move 10%+"
+        elif touch_only:
+            badge_text = "Touch"
+            status = "touch"
+            line2 = "Touched upper band (not locked)"
+        else:
+            badge_text = "Locked"
+            status = "hit"
+            line2 = "Locked at upper band"
 
         out.setdefault(sector, []).append(
             {
@@ -267,30 +271,83 @@ def build_peers_by_sector_in(
                 "sector": sector,
                 "ret": ret,
                 "ret_pct": ret * 100.0,
-                "line1": line1,
+                "badge_text": badge_text,
+                "line1": f"{sym}  {name}",
                 "line2": line2,
-
-                # for limit label on the right side (optional but nice for peers too)
-                "limit_pct_effective": r.get("limit_pct_effective"),
-                "limit_pct": r.get("limit_pct"),
-                "limit_rate": r.get("limit_rate"),
-                "band": r.get("band"),
+                "limitup_status": status,  # hit/touch/big
+                "limit_rate": limit_rate,  # ✅ for pill display
             }
         )
 
     for k in out:
-        out[k].sort(key=lambda x: -(x.get("ret") or 0.0))
-        out[k] = out[k][: int(max_per_sector)]
-
+        out[k].sort(key=lambda x: float(x.get("ret", 0.0) or 0.0), reverse=True)
     return out
 
 
-def _apply_in_overview_copy(payload: Dict[str, Any]) -> None:
-    payload["overview_title"] = payload.get("overview_title") or "Sector event counts (Top)"
-    payload["overview_footer"] = payload.get("overview_footer") or "IN snapshot"
-    payload["overview_note"] = payload.get("overview_note") or (
-        "India: per-symbol price bands differ (2/5/10/20/No Limit)."
-    )
+def build_peers_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    out: Dict[str, List[Dict[str, Any]]] = {}
+
+    for r in universe:
+        is_locked = _bool(r.get("is_limitup_locked", False))
+        touch_any = _touch_any_in(r)
+        touch_only = _bombed_in(r)
+        ret = _pct(r.get("ret", 0.0))
+        big10 = bool(_bool(r.get("is_surge_ge10", False)) and (not touch_any))
+
+        # peers: exclude locked/touch-only/big10 and also exclude touch_any
+        if is_locked or touch_only or big10 or touch_any:
+            continue
+
+        sector = _norm_sector_name(_safe_str(r.get("sector") or "Unclassified"))
+
+        sym = _safe_str(r.get("symbol") or "")
+        name = _safe_str(r.get("name") or sym)
+
+        limit_rate = r.get("limit_rate", None)
+        if limit_rate is None:
+            limit_rate = r.get("band_pct", None)
+
+        out.setdefault(sector, []).append(
+            {
+                "symbol": sym,
+                "name": name,
+                "sector": sector,
+                "ret": ret,
+                "line1": f"{sym}  {name}",
+                "line2": "",
+                "limit_rate": limit_rate,
+            }
+        )
+
+    for k in out:
+        out[k].sort(key=lambda x: float(x.get("ret", 0.0) or 0.0), reverse=True)
+    return out
+
+
+def count_hit_touch_big(rows: List[Dict[str, Any]]) -> Tuple[int, int, int]:
+    hit = 0
+    touch = 0
+    big = 0
+    for r in rows:
+        s = _safe_str(r.get("limitup_status") or "").lower()
+        if s in ("touch", "bomb"):
+            touch += 1
+        elif s == "big":
+            big += 1
+        else:
+            hit += 1
+    return hit, touch, big
+
+
+def _norm_overview_metric_arg(s: str) -> str:
+    v = (s or "").strip().lower()
+    if not v or v == "auto":
+        return "auto"
+    if v in ("all", "bigmove10+locked+touched"):
+        return "mix"
+    if v == "locked_plus_touched":
+        return "locked+touched"
+    return v
 
 
 # =============================================================================
@@ -299,124 +356,214 @@ def _apply_in_overview_copy(payload: Dict[str, Any]) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--payload", required=True)
-    ap.add_argument("--outdir", required=True)
+    ap.add_argument("--outdir", default=None)
 
     ap.add_argument("--theme", default="dark")
-    ap.add_argument("--layout", default="in")
+    ap.add_argument("--layout", default="us")
     ap.add_argument("--rows-per-box", type=int, default=6)
+    ap.add_argument("--cap-pages", type=int, default=5)
 
-    # event thresholds
-    ap.add_argument("--ret-th", type=float, default=0.10, help="event threshold (default 10%)")
-    ap.add_argument("--peer-ret-min", type=float, default=0.05)
-    ap.add_argument("--peer-max-per-sector", type=int, default=10)
+    ap.add_argument("--no-overview", action="store_true", help="disable overview page")
+    ap.add_argument("--overview-metric", default="auto", help="auto/locked/touched/bigmove10/mix/locked+touched")
+    ap.add_argument("--overview-page-size", type=int, default=15)
 
-    ap.add_argument("--no-overview", action="store_true")
+    # i18n: keep simple
+    ap.add_argument("--lang", default="en", help="en/zh_hans/.. (i18n keys if available)")
 
-    # ✅ Upload is DEFAULT ON
-    ap.add_argument("--no-upload-drive", action="store_true", help="do not upload to Drive after rendering")
-
-    ap.add_argument("--drive-root-folder-id", default=DEFAULT_ROOT_FOLDER)
-    ap.add_argument("--drive-market", default=MARKET)  # ✅ IN by default
-    ap.add_argument("--drive-client-secret", default=None)
-    ap.add_argument("--drive-token", default=None)
-
-    # ✅ subfolder
-    ap.add_argument("--drive-subfolder", default=None)
-    ap.add_argument("--drive-subfolder-auto", action="store_true", default=True)
-
-    # ✅ upload tuning
-    ap.add_argument("--drive-workers", type=int, default=16)
-    ap.add_argument("--drive-no-concurrent", action="store_true")
-    ap.add_argument("--drive-no-overwrite", action="store_true")
-    ap.add_argument("--drive-quiet", action="store_true")
-
-    # ✅ safety: prevent cross-market mis-upload by default
-    ap.add_argument(
-        "--allow-market-mismatch",
-        action="store_true",
-        help="ALLOW uploading into a different drive-market (dangerous; disables safety guard)",
-    )
-
-    # ✅ language for draw_mpl labels
-    ap.add_argument("--lang", default="en")
+    # ✅ DEBUG: default ON, allow opt-out
+    ap.add_argument("--no-debug", action="store_true", help="overview/footer debug off")
 
     args = ap.parse_args()
 
-    payload = load_payload(args.payload)
-    universe = pick_universe(payload)
-    if not universe:
-        raise RuntimeError("No usable snapshot in payload (need snapshot_main/snapshot_all/...)")
+    if args.no_debug:
+        os.environ["OVERVIEW_DEBUG_FOOTER"] = "0"
+        os.environ["OVERVIEW_DEBUG_FONTS"] = "0"
+        os.environ["OVERVIEW_DEBUG"] = "0"
 
-    outdir = Path(args.outdir)
+    payload = load_payload(args.payload)
+    universe0 = pick_universe(payload)
+    if not universe0:
+        raise RuntimeError("No usable snapshot in payload")
+
+    ymd = _payload_ymd(payload) or "unknown"
+    slot = _payload_slot(payload)
+
+    if args.outdir:
+        outdir = Path(args.outdir)
+    else:
+        outdir = REPO_ROOT / "media" / "images" / "in" / ymd / slot
     outdir.mkdir(parents=True, exist_ok=True)
 
-    layout = get_layout(args.layout)
-    cutoff = _payload_cutoff_str(payload)
-
-    # ✅ FIX: get_market_time_info may return 2/3/... values; take last as time_note
-    _ti = get_market_time_info(payload)
-    if isinstance(_ti, (list, tuple)):
-        time_note = str(_ti[-1]) if _ti else ""
-    else:
-        time_note = str(_ti or "")
-
-    events = build_events_by_sector_in(universe, float(args.ret_th))
-    peers = build_peers_by_sector_in(
-        universe,
-        events,
-        ret_min=float(args.peer_ret_min),
-        max_per_sector=int(args.peer_max_per_sector),
-        ret_th_event=float(args.ret_th),
+    print(f"[IN] payload={args.payload}")
+    print(f"[IN] ymd={ymd} slot={slot} outdir={outdir}")
+    print(
+        "[IN] debug="
+        f"footer={os.getenv('OVERVIEW_DEBUG_FOOTER','0')} "
+        f"fonts={os.getenv('OVERVIEW_DEBUG_FONTS','0')}"
     )
 
-    payload.setdefault("market", MARKET)
-    _apply_in_overview_copy(payload)
+    # aggregate inside CLI (no re-download)
+    agg_payload = in_aggregate(payload)
+    universe = pick_universe(agg_payload) or universe0
 
+    om = _norm_overview_metric_arg(str(args.overview_metric))
+    if om == "auto":
+        agg_payload.setdefault("meta", {})
+        agg_payload["meta"].setdefault("overview_metric", "mix")
+
+    layout = get_layout(args.layout)
+    cutoff = _payload_cutoff_str(agg_payload)
+
+    # time_note
+    time_note = build_in_time_note(agg_payload)
+
+    # -------------------------------------------------------------------------
+    # 0) Overview first + capture overview sector order
+    # -------------------------------------------------------------------------
+    overview_sector_keys: List[str] = []
     if not args.no_overview:
-        render_overview_png(payload, outdir)
+        try:
+            payload_for_overview = dict(agg_payload)
+            payload_for_overview.setdefault("market", "IN")
+            payload_for_overview.setdefault("asof", payload_for_overview.get("asof") or payload_for_overview.get("slot") or "")
+
+            render_overview_png(
+                payload_for_overview,
+                outdir,
+                width=1080,
+                height=1920,
+                page_size=int(args.overview_page_size),
+                metric=om,
+            )
+            overview_sector_keys = extract_overview_sector_order(payload_for_overview)
+
+            print(
+                "[IN][DEBUG] raw _overview_sector_order exists?:",
+                isinstance(payload_for_overview.get("_overview_sector_order"), list),
+            )
+            print(
+                "[IN][DEBUG] raw overview order head:",
+                (payload_for_overview.get("_overview_sector_order", []) or [])[:20],
+            )
+            if overview_sector_keys:
+                met_eff = str(payload_for_overview.get("_overview_metric_eff") or "").strip()
+                print(
+                    f"[IN] overview sector order loaded: n={len(overview_sector_keys)}"
+                    + (f" metric={met_eff}" if met_eff else "")
+                )
+                print("[IN] normalized overview order head:", overview_sector_keys[:20])
+            else:
+                print("[IN][WARN] overview order empty after normalization", flush=True)
+
+        except Exception as e:
+            print(f"[IN] overview failed (continue): {e}")
+
+        for p in outdir.glob("overview_gainbins*.png"):
+            try:
+                p.unlink()
+                print(f"[IN] removed gainbins page: {p.name}")
+            except Exception:
+                pass
+
+    # -------------------------------------------------------------------------
+    # 1) Sector pages (order uses overview exported order)
+    # -------------------------------------------------------------------------
+    sector_total_map: Dict[str, int] = {}
+    for r in universe:
+        s = _norm_sector_name(_safe_str(r.get("sector") or "Unclassified"))
+        sector_total_map[s] = sector_total_map.get(s, 0) + 1
+
+    limitup = build_limitup_by_sector_in(universe)
+    peers = build_peers_by_sector_in(universe)
 
     width, height = 1080, 1920
     rows_top = max(1, int(args.rows_per_box))
     rows_peer = rows_top + 1
-    CAP_PAGES = 5
+    CAP_PAGES = max(1, int(args.cap_pages))
 
-    for sector, E_total in (events or {}).items():
-        P_total = peers.get(sector, [])
+    sectors_raw = list((limitup or {}).keys())
+    norm_to_sector: Dict[str, str] = {}
+    existing_norm_keys: List[str] = []
+    for sec in sectors_raw:
+        k = normalize_sector_key(sec)
+        if not k:
+            continue
+        existing_norm_keys.append(k)
+        if k not in norm_to_sector:
+            norm_to_sector[k] = sec
 
-        E_show = E_total[: CAP_PAGES * rows_top]
-        P_show = P_total
+    if overview_sector_keys:
+        ordered_norm = reorder_keys_by_overview(existing_keys=existing_norm_keys, overview_keys=overview_sector_keys)
+    else:
+        ordered_norm = existing_norm_keys
 
-        E_pages = chunk(E_show, rows_top) if E_show else [[]]
-        P_pages = chunk(P_show, rows_peer)
+    ordered_sectors: List[str] = []
+    seen = set()
+    for k in ordered_norm:
+        sec = norm_to_sector.get(k)
+        if not sec or sec in seen:
+            continue
+        ordered_sectors.append(sec)
+        seen.add(sec)
 
-        total_pages = len(E_pages)
-        if len(P_pages) > total_pages:
-            total_pages += 1
-        total_pages = min(CAP_PAGES, max(1, total_pages))
+    for sector in ordered_sectors:
+        L_total = (limitup or {}).get(sector, []) or []
+        P = (peers or {}).get(sector, []) or []
+
+        max_limitup_show = CAP_PAGES * rows_top
+        L_show = L_total[:max_limitup_show]
+
+        L_pages = chunk(L_show, rows_top) if L_show else [[]]
+        P_pages = chunk(P, rows_peer)
+
+        limitup_pages = len(L_pages)
+        peer_pages = len(P_pages)
+
+        total_pages = limitup_pages
+        if peer_pages > limitup_pages:
+            total_pages = limitup_pages + 1
+        if total_pages > CAP_PAGES:
+            total_pages = CAP_PAGES
+
+        hit_total, touch_total, big_total = count_hit_touch_big(L_total)
+        hit_shown, touch_shown, big_shown = count_hit_touch_big(L_show)
+
+        sector_all_total = int(sector_total_map.get(sector, 0) or 0)
+        sector_shown_total = int(hit_total + touch_total + big_total)
+
+        # backward-compat params
+        locked_cnt = hit_total
+        touch_cnt = touch_total
+        theme_cnt = 0
+
+        sector_fn = _sanitize_filename(sector)
 
         for i in range(total_pages):
-            top_rows = E_pages[i] if i < len(E_pages) else []
+            limitup_rows = L_pages[i] if i < len(L_pages) else []
             peer_rows = P_pages[i] if i < len(P_pages) else []
-            has_more_peers = (len(P_pages) > total_pages) and (i == total_pages - 1)
 
-            safe_sector = re.sub(r"\s+", "_", sector.strip())
-            safe_sector = re.sub(r"[^\w\-]+", "_", safe_sector)
-            out_path = outdir / f"in_{safe_sector}_p{i+1}.png"
+            has_more_peers = (peer_pages > total_pages) and (i == total_pages - 1)
+
+            out_path = outdir / f"in_{sector_fn}_p{i+1}.png"
 
             draw_block_table(
                 out_path=out_path,
                 layout=layout,
                 sector=sector,
                 cutoff=cutoff,
-
-                # kept for compat (IN doesn't use these)
-                locked_cnt=0,
-                touch_cnt=0,
-                theme_cnt=0,
-
-                limitup_rows=top_rows,
+                locked_cnt=locked_cnt,
+                touch_cnt=touch_cnt,
+                theme_cnt=theme_cnt,
+                hit_shown=hit_shown,
+                hit_total=hit_total,
+                touch_shown=touch_shown,
+                touch_total=touch_total,
+                big_shown=big_shown,
+                big_total=big_total,
+                sector_shown_total=sector_shown_total,
+                sector_all_total=sector_all_total,
+                limitup_rows=limitup_rows,
                 peer_rows=peer_rows,
-
                 page_idx=i + 1,
                 page_total=total_pages,
                 width=width,
@@ -425,59 +572,19 @@ def main() -> int:
                 theme=args.theme,
                 time_note=time_note,
                 has_more_peers=has_more_peers,
-
-                # ensure draw_mpl uses your desired language
-                lang=str(args.lang),
-                market=MARKET,
+                lang=str(args.lang or "en"),
+                market="IN",
             )
+            print(f"[IN] wrote {out_path}")
 
-    print("✅ IN render finished.")
+    # list.txt
+    try:
+        list_path = write_list_txt(outdir, ext="png", overview_prefix="overview_sectors_", filename="list.txt")
+        print(f"[IN] wrote {list_path}")
+    except Exception as e:
+        print(f"[IN] list.txt generation failed (continue): {e}")
 
-    # -------------------------------------------------------------------------
-    # Drive upload (DEFAULT ON) + SAFETY GUARD
-    # -------------------------------------------------------------------------
-    if not args.no_upload_drive:
-        market_name = str(args.drive_market or MARKET).strip().upper()
-
-        # ✅ HARD GUARD: prevent accidental cross-market overwrite
-        if (market_name != MARKET) and (not args.allow_market_mismatch):
-            print(f"\n🛑 SAFETY GUARD: drive-market={market_name} but this script is {MARKET}.")
-            print("   Upload skipped to prevent cross-market overwrite.")
-            print("   If you REALLY intend to upload there, re-run with --allow-market-mismatch")
-            return 0
-
-        print("\n🚀 Uploading PNGs to Google Drive...")
-
-        svc = get_drive_service(
-            client_secret_file=args.drive_client_secret,
-            token_file=args.drive_token,
-        )
-
-        root_id = str(args.drive_root_folder_id).strip()
-        market_folder_id = ensure_folder(svc, root_id, market_name)
-
-        if args.drive_subfolder:
-            subfolder = str(args.drive_subfolder).strip()
-        else:
-            subfolder = make_drive_subfolder_name(payload, market=market_name)
-
-        print(f"📁 Target Drive folder: root/{market_name}/{subfolder}/")
-
-        uploaded = upload_dir(
-            svc,
-            market_folder_id,
-            outdir,
-            pattern="*.png",
-            recursive=False,
-            overwrite=(not args.drive_no_overwrite),
-            verbose=(not args.drive_quiet),
-            concurrent=(not args.drive_no_concurrent),
-            workers=int(args.drive_workers),
-            subfolder_name=subfolder,
-        )
-
-        print(f"✅ Uploaded {uploaded} png(s)")
-
+    print("\n✅ IN render finished. (Drive upload removed)")
     return 0
 
 
