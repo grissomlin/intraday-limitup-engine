@@ -20,7 +20,9 @@ INDIA_SURGE_RET = float(os.getenv("INDIA_SURGE_RET", "0.10"))  # >=10%
 INDIA_TICK_SIZE = float(os.getenv("INDIA_TICK_SIZE", "0.05"))  # NSE typical
 INDIA_PENNY_PRICE_MAX = float(os.getenv("INDIA_PENNY_PRICE_MAX", "20.0"))  # informational
 
-INDIA_FILTER_TICK_DANGER = (os.getenv("INDIA_FILTER_TICK_DANGER", "1").strip().lower() in {"1", "true", "yes", "y", "on"})
+INDIA_FILTER_TICK_DANGER = (
+    os.getenv("INDIA_FILTER_TICK_DANGER", "1").strip().lower() in {"1", "true", "yes", "y", "on"}
+)
 INDIA_TICK_DANGER_MAX_TICKS = float(os.getenv("INDIA_TICK_DANGER_MAX_TICKS", "3"))  # <=3 ticks for +10%
 
 # Optional abs-move gate for movers (INR)
@@ -80,6 +82,7 @@ def _parse_band_pct_from_market_detail(md: Any) -> Optional[float]:
     market_detail example:
       "NSE|band=20|remarks=-|src=master_csv"
       "NSE|band=No Band|remarks=-|src=master_csv"
+    Return ratio (0.20), not percent.
     """
     s = ("" if md is None else str(md)).strip()
     if not s:
@@ -166,9 +169,16 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     # ret fields
     df = _add_ret_fields(df)
 
-    # parse band pct per symbol
-    df["band_pct"] = df["market_detail"].apply(_parse_band_pct_from_market_detail)  # e.g. 0.20
+    # parse band pct per symbol (ratio: 0.20)
+    df["band_pct"] = df["market_detail"].apply(_parse_band_pct_from_market_detail)
     df["limit_price"] = None
+
+    # ✅ NEW: unify with CN payload field name
+    # CN renderer uses limit_rate (ratio). India band_pct is same meaning.
+    df["limit_rate"] = df["band_pct"]
+    df["limit_rate_pct"] = None
+    m_lr = df["limit_rate"].notna()
+    df.loc[m_lr, "limit_rate_pct"] = (pd.to_numeric(df.loc[m_lr, "limit_rate"], errors="coerce") * 100.0)
 
     # compute limit touch/locked (only when band_pct exists & last_close>0)
     is_touch: List[bool] = []
@@ -321,7 +331,7 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     raw_payload["meta"] = _sanitize_nan(meta)
 
     # attach outputs
-    raw_payload["snapshot_main"] = _sanitize_nan(df.to_dict(orient="records"))  # keep full, include band_pct/tick flags
+    raw_payload["snapshot_main"] = _sanitize_nan(df.to_dict(orient="records"))  # include band_pct/limit_rate/tick flags
     raw_payload["limitup"] = _sanitize_nan(limitup_records)
     raw_payload["sector_summary"] = _sanitize_nan(summary_rows)
     raw_payload["peers_by_sector"] = _sanitize_nan(peers_by_sector)
