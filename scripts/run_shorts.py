@@ -51,7 +51,7 @@ def main() -> int:
         description="One-shot Shorts pipeline: main.py -> render_images -> render_video -> youtube upload -> (optional) drive upload"
     )
 
-    ap.add_argument("--market", required=True, help="jp/kr/tw/th/cn/us/uk/au/ca/hk/in ...")
+    ap.add_argument("--market", required=True, help="jp/kr/tw/th/cn/us/uk/au/ca/hk/india ... (alias: in->india)")
     ap.add_argument("--ymd", default="auto", help="YYYY-MM-DD or 'auto' (default auto)")
     ap.add_argument("--slot", default="midday", help="open/midday/close")
     ap.add_argument("--images-ymd", default="requested", help="requested|payload|latest|YYYY-MM-DD (default requested)")
@@ -107,6 +107,15 @@ def main() -> int:
     debug_tree = (not args.no_debug_tree) and env_bool("RUN_SHORTS_DEBUG_TREE", "1")
 
     market_lower, market_upper = normalize_market(args.market)
+
+    # -------------------------------------------------------------------------
+    # ✅ Safety alias (just in case): if something still returns "in", force india
+    # (steps.normalize_market should already map in->india)
+    # -------------------------------------------------------------------------
+    if market_lower == "in":
+        market_lower = "india"
+        market_upper = "INDIA"
+
     slot = str(args.slot).strip().lower() or "midday"
 
     market_today_ymd_fn, market_now_hhmm_fn = import_timekit()
@@ -174,6 +183,13 @@ def main() -> int:
     # 3) render_images
     if not args.skip_images:
         cli_path = REPO_ROOT / "scripts" / f"render_images_{market_lower}" / "cli.py"
+
+        # Backward compatibility: allow old folder name render_images_in
+        if (not cli_path.exists()) and market_lower == "india":
+            alt = REPO_ROOT / "scripts" / "render_images_in" / "cli.py"
+            if alt.exists():
+                cli_path = alt
+
         if not cli_path.exists():
             raise FileNotFoundError(f"market cli not found: {cli_path}")
 
