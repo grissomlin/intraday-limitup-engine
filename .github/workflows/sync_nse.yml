@@ -3,7 +3,7 @@ name: NSE Data Sync
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 10 * * *'
+    - cron: '0 4 * * *'
 
 jobs:
   download_job:
