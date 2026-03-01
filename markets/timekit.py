@@ -59,7 +59,21 @@ DEFAULT_TZ_OFFSETS: Dict[str, float] = {
 
 
 def _norm_market(market: str) -> str:
-    return (market or "").strip().upper()
+    """
+    Normalize market code to canonical uppercase keys used in DEFAULT_* maps.
+
+    ✅ IMPORTANT:
+    Shorts pipeline may pass "INDIA" (from scripts/shorts/steps.normalize_market()).
+    Treat "INDIA" as "IN" here to keep all mappings centralized.
+    """
+    m = (market or "").strip().upper()
+    alias = {
+        "INDIA": "IN",
+        "NSE": "IN",
+        "BSE": "IN",
+        # (Optional) keep future-proof aliases here
+    }
+    return alias.get(m, m)
 
 
 def _env_bool(name: str, default: str = "0") -> bool:
