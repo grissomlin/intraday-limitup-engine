@@ -9,7 +9,7 @@ on:
     # CN @ 10:30 TW => 02:30 UTC
     - cron: "30 2 * * 1-5"
 
-    # TH @ 13:00 TW => 05:00 UTC
+    # TH + IN @ 13:00 TW => 05:00 UTC  ✅ add India here
     - cron: "0 5 * * 1-5"
 
   workflow_dispatch:
@@ -35,7 +35,7 @@ on:
         options: [private, public, unlisted]
 
       markets_all:
-        description: "Run ALL markets (jp, kr, cn, th)"
+        description: "Run ALL markets (jp, kr, cn, th, in)"
         required: false
         type: boolean
         default: true
@@ -57,6 +57,11 @@ on:
         default: false
       market_th:
         description: "TH"
+        required: false
+        type: boolean
+        default: false
+      market_in:
+        description: "IN (India)"
         required: false
         type: boolean
         default: false
@@ -113,6 +118,7 @@ jobs:
           b_kr = _b("INPUT_MARKET_KR", default=False)
           b_cn = _b("INPUT_MARKET_CN", default=False)
           b_th = _b("INPUT_MARKET_TH", default=False)
+          b_in = _b("INPUT_MARKET_IN", default=False)
 
           # defaults
           slot = in_slot if (event=="workflow_dispatch" and in_slot) else "midday"
@@ -123,7 +129,7 @@ jobs:
           if privacy not in privacy_allowed:
               privacy = "private"
 
-          ALL = ["jp","kr","cn","th"]
+          ALL = ["jp","kr","cn","th","in"]
           now_utc = datetime.now(timezone.utc)
 
           chosen = []
@@ -137,12 +143,13 @@ jobs:
                   if b_kr: chosen.append("kr")
                   if b_cn: chosen.append("cn")
                   if b_th: chosen.append("th")
+                  if b_in: chosen.append("in")
           else:
               # ✅ schedule: map by cron expression (immune to GitHub lag)
               mapping = {
                   "0 2 * * 1-5": ["jp","kr"],
                   "30 2 * * 1-5": ["cn"],
-                  "0 5 * * 1-5": ["th"],
+                  "0 5 * * 1-5": ["th","in"],  # ✅ TH + IN at 13:00 TW
               }
               chosen = mapping.get(cron, [])
 
@@ -159,9 +166,9 @@ jobs:
                   elif h == 2 and m >= 20 and m <= 55:
                       chosen = ["cn"]
 
-                  # TH window around 05:00 UTC
+                  # TH/IN window around 05:00 UTC
                   elif h == 5:
-                      chosen = ["th"]
+                      chosen = ["th","in"]
                   else:
                       chosen = []
 
@@ -226,6 +233,7 @@ jobs:
 
       GDRIVE_ALLOW_INTERACTIVE: "0"
       GDRIVE_DEBUG: "1"
+
       # YouTube
       YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
       YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
