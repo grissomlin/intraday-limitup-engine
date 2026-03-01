@@ -20,7 +20,6 @@ except Exception:
 
 
 def _t(lang: str, key: str, default: str, **kwargs: Any) -> str:
-    """Tiny i18n wrapper with safe fallback."""
     if _i18n_t is None:
         try:
             return default.format(**kwargs)
@@ -38,19 +37,25 @@ def _t(lang: str, key: str, default: str, **kwargs: Any) -> str:
 # =============================================================================
 # Font
 # =============================================================================
-def setup_cjk_font() -> str | None:
+def setup_font() -> str | None:
+    """
+    India page default lang may be English, but we still want a font that can render
+    symbols and potential CJK if needed.
+    """
     try:
         font_candidates = [
-            "Microsoft JhengHei",
-            "Microsoft YaHei",
-            "PingFang TC",
-            "PingFang SC",
-            "Noto Sans CJK TC",
-            "Noto Sans CJK SC",
-            "Noto Sans CJK JP",
-            "SimHei",
-            "WenQuanYi Zen Hei",
+            "Inter",
+            "Segoe UI",
+            "Arial",
             "Noto Sans",
+            "Noto Sans CJK SC",
+            "Noto Sans CJK TC",
+            "Noto Sans CJK JP",
+            "Microsoft YaHei",
+            "Microsoft JhengHei",
+            "PingFang SC",
+            "PingFang TC",
+            "WenQuanYi Zen Hei",
             "Arial Unicode MS",
         ]
         available = {f.name for f in fm.fontManager.ttflist}
@@ -96,70 +101,69 @@ def _ellipsize(s: str, max_chars: int) -> str:
 
 
 def _fmt_ret_pct(ret: float) -> str:
-    """
-    Payload ret is usually ratio:
-        0.1771 => 17.71%
-    But allow already-in-percent:
-        17.71  => 17.71%
-    Heuristic: abs(ret) < 1.5 treat as ratio.
-    """
     r = _safe_float(ret, 0.0)
     pct = (r * 100.0) if abs(r) < 1.5 else r
     return f"{pct:+.2f}%"
 
 
-def _count_hit_bomb_big(rows: List[Dict[str, Any]] | None) -> Tuple[int, int, int]:
-    """
-    Return (hit, bomb, big)
-      - hit : limit-up locked (CN legacy)
-      - bomb: touched/bomb (CN legacy)
-      - big : big movers bucket (IN uses this)
-    """
+def _count_hit_touch_big(rows: List[Dict[str, Any]] | None) -> Tuple[int, int, int]:
     hit = 0
-    bomb = 0
+    touch = 0
     big = 0
     for r in (rows or []):
         st = _safe_str(r.get("limitup_status") or "").lower()
-        if st in ("bomb", "touch"):
-            bomb += 1
+        if st in ("touch", "bomb"):
+            touch += 1
         elif st == "big":
             big += 1
         else:
             hit += 1
-    return hit, bomb, big
+    return hit, touch, big
 
 
 # =============================================================================
-# Limit band helper (IN)
+# India: limit band pill helper
 # =============================================================================
-def _limit_text_en(row: Dict[str, Any]) -> str:
-    """English limit label for markets with per-symbol limit bands (e.g., IN).
-
-    Supported fields (checked in order):
-      - limit_pct_effective (ratio, e.g. 0.2 for 20%)
-      - limit_pct           (ratio)
-      - limit_rate          (ratio, CN-style)
+def _limit_pct_from_row(row: Dict[str, Any]) -> float:
     """
-    v = row.get("limit_pct_effective")
+    India rows may have:
+      - limit_rate: ratio (0.20)
+      - band_pct:   ratio (0.20)
+      - sometimes already percent (20)
+    """
+    v = row.get("limit_rate", None)
     if v is None:
-        v = row.get("limit_pct")
+        v = row.get("band_pct", None)
     if v is None:
-        v = row.get("limit_rate")
-    if v is None:
-        # 'No Band' / no limit info
-        return "No Limit"
+        return 0.0
     try:
-        pct = float(v) * 100.0
+        x = float(v)
     except Exception:
-        return "No Limit"
-    pct_i = int(round(pct))
-    if pct_i <= 0:
-        return "No Limit"
-    return f"Limit {pct_i}%"
+        return 0.0
+
+    if abs(x) <= 1.5:
+        return x * 100.0
+    return x
+
+
+def _limit_colors(limit_pct: float, theme: str) -> Tuple[str, str]:
+    if theme == "dark":
+        if limit_pct >= 20:
+            return ("#ff922b", "#111111")
+        if limit_pct >= 10:
+            return ("#74c0fc", "#111111")
+        return ("#adb5bd", "#111111")
+    else:
+        if limit_pct >= 20:
+            return ("#ffd8a8", "#7c2d12")
+        if limit_pct >= 10:
+            return ("#d0ebff", "#0b7285")
+        return ("#f1f3f5", "#343a40")
 
 
 def get_ret_color(ret: float, theme: str) -> str:
-    # up red, down blue
+    # keep CN convention? For India, green/red is common, but don't change now.
+    # We'll use: up = red-ish, down = blue-ish consistent with your other pages.
     if theme == "dark":
         return "#ff6b6b" if ret >= 0 else "#4dabf7"
     return "#d9480f" if ret >= 0 else "#1864ab"
@@ -173,23 +177,17 @@ def draw_block_table(
     *,
     layout: LayoutSpec,
     sector: str,
-    cutoff: str,  # kept for compat; not used in this mpl file
+    cutoff: str,  # kept for compat; not used here
     locked_cnt: int,   # backward-compat (unused)
     touch_cnt: int,    # backward-compat (unused)
     theme_cnt: int,    # backward-compat (unused)
-
-    # allow cli.py to pass big_cnt without crashing
     big_cnt: int = 0,  # backward-compat (unused)
-
     hit_shown: Optional[int] = None,
     hit_total: Optional[int] = None,
     touch_shown: Optional[int] = None,
     touch_total: Optional[int] = None,
-
-    # NEW (optional): big movers bucket
     big_shown: Optional[int] = None,
     big_total: Optional[int] = None,
-
     sector_shown_total: Optional[int] = None,
     sector_all_total: Optional[int] = None,
     limitup_rows: List[Dict[str, Any]] | None = None,
@@ -205,18 +203,16 @@ def draw_block_table(
     lang: str = "en",
     market: str = "IN",
 ):
-    setup_cjk_font()
+    setup_font()
     theme = (theme or "dark").strip().lower()
     is_dark = theme == "dark"
 
     # i18n labels
-    big_label = _t(lang, "term_bigmove10", "big")
-    limitup_label = _t(lang, "term_limitup", "Limit-Up")
-    touched_label = _t(lang, "term_touched", "Touched")
+    big_label = _t(lang, "term_bigmove10", "Big")
+    locked_label = _t(lang, "term_limitup", "Locked")
+    touched_label = _t(lang, "term_touched", "Touch")
 
-    # -------------------------
     # Colors
-    # -------------------------
     if is_dark:
         bg = "#0b0d10"
         fg = "#f1f3f5"
@@ -228,8 +224,8 @@ def draw_block_table(
         badge_red = "#fa5252"
         limitup_pill_fg = "#ffffff"
 
-        bomb_pill_bg = "#845ef7"
-        bomb_pill_fg = "#ffffff"
+        touch_pill_bg = "#845ef7"
+        touch_pill_fg = "#ffffff"
 
         big_pill_bg = "#f59f00"
         big_pill_fg = "#ffffff"
@@ -246,17 +242,14 @@ def draw_block_table(
         badge_red = "#ff6b6b"
         limitup_pill_fg = "#111111"
 
-        bomb_pill_bg = "#845ef7"
-        bomb_pill_fg = "#ffffff"
+        touch_pill_bg = "#845ef7"
+        touch_pill_fg = "#ffffff"
 
         big_pill_bg = "#f59f00"
         big_pill_fg = "#ffffff"
 
         shadow = "#000000"
 
-    # -------------------------
-    # Figure
-    # -------------------------
     fig = plt.figure(figsize=(width / 100, height / 100), dpi=100)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_axis_off()
@@ -302,9 +295,7 @@ def draw_block_table(
         ax.text(x + dx, y + dy, s, fontsize=fontsize, color=shadow, ha=ha, va=va, weight=weight, alpha=shadow_alpha)
         ax.text(x, y, s, fontsize=fontsize, color=color, ha=ha, va=va, weight=weight, alpha=alpha)
 
-    # -------------------------
-    # Box geometry from LayoutSpec
-    # -------------------------
+    # Box geometry (DO NOT CHANGE)
     top_y0 = getattr(layout, "top_box_y0", 0.84)
     top_y1 = getattr(layout, "top_box_y1", 0.485)
     bot_y0 = getattr(layout, "bot_box_y0", 0.465)
@@ -317,9 +308,7 @@ def draw_block_table(
         plt.Rectangle((0.05, bot_y1), 0.90, (bot_y0 - bot_y1), facecolor=box, edgecolor=line, linewidth=2, alpha=0.98)
     )
 
-    # -------------------------
     # Header
-    # -------------------------
     title_fs = int(getattr(layout, "title_fs", 62))
     subtitle_fs = int(getattr(layout, "subtitle_fs", 30))
     page_fs = int(getattr(layout, "page_fs", 26))
@@ -365,11 +354,7 @@ def draw_block_table(
             alpha=0.90,
         )
 
-    footer_text = _t(
-        lang,
-        "footer_disclaimer",
-        "Source: Public market data | For information only. Not financial advice.",
-    )
+    footer_text = _t(lang, "footer_disclaimer", "Data source: public market info | Not investment advice")
     ax.text(
         0.05,
         float(getattr(layout, "footer_y2", 0.020)),
@@ -381,17 +366,15 @@ def draw_block_table(
         alpha=0.70,
     )
 
-    # -------------------------
     # Compute counts for title
-    # -------------------------
     if hit_shown is None or hit_total is None or touch_shown is None or touch_total is None:
-        hs, bs, bigs = _count_hit_bomb_big(limitup_rows or [])
+        hs, ts, bs = _count_hit_touch_big(limitup_rows or [])
         hit_shown, hit_total = hs, hs
-        touch_shown, touch_total = bs, bs
+        touch_shown, touch_total = ts, ts
         if big_shown is None:
-            big_shown = bigs
+            big_shown = bs
         if big_total is None:
-            big_total = bigs
+            big_total = bs
 
     if big_shown is None:
         big_shown = 0
@@ -405,19 +388,17 @@ def draw_block_table(
             total = int(sector_all_total)
             if total > 0:
                 pct = shown / total * 100.0
-                ratio_part = f"  {pct:.1f}% of sector"
+                ratio_part = f"  {shown}/{total}({pct:.0f}%)"
         except Exception:
             ratio_part = ""
 
-    top_title_left = f"{limitup_label}{int(hit_shown)}/{int(hit_total)}  {touched_label}{int(touch_shown)}/{int(touch_total)}"
+    # header order: Locked -> Touch -> 10%+ -> ratio
+    top_title_left = f"{locked_label}{int(hit_shown)}/{int(hit_total)}  {touched_label}{int(touch_shown)}/{int(touch_total)}"
     if int(big_total) > 0:
-        top_title_left += f"  {big_label}{int(big_shown)}/{int(big_total)}"
-    if ratio_part:
-        top_title_left += f"  {ratio_part}"
+        top_title_left += f"  10%+{int(big_shown)}/{int(big_total)}"
+    top_title_left += ratio_part
 
-    # -------------------------
     # Titles inside boxes
-    # -------------------------
     box_title_fs = int(getattr(layout, "box_title_fs", 32))
     x_left = 0.07
     title_pad_from_top = 0.010
@@ -441,7 +422,7 @@ def draw_block_table(
         alpha=0.98,
     )
 
-    bottom_title_text = _t(lang, "box_title_bottom", "No sector movers (prev. session)")
+    bottom_title_text = _t(lang, "box_title_bottom", "Same sector (not locked/touch/10%+)")
     _shadow_text(
         x_left,
         bot_title_y,
@@ -460,9 +441,7 @@ def draw_block_table(
     ax.plot([0.06, 0.94], [top_div_y, top_div_y], color=divider, linewidth=1.1, alpha=0.75)
     ax.plot([0.06, 0.94], [bot_div_y, bot_div_y], color=divider, linewidth=1.1, alpha=0.75)
 
-    # -------------------------
     # Rows layout
-    # -------------------------
     two_line = bool(getattr(layout, "two_line", True))
 
     top_rows_area_y_top = top_div_y
@@ -487,38 +466,52 @@ def draw_block_table(
     if top_is_empty:
         show_rows_peer = int(rows_per_page)
 
-    # -------------------------
     # Right padding
-    # -------------------------
     BADGE_RIGHT_PAD_PX = 26.0
     RET_RIGHT_PAD_PX = 18.0
-    LIMIT_GAP_PX = 10.0
-    LIMIT_FS_DELTA = 2
 
-    # -------------------------
-    # Text sizes
-    # -------------------------
+    # Pills: after company name (ONLY limit band pill)
     row_name_fs = int(getattr(layout, "row_name_fs", getattr(layout, "row_fs_1", 28)))
     ret_fs = max(row_name_fs - 4, 18)
+    pill_fs = row_name_fs
+    pill_pad = 0.14
+    pill_gap_px = 10.0
+    safe_gap_to_right_px = 12.0
 
-    # -------------------------
-    # Pills after name (DISABLED for IN)
-    # -------------------------
+    def _draw_pill(x: float, y: float, text: str, fg_color: str, bg_color: str) -> float:
+        if not text:
+            return x
+        ax.text(
+            x, y, text,
+            ha="left", va="center",
+            fontsize=pill_fs,
+            color=fg_color,
+            weight="bold",
+            bbox=dict(boxstyle=f"round,pad={pill_pad}", facecolor=bg_color, edgecolor="none", alpha=0.95),
+        )
+        w_px = _text_width_px(text, x, y, fontsize=pill_fs, weight="bold") + 18.0
+        return x + _px_to_data_dx(w_px, y)
+
     def _draw_pills_after_name(line1: str, y: float, row: Dict[str, Any], x_right_limit: float) -> None:
-        """
-        IN: do NOT draw CN-style pills after name (主/科/创/特 etc.).
-        Right side already shows: Limit XX% + Return.
-        """
-        return
+        w1_px = _text_width_px(line1, layout.x_name, y, fontsize=row_name_fs, weight="bold")
+        x = layout.x_name + _px_to_data_dx(w1_px + pill_gap_px, y)
+        if x >= x_right_limit:
+            return
+
+        limit_pct = _limit_pct_from_row(row)
+        if limit_pct <= 0:
+            return
+
+        lim_bg, lim_fg = _limit_colors(limit_pct, theme)
+        label = f"涨跌幅上限{int(round(limit_pct))}%"
+        _draw_pill(x, y, label, lim_fg, lim_bg)
 
     x_name = float(getattr(layout, "x_name", 0.08))
     x_tag = float(getattr(layout, "x_tag", 0.94))
 
-    # -------------------------
     # Draw TOP rows
-    # -------------------------
     if top_is_empty:
-        empty_top = _t(lang, "empty_limitup", "(No data on this page)")
+        empty_top = _t(lang, "empty_limitup", "(No Locked/Touch/Big data on this page)")
         ax.text(
             0.5,
             (top_rows_area_y_top + top_rows_area_y_bottom) / 2,
@@ -534,8 +527,6 @@ def draw_block_table(
         _ensure_renderer()
         n = min(len(limit_rows), int(rows_per_page))
 
-        # leave space for badge on y1 (top line)
-        safe_gap_to_right_px = 12.0
         x_right_for_pills = x_tag - _px_to_data_dx(safe_gap_to_right_px + BADGE_RIGHT_PAD_PX, y_start_top)
 
         for i in range(n):
@@ -567,48 +558,19 @@ def draw_block_table(
                     fontsize=row_name_fs, color=sub, weight="bold", alpha=0.95
                 )
 
-            badge_text = _safe_str(r.get("badge_text") or "")
-            streak = _safe_int(r.get("streak", 0), 0)
             status = _safe_str(r.get("limitup_status") or "").lower()
-
-            is_bomb = (status in ("bomb", "touch")) or (badge_text in ("Touched", "touch", "touched"))
-            is_big = (status == "big") or (badge_text in ("10%+", "big"))
 
             x_badge = x_tag - _px_to_data_dx(BADGE_RIGHT_PAD_PX, y1)
 
-            if is_bomb:
+            if status in ("touch", "bomb"):
                 ax.text(
                     x_badge, y1, touched_label,
                     ha="right", va="center",
                     fontsize=int(getattr(layout, "row_tag_fs", 26)),
-                    color=bomb_pill_fg, weight="bold",
-                    bbox=dict(boxstyle="round,pad=0.30", facecolor=bomb_pill_bg, edgecolor="none", alpha=0.96),
+                    color=touch_pill_fg, weight="bold",
+                    bbox=dict(boxstyle="round,pad=0.30", facecolor=touch_pill_bg, edgecolor="none", alpha=0.96),
                 )
-
-                ret = _safe_float(r.get("ret") or 0.0, 0.0)
-                ret_text = _safe_str(r.get("ret_text") or "") or _fmt_ret_pct(ret)
-                x_ret_draw = x_tag - _px_to_data_dx(RET_RIGHT_PAD_PX, y2)
-
-                limit_text = _safe_str(r.get("limit_text") or "") or _limit_text_en(r)
-                if limit_text:
-                    ret_w_px = _text_width_px(ret_text, x_ret_draw, y2, ret_fs, weight="bold")
-                    x_limit_draw = x_ret_draw - _px_to_data_dx(ret_w_px + LIMIT_GAP_PX, y2)
-                    ax.text(
-                        x_limit_draw, y2, limit_text,
-                        ha="right", va="center",
-                        fontsize=max(10, int(ret_fs) - LIMIT_FS_DELTA),
-                        color=sub, weight="bold", alpha=0.95
-                    )
-
-                ax.text(
-                    x_ret_draw, y2, ret_text,
-                    ha="right", va="center",
-                    fontsize=ret_fs,
-                    color=get_ret_color(ret, theme),
-                    weight="bold"
-                )
-
-            elif is_big:
+            elif status == "big":
                 ax.text(
                     x_badge, y1, big_label,
                     ha="right", va="center",
@@ -616,43 +578,26 @@ def draw_block_table(
                     color=big_pill_fg, weight="bold",
                     bbox=dict(boxstyle="round,pad=0.30", facecolor=big_pill_bg, edgecolor="none", alpha=0.96),
                 )
-
-                ret = _safe_float(r.get("ret") or 0.0, 0.0)
-                ret_text = _safe_str(r.get("ret_text") or "") or _fmt_ret_pct(ret)
-                x_ret_draw = x_tag - _px_to_data_dx(RET_RIGHT_PAD_PX, y2)
-
-                limit_text = _safe_str(r.get("limit_text") or "") or _limit_text_en(r)
-                if limit_text:
-                    ret_w_px = _text_width_px(ret_text, x_ret_draw, y2, ret_fs, weight="bold")
-                    x_limit_draw = x_ret_draw - _px_to_data_dx(ret_w_px + LIMIT_GAP_PX, y2)
-                    ax.text(
-                        x_limit_draw, y2, limit_text,
-                        ha="right", va="center",
-                        fontsize=max(10, int(ret_fs) - LIMIT_FS_DELTA),
-                        color=sub, weight="bold", alpha=0.95
-                    )
-
-                ax.text(
-                    x_ret_draw, y2, ret_text,
-                    ha="right", va="center",
-                    fontsize=ret_fs,
-                    color=get_ret_color(ret, theme),
-                    weight="bold"
-                )
-
             else:
-                if streak and streak > 1:
-                    tag_text = f"{streak}x"
-                else:
-                    tag_text = limitup_label
-
                 ax.text(
-                    x_badge, y1, tag_text,
+                    x_badge, y1, locked_label,
                     ha="right", va="center",
                     fontsize=int(getattr(layout, "row_tag_fs", 26)),
                     color=limitup_pill_fg, weight="bold",
                     bbox=dict(boxstyle="round,pad=0.32", facecolor=badge_red, edgecolor="none", alpha=0.95),
                 )
+
+            # ret at second line right (CN style)
+            ret = _safe_float(r.get("ret") or 0.0, 0.0)
+            ret_text = _safe_str(r.get("ret_text") or "") or _fmt_ret_pct(ret)
+            x_ret_draw = x_tag - _px_to_data_dx(RET_RIGHT_PAD_PX, y2)
+            ax.text(
+                x_ret_draw, y2, ret_text,
+                ha="right", va="center",
+                fontsize=ret_fs,
+                color=get_ret_color(ret, theme),
+                weight="bold"
+            )
 
             if i < n - 1:
                 ax.plot(
@@ -661,9 +606,7 @@ def draw_block_table(
                     color=divider, linewidth=1, alpha=0.55
                 )
 
-    # -------------------------
     # Draw BOTTOM rows (peers)
-    # -------------------------
     peers = list(peer_rows or [])
     if not peers:
         empty_peer = _t(lang, "empty_peer", "(No data on this page)")
@@ -680,9 +623,9 @@ def draw_block_table(
         )
     else:
         _ensure_renderer()
+
         n2 = min(len(peers), show_rows_peer)
 
-        safe_gap_to_right_px = 12.0
         x_right_for_pills2 = x_tag - _px_to_data_dx(safe_gap_to_right_px + RET_RIGHT_PAD_PX, y_start_bot)
 
         for i in range(n2):
@@ -713,18 +656,6 @@ def draw_block_table(
             ret = _safe_float(r.get("ret") or 0.0, 0.0)
             ret_text = _safe_str(r.get("ret_text") or "") or _fmt_ret_pct(ret)
             x_ret_draw = x_tag - _px_to_data_dx(RET_RIGHT_PAD_PX, y1)
-
-            limit_text = _safe_str(r.get("limit_text") or "") or _limit_text_en(r)
-            if limit_text:
-                ret_w_px = _text_width_px(ret_text, x_ret_draw, y1, ret_fs, weight="bold")
-                x_limit_draw = x_ret_draw - _px_to_data_dx(ret_w_px + LIMIT_GAP_PX, y1)
-                ax.text(
-                    x_limit_draw, y1, limit_text,
-                    ha="right", va="center",
-                    fontsize=max(10, int(ret_fs) - LIMIT_FS_DELTA),
-                    color=sub, weight="bold", alpha=0.95
-                )
-
             ax.text(
                 x_ret_draw, y1, ret_text,
                 ha="right", va="center",
@@ -741,7 +672,7 @@ def draw_block_table(
                 )
 
         if has_more_peers:
-            hint_text = _t(lang, "more_hint", "(More rows not shown)")
+            hint_text = _t(lang, "more_hint", "(More data not shown)")
             ax.text(
                 0.5,
                 bot_y1 + 0.004,
