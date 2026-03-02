@@ -68,6 +68,17 @@ def normalize_privacy(v: str) -> str:
     return vv
 
 
+def normalize_market_for_meta(market: str) -> str:
+    """
+    Normalize market input to match metadata_builder canonical markets.
+    Keep this in youtube_pipeline_safe as a safety net.
+    """
+    m = (market or "").upper().strip()
+    if m in ("IN", "IND"):
+        return "INDIA"
+    return m
+
+
 def sanitize_youtube_text(s: str) -> str:
     """
     Aggressive sanitizer for YouTube Data API text:
@@ -170,9 +181,6 @@ def to_ps_arg_text(s: str) -> str:
 
     We convert LF newlines into PowerShell-friendly escape sequence `n
     so the *command line* remains a single-line argument while YouTube gets real newlines.
-
-    Example:
-      "line1\\n\\nline2" -> "line1`n`nline2"
     """
     if s is None:
         return ""
@@ -183,15 +191,6 @@ def to_ps_arg_text(s: str) -> str:
 def write_latest_meta(*, market: str, ymd: str, slot: str, video_id: str, privacy: str) -> Path:
     """
     Write outputs/latest_meta.json for Drive dashboard to read.
-
-    This file will be uploaded to Drive:
-      {MARKET}/Latest/{slot}/latest_meta.json
-
-    Schema (stable):
-      - market, ymd, slot
-      - youtube_video_id, privacy
-      - youtube_url
-      - updated_utc
     """
     Path("outputs").mkdir(exist_ok=True)
 
@@ -217,10 +216,6 @@ def write_latest_meta(*, market: str, ymd: str, slot: str, video_id: str, privac
 # ===============================
 
 def resolve_token_path(default_path: str) -> str:
-    """
-    If env YOUTUBE_TOKEN_JSON exists, write it to a temp file and use it.
-    Else use local file path.
-    """
     env_json = os.getenv("YOUTUBE_TOKEN_JSON", "").strip()
     if env_json:
         print("[INFO] Using YOUTUBE_TOKEN_JSON from environment")
@@ -233,10 +228,6 @@ def resolve_token_path(default_path: str) -> str:
 
 
 def resolve_playlist_map(default_path: str) -> str:
-    """
-    If env YOUTUBE_PLAYLIST_MAP_JSON exists, write it to a temp file and use it.
-    Else use local file path.
-    """
     env_json = os.getenv("YOUTUBE_PLAYLIST_MAP_JSON", "").strip()
     if env_json:
         print("[INFO] Using YOUTUBE_PLAYLIST_MAP_JSON from environment")
@@ -289,7 +280,7 @@ def main():
     ap.add_argument("--privacy", default="unlisted", choices=["private", "unlisted", "public"])
 
     args = ap.parse_args()
-    py = sys.executable  # use same python
+    py = sys.executable
 
     video = str(Path(args.video).expanduser().resolve())
     if not Path(video).exists():
@@ -301,23 +292,25 @@ def main():
 
     playlist_map_path = resolve_playlist_map(args.playlist_map)
 
-    meta: Dict[str, Any] = build_metadata(args.market, args.ymd, args.slot)
+    # ✅ normalize market (IN -> INDIA)
+    market = normalize_market_for_meta(args.market)
 
-    # sanitize metadata to avoid invalidDescription + weird unicode issues
+    meta: Dict[str, Any] = build_metadata(market, args.ymd, args.slot)
+
+    # sanitize metadata
     meta_title = sanitize_youtube_text(str(meta.get("title", "")))
     meta_desc_raw = sanitize_youtube_text(str(meta.get("description", "")))
     meta_tags = sanitize_tags([str(x) for x in (meta.get("tags") or [])])
     privacy = normalize_privacy(args.privacy)
 
-    # ✅ KEY FIX: turn multiline description into PowerShell-safe single argv string using `n
+    # PowerShell-safe single argv string
     meta_desc = to_ps_arg_text(meta_desc_raw)
 
-    # debug visibility
     try:
         print(
-            f"[PIPE_DEBUG] title_len={len(meta_title)} "
-            f"desc_len={len(meta_desc_raw)} newline_count={meta_desc_raw.count(chr(10))} "
-            f"desc_arg_len={len(meta_desc)}"
+            f"[PIPE_DEBUG] market_in={args.market} market_norm={market} "
+            f"title_len={len(meta_title)} desc_len={len(meta_desc_raw)} "
+            f"newline_count={meta_desc_raw.count(chr(10))} desc_arg_len={len(meta_desc)}"
         )
     except Exception:
         pass
@@ -346,6 +339,7 @@ def main():
         if args.playlist_id.strip():
             playlist_id = args.playlist_id.strip()
         else:
+            # ✅ use canonical market key from metadata ("INDIA")
             playlist_id = load_playlist_id(str(meta.get("market") or "").strip(), playlist_map_path)
 
         run_capture([
@@ -356,11 +350,11 @@ def main():
             "--playlist-id", playlist_id,
         ])
 
-    # 3) Save outputs for downstream steps (Drive dashboard, etc.)
+    # 3) Save outputs
     Path("outputs").mkdir(exist_ok=True)
     Path("outputs/last_video_id.txt").write_text(video_id, encoding="utf-8")
     write_latest_meta(
-        market=args.market,
+        market=str(meta.get("market") or market),
         ymd=args.ymd,
         slot=args.slot,
         video_id=video_id,
