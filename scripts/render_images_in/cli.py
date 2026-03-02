@@ -8,7 +8,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 # ✅ headless backend
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -35,7 +35,7 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.render_images_in.sector_blocks.draw_mpl import draw_block_table  # noqa: E402
 from scripts.render_images_in.sector_blocks.layout import get_layout  # noqa: E402
 
-# ✅ common header/time helper
+# ✅ common header/time helper (fallback)
 from scripts.render_images_common.header_mpl import get_market_time_info  # noqa: E402
 
 # overview (common)
@@ -133,8 +133,9 @@ def chunk(lst: List[Any], n: int) -> List[List[Any]]:
 
 
 # =============================================================================
-# Time note builder (IN one-line)
-# India Trading Day YYYY-MM-DD  Updated YYYY-MM-DD HH:MM
+# Time note builder (IN 2-line like UK/AU)
+#   line1: India Trading Day YYYY-MM-DD
+#   line2: Updated YYYY-MM-DD HH:MM
 # =============================================================================
 def _split_ymd_from_dt(s: str) -> str:
     s = _safe_str(s)
@@ -155,13 +156,19 @@ def build_in_time_note(payload: Dict[str, Any]) -> str:
     finished_at = _safe_str(tmeta.get("market_finished_at") or "")
     update_ymd = _split_ymd_from_dt(finished_at) or trade_ymd
 
+    # fallback hm from shared helper
     if not hm:
-        _, _, _, hhmm = get_market_time_info(payload, market="IN")
-        hm = _safe_str(hhmm)
+        try:
+            _, _, _, hhmm = get_market_time_info(payload, market="IN")
+            hm = _safe_str(hhmm)
+        except Exception:
+            hm = ""
 
+    line1 = f"India Trading Day {trade_ymd}".strip()
     if hm:
-        return f"India Trading Day {trade_ymd}  Updated {update_ymd} {hm}"
-    return f"India Trading Day {trade_ymd}"
+        line2 = f"Updated {update_ymd} {hm}".strip()
+        return f"{line1}\n{line2}".strip()
+    return line1
 
 
 # =============================================================================
@@ -179,7 +186,6 @@ def write_list_txt(
     overview_prefix = str(overview_prefix or "").strip() or "overview_sectors_"
 
     items: List[Path] = []
-
     paged = sorted(outdir.glob(f"{overview_prefix}*_p*.{ext}"), key=lambda p: p.name)
     if paged:
         items.extend(paged)
@@ -209,9 +215,9 @@ def write_list_txt(
 # Builders (India)
 # - Use snapshot_main (full universe) and flags computed by aggregator
 # - status:
-#     hit   = locked
-#     touch = touched_only (touch but not locked)
-#     big   = >=10% and NOT touch_any
+#   hit = locked
+#   touch = touched_only (touch but not locked)
+#   big = >=10% and NOT touch_any
 # =============================================================================
 def _touch_any_in(r: Dict[str, Any]) -> bool:
     if "is_limitup_touch_any" in r:
@@ -233,8 +239,8 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
         is_locked = _bool(r.get("is_limitup_locked", False))
         touch_any = _touch_any_in(r)
         touch_only = _bombed_in(r)
-
         ret = _pct(r.get("ret", 0.0))
+
         big10 = bool(_bool(r.get("is_surge_ge10", False)) and (not touch_any))
 
         if not (is_locked or touch_only or big10):
@@ -244,23 +250,19 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
         sym = _safe_str(r.get("symbol") or "")
         name = _safe_str(r.get("name") or sym)
 
-        # limit rate (ratio) for pill: from aggregator (limit_rate) or band_pct
+        # limit rate for pill: from aggregator (limit_rate) or band_pct
         limit_rate = r.get("limit_rate", None)
         if limit_rate is None:
             limit_rate = r.get("band_pct", None)
 
-        badge_text = ""
         status = "hit"
         if big10:
-            badge_text = "10%+"
             status = "big"
             line2 = "Big Move 10%+"
         elif touch_only:
-            badge_text = "Touch"
             status = "touch"
             line2 = "Touched upper band (not locked)"
         else:
-            badge_text = "Locked"
             status = "hit"
             line2 = "Locked at upper band"
 
@@ -271,16 +273,16 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
                 "sector": sector,
                 "ret": ret,
                 "ret_pct": ret * 100.0,
-                "badge_text": badge_text,
                 "line1": f"{sym}  {name}",
                 "line2": line2,
                 "limitup_status": status,  # hit/touch/big
-                "limit_rate": limit_rate,  # ✅ for pill display
+                "limit_rate": limit_rate,  # for pill display
             }
         )
 
     for k in out:
         out[k].sort(key=lambda x: float(x.get("ret", 0.0) or 0.0), reverse=True)
+
     return out
 
 
@@ -299,7 +301,6 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[D
             continue
 
         sector = _norm_sector_name(_safe_str(r.get("sector") or "Unclassified"))
-
         sym = _safe_str(r.get("symbol") or "")
         name = _safe_str(r.get("name") or sym)
 
@@ -313,6 +314,7 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[D
                 "name": name,
                 "sector": sector,
                 "ret": ret,
+                "ret_pct": ret * 100.0,
                 "line1": f"{sym}  {name}",
                 "line2": "",
                 "limit_rate": limit_rate,
@@ -321,6 +323,7 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[D
 
     for k in out:
         out[k].sort(key=lambda x: float(x.get("ret", 0.0) or 0.0), reverse=True)
+
     return out
 
 
@@ -357,7 +360,6 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--payload", required=True)
     ap.add_argument("--outdir", default=None)
-
     ap.add_argument("--theme", default="dark")
     ap.add_argument("--layout", default="us")
     ap.add_argument("--rows-per-box", type=int, default=6)
@@ -367,8 +369,8 @@ def main() -> int:
     ap.add_argument("--overview-metric", default="auto", help="auto/locked/touched/bigmove10/mix/locked+touched")
     ap.add_argument("--overview-page-size", type=int, default=15)
 
-    # i18n: keep simple
-    ap.add_argument("--lang", default="en", help="en/zh_hans/.. (i18n keys if available)")
+    # i18n (keep simple)
+    ap.add_argument("--lang", default="en", help="en/zh_hans/... (i18n keys if available)")
 
     # ✅ DEBUG: default ON, allow opt-out
     ap.add_argument("--no-debug", action="store_true", help="overview/footer debug off")
@@ -414,7 +416,7 @@ def main() -> int:
     layout = get_layout(args.layout)
     cutoff = _payload_cutoff_str(agg_payload)
 
-    # time_note
+    # ✅ 2-line time note
     time_note = build_in_time_note(agg_payload)
 
     # -------------------------------------------------------------------------
@@ -435,6 +437,7 @@ def main() -> int:
                 page_size=int(args.overview_page_size),
                 metric=om,
             )
+
             overview_sector_keys = extract_overview_sector_order(payload_for_overview)
 
             print(
@@ -445,6 +448,7 @@ def main() -> int:
                 "[IN][DEBUG] raw overview order head:",
                 (payload_for_overview.get("_overview_sector_order", []) or [])[:20],
             )
+
             if overview_sector_keys:
                 met_eff = str(payload_for_overview.get("_overview_metric_eff") or "").strip()
                 print(
@@ -458,6 +462,7 @@ def main() -> int:
         except Exception as e:
             print(f"[IN] overview failed (continue): {e}")
 
+        # cleanup gainbins if any
         for p in outdir.glob("overview_gainbins*.png"):
             try:
                 p.unlink()
@@ -512,7 +517,6 @@ def main() -> int:
 
         max_limitup_show = CAP_PAGES * rows_top
         L_show = L_total[:max_limitup_show]
-
         L_pages = chunk(L_show, rows_top) if L_show else [[]]
         P_pages = chunk(P, rows_peer)
 
@@ -531,7 +535,6 @@ def main() -> int:
         sector_all_total = int(sector_total_map.get(sector, 0) or 0)
         sector_shown_total = int(hit_total + touch_total + big_total)
 
-        # backward-compat params
         locked_cnt = hit_total
         touch_cnt = touch_total
         theme_cnt = 0
@@ -541,7 +544,6 @@ def main() -> int:
         for i in range(total_pages):
             limitup_rows = L_pages[i] if i < len(L_pages) else []
             peer_rows = P_pages[i] if i < len(P_pages) else []
-
             has_more_peers = (peer_pages > total_pages) and (i == total_pages - 1)
 
             out_path = outdir / f"in_{sector_fn}_p{i+1}.png"
