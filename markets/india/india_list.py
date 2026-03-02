@@ -2,10 +2,14 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import base64
+import io
+import json
 import os
 import sqlite3
 from datetime import datetime
-from typing import Any, List, Tuple
+from pathlib import Path
+from typing import Any, List, Optional, Tuple
 
 import pandas as pd
 
@@ -34,9 +38,106 @@ def _to_yf_symbol(local_symbol: str) -> str:
     return f"{s}{suf}"
 
 
+# =============================================================================
+# Optional: auto-fetch master CSV from Google Drive if missing
+# =============================================================================
+def _parse_bool_env(name: str, default: bool) -> bool:
+    v = (os.getenv(name, "").strip() or ("1" if default else "0")).lower()
+    return v in ("1", "true", "yes", "y", "on")
+
+
+def _get_drive_service_from_token_b64(token_b64: str):
+    # Local import to avoid heavy deps unless needed
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+
+    decoded = base64.b64decode(token_b64).decode("utf-8")
+    token_info = json.loads(decoded)
+
+    creds = Credentials.from_authorized_user_info(token_info)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+    return build("drive", "v3", credentials=creds)
+
+
+def _find_file_id_in_folder(service, folder_id: str, file_name: str) -> Optional[str]:
+    query = f"name = '{file_name}' and '{folder_id}' in parents and trashed = false"
+    res = (
+        service.files()
+        .list(
+            q=query,
+            fields="files(id, name, modifiedTime)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        )
+        .execute()
+    )
+    files = res.get("files", []) or []
+    if not files:
+        return None
+    files.sort(key=lambda x: x.get("modifiedTime", ""), reverse=True)
+    return files[0]["id"]
+
+
+def _download_drive_file(service, file_id: str, out_path: Path) -> None:
+    # Local import to avoid heavy deps unless needed
+    from googleapiclient.http import MediaIoBaseDownload
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+    fh = io.FileIO(out_path, "wb")
+    downloader = MediaIoBaseDownload(fh, request)
+
+    done = False
+    while not done:
+        _status, done = downloader.next_chunk()
+
+
+def _maybe_fetch_master_csv_from_drive(path: str) -> bool:
+    """
+    Try download NSE_Stock_Master_Data.csv from Google Drive if:
+    - INDIA_MASTER_CSV_AUTO_FETCH=1 (default: True)
+    - GDRIVE_TOKEN_B64 exists
+    - GDRIVE_FOLDER_ID or IN_STOCKLIST exists (folder where the CSV is stored)
+    Return True if downloaded, else False.
+    """
+    if not _parse_bool_env("INDIA_MASTER_CSV_AUTO_FETCH", True):
+        return False
+
+    token_b64 = (os.getenv("GDRIVE_TOKEN_B64") or "").strip()
+    folder_id = (os.getenv("GDRIVE_FOLDER_ID") or os.getenv("IN_STOCKLIST") or "").strip()
+    if not token_b64 or not folder_id:
+        return False
+
+    file_name = (os.getenv("NSE_OUTPUT_NAME") or "NSE_Stock_Master_Data.csv").strip() or "NSE_Stock_Master_Data.csv"
+
+    try:
+        log(f"☁️ master CSV missing; try fetch from Drive | folder={folder_id} name={file_name}")
+        svc = _get_drive_service_from_token_b64(token_b64)
+        file_id = _find_file_id_in_folder(svc, folder_id, file_name)
+        if not file_id:
+            log(f"⚠️ Drive fetch skipped: file not found | folder={folder_id} name={file_name}")
+            return False
+
+        out_path = Path(path)
+        _download_drive_file(svc, file_id, out_path)
+        log(f"✅ Drive fetched: {file_name} (fileId={file_id}) -> {out_path}")
+        return True
+    except Exception as e:
+        log(f"⚠️ Drive fetch failed: {e}")
+        return False
+
+
 def _load_master_csv(path: str) -> pd.DataFrame:
     if not path or not os.path.exists(path):
+        # try auto-fetch
+        _maybe_fetch_master_csv_from_drive(path)
+
+    if not path or not os.path.exists(path):
         raise FileNotFoundError(f"INDIA master CSV not found: {path} (set INDIA_MASTER_CSV_PATH)")
+
     df = pd.read_csv(path)
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
