@@ -224,15 +224,19 @@ def run_market_in(args: argparse.Namespace, base_dir: Path, ymd: str, meta: dict
     """
     India (NSE/BSE) = open movers market like UK/CA/AU.
 
+    ✅ IMPORTANT:
     We keep folder name as: markets/india/
-    So import via:
-      markets.india.downloader_in
-      markets.india.aggregator_in
+    and we standardize module names to:
+      markets.india.downloader
+      markets.india.aggregator
+
+    This avoids filename drift like downloader_in / aggregator_in.
     """
     import importlib
 
-    mod_dl = importlib.import_module("markets.india.downloader_in")
-    mod_ag = importlib.import_module("markets.india.aggregator_in")
+    # Standardized imports (must exist):
+    mod_dl = importlib.import_module("markets.india.downloader")
+    mod_ag = importlib.import_module("markets.india.aggregator")
 
     run_in_sync = getattr(mod_dl, "run_sync")
     run_in_intraday = getattr(mod_dl, "run_intraday")
