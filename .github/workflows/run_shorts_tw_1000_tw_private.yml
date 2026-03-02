@@ -26,3 +26,230 @@ on:
         default: "private"
         type: choice
         options: [private, public]
+
+      upload_youtube:
+        description: "upload to YouTube? (manual run only)"
+        required: true
+        default: "yes"
+        type: choice
+        options: [yes, no]
+
+concurrency:
+  group: run_shorts_tw_1000tw_${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    env:
+      SCHEDULE_CRON: ${{ github.event.schedule }}
+    outputs:
+      should_run: ${{ steps.plan.outputs.should_run }}
+      slot: ${{ steps.plan.outputs.slot }}
+      images_ymd: ${{ steps.plan.outputs.images_ymd }}
+      privacy: ${{ steps.plan.outputs.privacy }}
+      upload_youtube: ${{ steps.plan.outputs.upload_youtube }}
+
+    steps:
+      - name: Setup Python (for plan)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from datetime import datetime, timezone
+
+          event = os.getenv("GITHUB_EVENT_NAME","")
+          cron = (os.getenv("SCHEDULE_CRON","") or "").strip()
+
+          in_slot = (os.getenv("INPUT_SLOT","") or "").strip().lower()
+          in_images_ymd = (os.getenv("INPUT_IMAGES_YMD","") or "").strip()
+          in_privacy = (os.getenv("INPUT_PRIVACY","") or "").strip().lower()
+          in_upload_youtube = (os.getenv("INPUT_UPLOAD_YOUTUBE","") or "").strip().lower()
+
+          slot = in_slot if (event=="workflow_dispatch" and in_slot) else "midday"
+          images_ymd = in_images_ymd if (event=="workflow_dispatch" and in_images_ymd) else "latest"
+
+          now_utc = datetime.now(timezone.utc)
+
+          should_run = False
+          if event == "workflow_dispatch":
+              should_run = True
+          else:
+              # ✅ main gate: cron string matches (lag-proof)
+              if cron == "0 2 * * 1-5":
+                  should_run = True
+              else:
+                  # fallback: allow 02:00~04:59 UTC (runner lag safe)
+                  if 2 <= now_utc.hour <= 4:
+                      should_run = True
+
+          # ✅ schedule always public + upload
+          if event == "workflow_dispatch":
+              privacy = in_privacy if in_privacy in ("private","public") else "private"
+              upload_youtube = in_upload_youtube if in_upload_youtube in ("yes","no") else "yes"
+          else:
+              privacy = "public"
+              upload_youtube = "yes"
+
+          out_path = os.environ["GITHUB_OUTPUT"]
+          with open(out_path, "a", encoding="utf-8") as f:
+              f.write(f"should_run={'true' if should_run else 'false'}\n")
+              f.write(f"slot={slot}\n")
+              f.write(f"images_ymd={images_ymd}\n")
+              f.write(f"privacy={privacy}\n")
+              f.write(f"upload_youtube={upload_youtube}\n")
+
+          print("[PLAN]")
+          print("  event          =", event)
+          print("  schedule       =", cron)
+          print("  now_utc        =", now_utc.isoformat(timespec="seconds"))
+          print("  should_run     =", should_run)
+          print("  slot           =", slot)
+          print("  images_ymd     =", images_ymd)
+          print("  privacy        =", privacy)
+          print("  upload_youtube =", upload_youtube)
+          PY
+
+  run:
+    needs: plan
+    if: needs.plan.outputs.should_run == 'true'
+    name: run_shorts tw
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      MPLBACKEND: Agg
+      MPLCONFIGDIR: $RUNNER_TEMP/mpl-tw
+
+      RUN_SHORTS_DEBUG_TREE: "1"
+      OVERVIEW_DEBUG_FONTS: "1"
+      OVERVIEW_DEBUG_FOOTER: "1"
+
+      # Google Drive (only used when upload_youtube == yes, in the command below)
+      GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+      GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
+      GDRIVE_CLIENT_SECRET_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_B64 }}
+      GDRIVE_ALLOW_INTERACTIVE: "0"
+
+      # YouTube (only used when upload_youtube == yes, in the command below)
+      YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+      YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Echo schedule info
+        shell: bash
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "schedule=${{ github.event.schedule }}"
+          echo "TW target=10:00 (UTC=02:00)"
+          echo "slot=${{ needs.plan.outputs.slot }}"
+          echo "images_ymd=${{ needs.plan.outputs.images_ymd }}"
+          echo "privacy=${{ needs.plan.outputs.privacy }}"
+          echo "upload_youtube=${{ needs.plan.outputs.upload_youtube }}"
+          echo "now_utc=$(date -u '+%F %T %Z')"
+          TZ=Asia/Taipei date '+now_tw=%F %T %Z' || true
+          echo "MPLCONFIGDIR=${MPLCONFIGDIR}"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system deps (FULL FONT STACK)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fontconfig
+          sudo apt-get install -y fonts-dejavu-core fonts-dejavu-extra
+          sudo apt-get install -y fonts-noto-cjk fonts-noto-core || true
+          sudo apt-get install -y fonts-noto-color-emoji || true
+          sudo apt-get install -y fonts-noto-extra fonts-noto-ui-core fonts-noto-unhinted || true
+          sudo apt-get install -y fonts-noto-cjk-extra || true
+          sudo fc-cache -f -v
+          rm -rf ~/.cache/matplotlib ~/.config/matplotlib || true
+          rm -rf "${MPLCONFIGDIR}" || true
+          mkdir -p "${MPLCONFIGDIR}"
+
+      - name: Install python deps
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements-ci.txt ]; then
+            pip install -r requirements-ci.txt
+          elif [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "::error::No requirements file found!"
+            exit 1
+          fi
+
+      - name: Rebuild matplotlib font manager (verify)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import os, matplotlib
+          matplotlib.use("Agg")
+          from matplotlib import font_manager as fm
+          fm._load_fontmanager(try_read_cache=False)
+          print("MPLCONFIGDIR:", os.environ.get("MPLCONFIGDIR"))
+          print("Fonts:", len({f.name for f in fm.fontManager.ttflist}))
+          PY
+
+      - name: Ensure output directories
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p media/images media/videos outputs
+
+      # ✅ Manual: can choose upload or not. Schedule: always uploads (plan sets upload_youtube=yes)
+      - name: Run shorts (TW) - upload YouTube (and Drive)
+        if: needs.plan.outputs.upload_youtube == 'yes'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python scripts/run_shorts.py \
+            --market tw \
+            --slot "${{ needs.plan.outputs.slot }}" \
+            --full \
+            --privacy "${{ needs.plan.outputs.privacy }}" \
+            --drive \
+            --drive-parent-id "${GDRIVE_ROOT_FOLDER_ID}" \
+            --drive-order after_youtube \
+            --drive-upload both \
+            --drive-images-mode zip \
+            --images-ymd "${{ needs.plan.outputs.images_ymd }}"
+
+      - name: Run shorts (TW) - NO upload (local artifacts only)
+        if: needs.plan.outputs.upload_youtube == 'no'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python scripts/run_shorts.py \
+            --market tw \
+            --slot "${{ needs.plan.outputs.slot }}" \
+            --full \
+            --privacy "${{ needs.plan.outputs.privacy }}" \
+            --images-ymd "${{ needs.plan.outputs.images_ymd }}"
+
+      - name: Upload artifacts (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts_tw_${{ github.run_id }}
+          path: |
+            outputs/**
+            media/videos/**
+            media/images/**/list_video.txt
+          if-no-files-found: ignore
