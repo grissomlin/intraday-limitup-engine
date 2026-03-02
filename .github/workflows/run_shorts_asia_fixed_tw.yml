@@ -190,18 +190,41 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install deps (add TH fonts + refresh font cache)
         shell: bash
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fontconfig fonts-dejavu-core fonts-noto-cjk || true
+
+          # ✅ base
+          sudo apt-get install -y ffmpeg fontconfig || true
+
+          # ✅ keep your existing fonts
+          sudo apt-get install -y fonts-dejavu-core fonts-noto-cjk || true
+
+          # ✅ IMPORTANT: add Thai glyph coverage
+          sudo apt-get install -y fonts-noto-core fonts-thai-tlwg || true
+
+          # ✅ make sure runner sees new fonts
+          sudo fc-cache -f -v
+
+          # ✅ avoid stale matplotlib font cache
+          rm -rf ~/.cache/matplotlib ~/.config/matplotlib || true
+          rm -rf "${MPLCONFIGDIR}" || true
+          mkdir -p "${MPLCONFIGDIR}"
+
           python -m pip install --upgrade pip
           if [ -f requirements-ci.txt ]; then
             pip install -r requirements-ci.txt
           else
             pip install -r requirements.txt
           fi
+
+      - name: (Optional) Check Thai fonts present
+        shell: bash
+        run: |
+          set -euo pipefail
+          fc-list | grep -i -E "thai|tlwg|noto sans thai" | head -n 20 || true
 
       - name: Ensure output directories
         shell: bash
