@@ -122,8 +122,8 @@ jobs:
           b_in   = _b("INPUT_MARKET_IN", default=False)
 
           # defaults
-          slot      = in_slot if (event=="workflow_dispatch" and in_slot) else "midday"
-          images_ymd = in_images_ymd if (event=="workflow_dispatch" and in_images_ymd) else "latest"
+          slot       = in_slot if (event=="workflow_dispatch" and in_slot) else "midday"
+          images_ymd  = in_images_ymd if (event=="workflow_dispatch" and in_images_ymd) else "latest"
 
           privacy_allowed = {"private","public","unlisted"}
           privacy = in_privacy if (event=="workflow_dispatch" and in_privacy) else "private"
@@ -187,6 +187,7 @@ jobs:
           seen=set()
           chosen=[x for x in chosen if (x not in seen and not seen.add(x))]
 
+          # ✅ FIX: matrix_json should be {"include":[...]} (NOT {"include":...} inside "matrix")
           matrix = {"include": [{"market": x} for x in chosen]}
           should_run = "true" if chosen else "false"
 
@@ -220,7 +221,9 @@ jobs:
 
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix_json) }}
+      # ✅ FIX: GitHub expects matrix.include list
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix_json).include }}
 
     env:
       MPLBACKEND: Agg
@@ -284,16 +287,13 @@ jobs:
         run: |
           set -euxo pipefail
           sudo apt-get update
-
           sudo apt-get install -y ffmpeg fontconfig
           sudo apt-get install -y fonts-dejavu-core fonts-dejavu-extra
           sudo apt-get install -y fonts-noto-cjk fonts-noto-core || true
           sudo apt-get install -y fonts-noto-color-emoji || true
           sudo apt-get install -y fonts-noto-extra fonts-noto-ui-core fonts-noto-unhinted || true
           sudo apt-get install -y fonts-noto-cjk-extra || true
-
           sudo fc-cache -f -v
-
           rm -rf ~/.cache/matplotlib ~/.config/matplotlib || true
           rm -rf "${MPLCONFIGDIR}" || true
           mkdir -p "${MPLCONFIGDIR}"
