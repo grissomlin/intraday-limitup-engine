@@ -162,8 +162,7 @@ def _limit_colors(limit_pct: float, theme: str) -> Tuple[str, str]:
 
 
 def get_ret_color(ret: float, theme: str) -> str:
-    # keep CN convention? For India, green/red is common, but don't change now.
-    # We'll use: up = red-ish, down = blue-ish consistent with your other pages.
+    # keep your existing convention: up=red-ish, down=blue-ish
     if theme == "dark":
         return "#ff6b6b" if ret >= 0 else "#4dabf7"
     return "#d9480f" if ret >= 0 else "#1864ab"
@@ -209,8 +208,8 @@ def draw_block_table(
 
     # i18n labels
     big_label = _t(lang, "term_bigmove10", "Big")
-    locked_label = _t(lang, "term_limitup", "Locked")
-    touched_label = _t(lang, "term_touched", "Touch")
+    locked_label = _t(lang, "term_limitup", "Limit-Up")
+    touched_label = _t(lang, "term_touched", "Touched")
 
     # Colors
     if is_dark:
@@ -354,7 +353,7 @@ def draw_block_table(
             alpha=0.90,
         )
 
-    footer_text = _t(lang, "footer_disclaimer", "Data source: public market info | Not investment advice")
+    footer_text = _t(lang, "footer_disclaimer", "Source: Public market data | For information only. Not financial advice.")
     ax.text(
         0.05,
         float(getattr(layout, "footer_y2", 0.020)),
@@ -392,7 +391,7 @@ def draw_block_table(
         except Exception:
             ratio_part = ""
 
-    # header order: Locked -> Touch -> 10%+ -> ratio
+    # header order: Limit-Up -> Touched -> 10%+ -> ratio
     top_title_left = f"{locked_label}{int(hit_shown)}/{int(hit_total)}  {touched_label}{int(touch_shown)}/{int(touch_total)}"
     if int(big_total) > 0:
         top_title_left += f"  10%+{int(big_shown)}/{int(big_total)}"
@@ -422,7 +421,7 @@ def draw_block_table(
         alpha=0.98,
     )
 
-    bottom_title_text = _t(lang, "box_title_bottom", "Same sector (not locked/touch/10%+)")
+    bottom_title_text = _t(lang, "box_title_bottom", "Same sector (not locked/touched/10%+)")
     _shadow_text(
         x_left,
         bot_title_y,
@@ -474,26 +473,38 @@ def draw_block_table(
     row_name_fs = int(getattr(layout, "row_name_fs", getattr(layout, "row_fs_1", 28)))
     ret_fs = max(row_name_fs - 4, 18)
     pill_fs = row_name_fs
+    pill_fs_peer = max(row_name_fs - 2, 18)  # peer pill slightly smaller
     pill_pad = 0.14
     pill_gap_px = 10.0
     safe_gap_to_right_px = 12.0
+    ret_reserved_px = 160.0  # reserve space so pill won't collide with ret text
 
-    def _draw_pill(x: float, y: float, text: str, fg_color: str, bg_color: str) -> float:
+    def _draw_pill(x: float, y: float, text: str, fg_color: str, bg_color: str, *, fontsize: int) -> float:
         if not text:
             return x
         ax.text(
             x, y, text,
             ha="left", va="center",
-            fontsize=pill_fs,
+            fontsize=fontsize,
             color=fg_color,
             weight="bold",
             bbox=dict(boxstyle=f"round,pad={pill_pad}", facecolor=bg_color, edgecolor="none", alpha=0.95),
         )
-        w_px = _text_width_px(text, x, y, fontsize=pill_fs, weight="bold") + 18.0
+        w_px = _text_width_px(text, x, y, fontsize=fontsize, weight="bold") + 18.0
         return x + _px_to_data_dx(w_px, y)
 
-    def _draw_pills_after_name(line1: str, y: float, row: Dict[str, Any], x_right_limit: float) -> None:
-        w1_px = _text_width_px(line1, layout.x_name, y, fontsize=row_name_fs, weight="bold")
+    def _limit_label_english(limit_pct: float) -> Tuple[str, str]:
+        """
+        Keep it short to avoid overlap.
+        Primary: "Limit 20%"
+        Fallback: "20%"
+        """
+        pct_i = int(round(limit_pct))
+        return (f"Limit {pct_i}%", f"{pct_i}%")
+
+    def _draw_limit_pill_after_name(display_name: str, y: float, row: Dict[str, Any], x_right_limit: float, *, fontsize: int) -> None:
+        # IMPORTANT: measure displayed (ellipsized) string, not raw full line
+        w1_px = _text_width_px(display_name, layout.x_name, y, fontsize=row_name_fs, weight="bold")
         x = layout.x_name + _px_to_data_dx(w1_px + pill_gap_px, y)
         if x >= x_right_limit:
             return
@@ -503,15 +514,25 @@ def draw_block_table(
             return
 
         lim_bg, lim_fg = _limit_colors(limit_pct, theme)
-        label = f"涨跌幅上限{int(round(limit_pct))}%"
-        _draw_pill(x, y, label, lim_fg, lim_bg)
+        label_full, label_short = _limit_label_english(limit_pct)
+
+        # if full label doesn't fit, try short label; otherwise skip
+        full_w_px = _text_width_px(label_full, x, y, fontsize=fontsize, weight="bold") + 22.0
+        if x + _px_to_data_dx(full_w_px, y) <= x_right_limit:
+            _draw_pill(x, y, label_full, lim_fg, lim_bg, fontsize=fontsize)
+            return
+
+        short_w_px = _text_width_px(label_short, x, y, fontsize=fontsize, weight="bold") + 22.0
+        if x + _px_to_data_dx(short_w_px, y) <= x_right_limit:
+            _draw_pill(x, y, label_short, lim_fg, lim_bg, fontsize=fontsize)
+            return
 
     x_name = float(getattr(layout, "x_name", 0.08))
     x_tag = float(getattr(layout, "x_tag", 0.94))
 
     # Draw TOP rows
     if top_is_empty:
-        empty_top = _t(lang, "empty_limitup", "(No Locked/Touch/Big data on this page)")
+        empty_top = _t(lang, "empty_limitup", "(No Limit-Up/Touched/Big data on this page)")
         ax.text(
             0.5,
             (top_rows_area_y_top + top_rows_area_y_bottom) / 2,
@@ -527,7 +548,8 @@ def draw_block_table(
         _ensure_renderer()
         n = min(len(limit_rows), int(rows_per_page))
 
-        x_right_for_pills = x_tag - _px_to_data_dx(safe_gap_to_right_px + BADGE_RIGHT_PAD_PX, y_start_top)
+        # keep pills away from right badges
+        x_right_for_pills = x_tag - _px_to_data_dx(safe_gap_to_right_px + BADGE_RIGHT_PAD_PX + ret_reserved_px, y_start_top)
 
         for i in range(n):
             y_center = y_start_top - i * row_h_top
@@ -540,16 +562,19 @@ def draw_block_table(
                 y2 = y_center
 
             r = limit_rows[i]
-            line1 = _safe_str(r.get("line1") or "")
+            line1_raw = _safe_str(r.get("line1") or "")
             line2 = _safe_str(r.get("line2") or "")
 
+            display_line1 = _ellipsize(line1_raw, 26)
+
             ax.text(
-                x_name, y1, _ellipsize(line1, 26),
+                x_name, y1, display_line1,
                 ha="left", va="center",
                 fontsize=row_name_fs, color=fg, weight="bold"
             )
 
-            _draw_pills_after_name(line1, y1, r, x_right_limit=x_right_for_pills)
+            # ✅ pill near ellipsis, based on display_line1 width
+            _draw_limit_pill_after_name(display_line1, y1, r, x_right_limit=x_right_for_pills, fontsize=pill_fs)
 
             if two_line and line2:
                 ax.text(
@@ -626,33 +651,28 @@ def draw_block_table(
 
         n2 = min(len(peers), show_rows_peer)
 
-        x_right_for_pills2 = x_tag - _px_to_data_dx(safe_gap_to_right_px + RET_RIGHT_PAD_PX, y_start_bot)
+        # ✅ peer: reserve more space on the right for ret, and put pill on 2nd line
+        x_right_for_pills2 = x_tag - _px_to_data_dx(safe_gap_to_right_px + RET_RIGHT_PAD_PX + ret_reserved_px, y_start_bot)
 
         for i in range(n2):
             y_center = y_start_bot - i * row_h_bot
             r = peers[i]
 
-            line1 = _safe_str(r.get("line1") or "")
+            line1_raw = _safe_str(r.get("line1") or "")
             line2 = _safe_str(r.get("line2") or "")
 
             y1 = y_center + row_h_bot * 0.22
             y2 = y_center - row_h_bot * 0.22
 
+            display_line1 = _ellipsize(line1_raw, 26)
+
             ax.text(
-                x_name, y1, _ellipsize(line1, 26),
+                x_name, y1, display_line1,
                 ha="left", va="center",
                 fontsize=row_name_fs, color=fg, weight="bold"
             )
 
-            _draw_pills_after_name(line1, y1, r, x_right_limit=x_right_for_pills2)
-
-            if line2:
-                ax.text(
-                    x_name, y2, _ellipsize(line2.replace("|", " ").replace("｜", " "), 34),
-                    ha="left", va="center",
-                    fontsize=row_name_fs, color=sub, weight="bold", alpha=0.95
-                )
-
+            # ✅ peer ret stays on y1 (right)
             ret = _safe_float(r.get("ret") or 0.0, 0.0)
             ret_text = _safe_str(r.get("ret_text") or "") or _fmt_ret_pct(ret)
             x_ret_draw = x_tag - _px_to_data_dx(RET_RIGHT_PAD_PX, y1)
@@ -664,6 +684,17 @@ def draw_block_table(
                 weight="bold"
             )
 
+            # ✅ peer: show limit band pill on SECOND LINE so it won't collide with ret
+            _draw_limit_pill_after_name(display_line1, y2, r, x_right_limit=x_right_for_pills2, fontsize=pill_fs_peer)
+
+            # optional second line text (if you ever want)
+            if line2:
+                ax.text(
+                    x_name, y2, _ellipsize(line2.replace("|", " ").replace("｜", " "), 34),
+                    ha="left", va="center",
+                    fontsize=row_name_fs, color=sub, weight="bold", alpha=0.95
+                )
+
             if i < n2 - 1:
                 ax.plot(
                     [0.06, 0.94],
@@ -672,7 +703,7 @@ def draw_block_table(
                 )
 
         if has_more_peers:
-            hint_text = _t(lang, "more_hint", "(More data not shown)")
+            hint_text = _t(lang, "more_hint", "(More items not shown)")
             ax.text(
                 0.5,
                 bot_y1 + 0.004,
