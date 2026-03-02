@@ -23,7 +23,6 @@ UPLOAD_PAYLOAD_TO_DRIVE = True
 
 import argparse
 import os
-import re
 
 from scripts.shorts.paths import (
     images_dir,
@@ -44,6 +43,20 @@ from scripts.shorts.steps import (
     summary_print,
     tree,
 )
+
+# =============================================================================
+# ✅ Market folder alias for rendered artifacts (images/videos)
+# - main.py / market runner uses "india"
+# - renderer folder uses "in" (render_images_in)
+# So we keep "market_lower" for pipeline logic,
+# but use "images_market_lower" for path building.
+# =============================================================================
+def _images_market_dir_name(market_lower: str) -> str:
+    m = (market_lower or "").strip().lower()
+    alias = {
+        "india": "in",
+    }
+    return alias.get(m, m)
 
 
 def main() -> int:
@@ -109,12 +122,15 @@ def main() -> int:
     market_lower, market_upper = normalize_market(args.market)
 
     # -------------------------------------------------------------------------
-    # ✅ Safety alias (just in case): if something still returns "in", force india
-    # (steps.normalize_market should already map in->india)
+    # ✅ Keep pipeline logic market in canonical form.
+    # normalize_market should map in->india, but keep safety.
     # -------------------------------------------------------------------------
     if market_lower == "in":
         market_lower = "india"
         market_upper = "INDIA"
+
+    # ✅ Use a separate folder name for rendered artifacts
+    images_market_lower = _images_market_dir_name(market_lower)
 
     slot = str(args.slot).strip().lower() or "midday"
 
@@ -169,16 +185,20 @@ def main() -> int:
         requested_ymd=ymd,
         images_ymd_arg=str(args.images_ymd),
         repo_root=REPO_ROOT,
-        market_lower=market_lower,
+        market_lower=market_lower,  # keep canonical for payload mapping logic
         slot=slot,
         payload_path=payload,
     )
-    images_dir_path = images_dir(REPO_ROOT, market_lower, images_ymd, slot)
+
+    # ✅ IMPORTANT: artifact paths use images_market_lower (india -> in)
+    images_dir_path = images_dir(REPO_ROOT, images_market_lower, images_ymd, slot)
     print(f"[images] ymd source={args.images_ymd} -> {images_ymd}", flush=True)
+    if images_market_lower != market_lower:
+        print(f"[images] market folder alias: {market_lower} -> {images_market_lower}", flush=True)
 
     if args.force and images_ymd != ymd:
-        safe_rm(images_dir(REPO_ROOT, market_lower, images_ymd, slot))
-        safe_rm(video_out(REPO_ROOT, market_lower, images_ymd, slot))
+        safe_rm(images_dir(REPO_ROOT, images_market_lower, images_ymd, slot))
+        safe_rm(video_out(REPO_ROOT, images_market_lower, images_ymd, slot))
 
     # 3) render_images
     if not args.skip_images:
@@ -200,6 +220,8 @@ def main() -> int:
             cmd += ["--layout", str(args.layout)]
         run_cmd(cmd, cwd=REPO_ROOT)
 
+        # post-align may move images dir; keep market_lower for decision logic,
+        # but pass the current images_dir_path we built from images_market_lower.
         images_dir_path, images_ymd = post_align_images_dir(
             repo_root=REPO_ROOT,
             images_dir_path=images_dir_path,
@@ -214,7 +236,7 @@ def main() -> int:
     if not images_dir_path.exists():
         if debug_tree:
             tree(
-                REPO_ROOT / "media" / "images" / market_lower,
+                REPO_ROOT / "media" / "images" / images_market_lower,
                 enabled=True,
                 max_depth=int(args.debug_tree_depth),
                 max_items=int(args.debug_tree_max),
@@ -222,7 +244,7 @@ def main() -> int:
         raise FileNotFoundError(f"images_dir not found: {images_dir_path}")
 
     # 4) render_video
-    out_mp4 = video_out(REPO_ROOT, market_lower, ymd, slot)
+    out_mp4 = video_out(REPO_ROOT, images_market_lower, ymd, slot)
 
     if not args.skip_video:
         build_video_from_images = import_build_video()
