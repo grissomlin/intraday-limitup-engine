@@ -1,12 +1,10 @@
-name: Run Shorts (AU @ 08:30/10:00 TW, public)
+name: Run Shorts (AU @ 09:30 TW, public)
 
 on:
   schedule:
     # GitHub Actions cron uses UTC.
-    # 08:30 Asia/Taipei (UTC+8) => 00:30 UTC
-    - cron: "30 0 * * 1-5"
-    # 10:00 Asia/Taipei (UTC+8) => 02:00 UTC
-    - cron: "0 2 * * 1-5"
+    # 09:30 Asia/Taipei (UTC+8) => 01:30 UTC
+    - cron: "30 1 * * 1-5"
 
   workflow_dispatch:
     inputs:
@@ -61,23 +59,20 @@ jobs:
 
           now_utc = datetime.now(timezone.utc)
 
-          # ✅ lag-proof gating
+          # ✅ lag-proof gating (single schedule)
           should_run = False
           if event == "workflow_dispatch":
               should_run = True
           else:
               # Prefer cron-string match (most reliable).
-              if cron in ("30 0 * * 1-5", "0 2 * * 1-5"):
+              if cron == "30 1 * * 1-5":
                   should_run = True
               else:
-                  # Fallback windows (narrow, avoid accidental runs):
-                  # - 00:30 UTC target => allow 00:00~01:20 UTC
-                  # - 02:00 UTC target => allow 01:40~03:20 UTC
+                  # Fallback window for runner lag:
+                  # target 01:30 UTC => allow 01:00~02:20 UTC
                   h = now_utc.hour
                   m = now_utc.minute
-                  if (h == 0) or (h == 1 and m <= 20):
-                      should_run = True
-                  elif (h == 1 and m >= 40) or (h == 2) or (h == 3 and m <= 20):
+                  if (h == 1) or (h == 2 and m <= 20):
                       should_run = True
                   else:
                       should_run = False
@@ -138,14 +133,13 @@ jobs:
         run: |
           echo "event=${{ github.event_name }}"
           echo "schedule=${{ github.event.schedule }}"
-          echo "AU target cron(s): 00:30 UTC (08:30 TW) / 02:00 UTC (10:00 TW)"
+          echo "AU target cron: 01:30 UTC (09:30 TW)"
           echo "slot=${{ needs.plan.outputs.slot }}"
           echo "images_ymd=${{ needs.plan.outputs.images_ymd }}"
           echo "now_utc=$(date -u '+%F %T %Z')"
           TZ=Asia/Taipei date '+now_tw=%F %T %Z' || true
           echo "MPLCONFIGDIR=${MPLCONFIGDIR}"
 
-      # (Optional but useful) safe debug: confirms Drive envs exist (does not print secrets)
       - name: Debug Drive env presence (safe)
         shell: bash
         run: |
