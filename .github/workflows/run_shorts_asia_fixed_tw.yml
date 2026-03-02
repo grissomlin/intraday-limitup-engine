@@ -62,7 +62,7 @@ jobs:
 
       - id: plan
         shell: bash
-        # ✅ CRITICAL: explicitly map workflow_dispatch inputs into env for python
+        # ✅ explicitly map workflow_dispatch inputs into env for python
         env:
           INPUT_SLOT: ${{ inputs.slot }}
           INPUT_IMAGES_YMD: ${{ inputs.images_ymd }}
@@ -165,10 +165,17 @@ jobs:
       MPLBACKEND: Agg
       MPLCONFIGDIR: $RUNNER_TEMP/mpl-${{ matrix.market }}
 
-      # Google Drive
+      # Google Drive (root folder for shorts outputs)
       GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
       GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
       GDRIVE_CLIENT_SECRET_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_B64 }}
+
+      # ✅ NEW: folder where NSE_Stock_Master_Data.csv is stored
+      IN_STOCKLIST: ${{ secrets.IN_STOCKLIST }}
+      GDRIVE_FOLDER_ID: ${{ secrets.IN_STOCKLIST }}     # ✅ force india_list.py to search here
+      NSE_OUTPUT_NAME: NSE_Stock_Master_Data.csv         # ✅ exact filename in Drive
+
+      # (optional) keep for backward-compat if other scripts read these
       GDRIVE_TOKEN_JSON_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
       GDRIVE_CLIENT_SECRET_JSON_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_B64 }}
 
