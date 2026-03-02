@@ -46,8 +46,17 @@ def _parse_bool_env(name: str, default: bool) -> bool:
     return v in ("1", "true", "yes", "y", "on")
 
 
+def _get_first_env(*names: str) -> str:
+    """Return first non-empty env value from names (strip)."""
+    for n in names:
+        v = (os.getenv(n) or "").strip()
+        if v:
+            return v
+    return ""
+
+
 def _get_drive_service_from_token_b64(token_b64: str):
-    # Local import to avoid heavy deps unless needed
+    # local import to avoid heavy deps unless needed
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
@@ -81,34 +90,41 @@ def _find_file_id_in_folder(service, folder_id: str, file_name: str) -> Optional
 
 
 def _download_drive_file(service, file_id: str, out_path: Path) -> None:
-    # Local import to avoid heavy deps unless needed
     from googleapiclient.http import MediaIoBaseDownload
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
-    fh = io.FileIO(out_path, "wb")
-    downloader = MediaIoBaseDownload(fh, request)
-
-    done = False
-    while not done:
-        _status, done = downloader.next_chunk()
+    with io.FileIO(out_path, "wb") as fh:
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _status, done = downloader.next_chunk()
 
 
 def _maybe_fetch_master_csv_from_drive(path: str) -> bool:
     """
     Try download NSE_Stock_Master_Data.csv from Google Drive if:
     - INDIA_MASTER_CSV_AUTO_FETCH=1 (default: True)
-    - GDRIVE_TOKEN_B64 exists
-    - GDRIVE_FOLDER_ID or IN_STOCKLIST exists (folder where the CSV is stored)
+    - token exists (GDRIVE_TOKEN_B64 / GDRIVE_TOKEN_JSON_B64 / GDRIVE_TOKEN)
+    - folder id exists (GDRIVE_FOLDER_ID / IN_STOCKLIST / GDRIVE_ROOT_FOLDER_ID / GDRIVE_PARENT_ID)
     Return True if downloaded, else False.
     """
     if not _parse_bool_env("INDIA_MASTER_CSV_AUTO_FETCH", True):
         return False
 
-    token_b64 = (os.getenv("GDRIVE_TOKEN_B64") or "").strip()
-    folder_id = (os.getenv("GDRIVE_FOLDER_ID") or os.getenv("IN_STOCKLIST") or "").strip()
+    # token candidates (you currently have GDRIVE_TOKEN_B64)
+    token_b64 = _get_first_env("GDRIVE_TOKEN_B64", "GDRIVE_TOKEN_JSON_B64", "GDRIVE_TOKEN")
+    # folder id candidates (you currently often only have GDRIVE_ROOT_FOLDER_ID)
+    folder_id = _get_first_env("GDRIVE_FOLDER_ID", "IN_STOCKLIST", "GDRIVE_ROOT_FOLDER_ID", "GDRIVE_PARENT_ID")
+
     if not token_b64 or not folder_id:
+        miss = []
+        if not token_b64:
+            miss.append("token(GDRIVE_TOKEN_B64/GDRIVE_TOKEN_JSON_B64/GDRIVE_TOKEN)")
+        if not folder_id:
+            miss.append("folder(GDRIVE_FOLDER_ID/IN_STOCKLIST/GDRIVE_ROOT_FOLDER_ID/GDRIVE_PARENT_ID)")
+        log(f"⚠️ Drive fetch skipped: missing {', '.join(miss)}")
         return False
 
     file_name = (os.getenv("NSE_OUTPUT_NAME") or "NSE_Stock_Master_Data.csv").strip() or "NSE_Stock_Master_Data.csv"
@@ -132,7 +148,6 @@ def _maybe_fetch_master_csv_from_drive(path: str) -> bool:
 
 def _load_master_csv(path: str) -> pd.DataFrame:
     if not path or not os.path.exists(path):
-        # try auto-fetch
         _maybe_fetch_master_csv_from_drive(path)
 
     if not path or not os.path.exists(path):
