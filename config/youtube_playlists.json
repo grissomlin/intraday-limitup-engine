@@ -1,38 +1,42 @@
 {
   "TW": {
-    "name": "TW｜台股異動 Shorts",
+    "name": "TW｜台股漲停與 10%+ 異動結構 Shorts",
     "playlist_id": "PLJ_3D3qUemyQRmiDYb5NV0BuWXanNZ-wX"
   },
   "CN": {
-    "name": "CN｜A股异动 Shorts",
+    "name": "CN｜沪深A股10%+异动结构 Shorts",
     "playlist_id": "PLJ_3D3qUemyRZoUR0DNzN-PqeYc01LXUK"
   },
   "US": {
-    "name": "US｜U.S. Market Movers Shorts",
+    "name": "Daily U.S. Market Movers (NASDAQ & NYSE) | 10%+ Big Moves | Data-Driven Shorts",
     "playlist_id": "PLJ_3D3qUemyRDyy1Nb1Ot6ZryR2yIeFKE"
   },
   "CA": {
-    "name": "CA｜Canada Market Movers Shorts",
+    "name": "CA｜TSX 10%+ Market Movers Shorts",
     "playlist_id": "PLJ_3D3qUemySg4GDUNrK-w-9W0zgDm9e1"
   },
   "UK": {
-    "name": "UK｜UK Market Movers Shorts",
+    "name": "UK Market Movers (LSE) | Daily 10%+ Big Moves Shorts",
     "playlist_id": "PLJ_3D3qUemyQc78Cub0ZKzbQ3KglZ4FLD"
   },
   "AU": {
-    "name": "AU｜Australia Market Movers Shorts",
+    "name": "AU｜ASX 10%+ Market Movers Shorts",
     "playlist_id": "PLJ_3D3qUemyQ6i4F7VurHt8mSA9tX4bQF"
   },
   "JP": {
-    "name": "JP｜日本市場異動 Shorts",
+    "name": "JP｜東京証券取引所 10%超 上昇銘柄 Shorts",
     "playlist_id": "PLJ_3D3qUemyRRsaisPmYCRotphyxNrB6S"
   },
   "KR": {
-    "name": "KR｜한국 주식시장 급등락 Shorts",
+    "name": "KR｜KOSPI·KOSDAQ 10%+ 급등 Shorts",
     "playlist_id": "PLJ_3D3qUemyQJOz9su543uWRzJrrmoASZ"
   },
   "TH": {
-    "name": "TH｜ตลาดหุ้นไทย ความเคลื่อนไหว Shorts",
+    "name": "TH｜SET Market Movers 10%+ | ตลาดหุ้นไทย Big Moves Shorts",
     "playlist_id": "PLJ_3D3qUemyScKdKdOvbkij502ED9BfKN"
+  },
+  "INDIA": {
+    "name": "Daily India (NSE Only) Market Movers | 10%+ Big Moves | Data-Driven Shorts",
+    "playlist_id": "PLJ_3D3qUemySpdPWn9XQmKkE_RyuhzG5L"
   }
 }
