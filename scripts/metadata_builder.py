@@ -25,11 +25,25 @@ def _safe_desc(s: str, *, limit: int = 4900) -> str:
     return s
 
 
+def _norm_market(market: str) -> str:
+    """
+    Normalize market code (aliases -> canonical).
+
+    Canonical keys used across:
+      - metadata_builder market field
+      - youtube_playlists.json keys
+      - latest_meta.json market field
+    """
+    m = (market or "").upper().strip()
+    alias = {
+        "IN": "INDIA",       # ✅ alias
+        "IND": "INDIA",      # optional
+    }
+    return alias.get(m, m)
+
+
 # =============================================================================
-# Description templates (short, safe chars, with precaution note)
-# - Avoid emojis / fancy quotes / unusual symbols to reduce invalidDescription risk.
-# - Use ASCII-only separators and plain quotes.
-# - Keep it short and consistent across markets.
+# Description templates
 # =============================================================================
 def _desc_th() -> str:
     return _safe_desc(
@@ -150,6 +164,26 @@ def _desc_en_ca(region_name: str) -> str:
     )
 
 
+def _desc_en_india() -> str:
+    """
+    India-specific note:
+    NSE symbols often use .NS suffix in data sources; corporate actions and mapping can affect outliers.
+    """
+    return _safe_desc(
+        "Highlights large movers in the India (NSE) market, grouped by sector.\n"
+        "\n"
+        "--- Note ---\n"
+        "This is an experiment: auto-generate Shorts from market-mover data.\n"
+        "\n"
+        "--- Disclaimer ---\n"
+        "For data organization only. NOT investment advice.\n"
+        "Real-time calculations may be delayed or inaccurate. Please verify with official exchange sources.\n"
+        "\n"
+        "--- Data Quality ---\n"
+        "Outliers (e.g. extreme % moves) can occur due to data glitches, corporate actions (splits), low-liquidity prints, or symbol mapping.\n"
+    )
+
+
 # =============================================================================
 # Public API
 # =============================================================================
@@ -158,7 +192,8 @@ def build_metadata(market: str, ymd: str, slot: str) -> Dict[str, Any]:
     Centralized YouTube metadata builder.
     Keep descriptions short, safe, and under 5000 chars.
     """
-    m = (market or "").upper().strip()
+    m_in = (market or "").upper().strip()
+    m = _norm_market(m_in)
     slot = (slot or "midday").strip()
 
     if m == "TW":
@@ -186,6 +221,11 @@ def build_metadata(market: str, ymd: str, slot: str) -> Dict[str, Any]:
         desc = _desc_th()
         tags = ["TH", "หุ้นไทย", "Shorts"]
 
+    elif m == "INDIA":
+        title = f"INDIA｜NSE Market Movers｜{ymd} {slot}"
+        desc = _desc_en_india()
+        tags = ["INDIA", "NSE", "MarketMovers", "Shorts"]
+
     elif m in ("US", "CA", "UK", "AU"):
         name_map = {
             "US": "U.S.",
@@ -210,7 +250,7 @@ def build_metadata(market: str, ymd: str, slot: str) -> Dict[str, Any]:
     tags = [clean_tag(t) for t in tags if clean_tag(t)]
 
     return {
-        "market": m,
+        "market": m,  # ✅ canonical (IN -> INDIA)
         "title": title,
         "description": desc,
         "tags": tags,
