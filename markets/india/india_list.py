@@ -46,13 +46,16 @@ def _parse_bool_env(name: str, default: bool) -> bool:
     return v in ("1", "true", "yes", "y", "on")
 
 
-def _get_first_env(*names: str) -> str:
-    """Return first non-empty env value from names (strip)."""
+def _get_first_env(*names: str) -> Tuple[str, str]:
+    """
+    Return (value, name) for the first non-empty env among names.
+    If all empty, return ("", "").
+    """
     for n in names:
         v = (os.getenv(n) or "").strip()
         if v:
-            return v
-    return ""
+            return v, n
+    return "", ""
 
 
 def _get_drive_service_from_token_b64(token_b64: str):
@@ -64,6 +67,7 @@ def _get_drive_service_from_token_b64(token_b64: str):
     decoded = base64.b64decode(token_b64).decode("utf-8")
     token_info = json.loads(decoded)
 
+    # NOTE: token_info must be "authorized_user_info" style
     creds = Credentials.from_authorized_user_info(token_info)
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
@@ -93,8 +97,8 @@ def _download_drive_file(service, file_id: str, out_path: Path) -> None:
     from googleapiclient.http import MediaIoBaseDownload
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-
     request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+
     with io.FileIO(out_path, "wb") as fh:
         downloader = MediaIoBaseDownload(fh, request)
         done = False
@@ -102,21 +106,20 @@ def _download_drive_file(service, file_id: str, out_path: Path) -> None:
             _status, done = downloader.next_chunk()
 
 
-def _maybe_fetch_master_csv_from_drive(path: str) -> bool:
+def _maybe_fetch_master_csv_from_drive(local_path: str) -> bool:
     """
-    Try download NSE_Stock_Master_Data.csv from Google Drive if:
-    - INDIA_MASTER_CSV_AUTO_FETCH=1 (default: True)
-    - token exists (GDRIVE_TOKEN_B64 / GDRIVE_TOKEN_JSON_B64 / GDRIVE_TOKEN)
-    - folder id exists (GDRIVE_FOLDER_ID / IN_STOCKLIST / GDRIVE_ROOT_FOLDER_ID / GDRIVE_PARENT_ID)
-    Return True if downloaded, else False.
+    Download master CSV from Drive if missing.
+
+    Env it will try:
+      token:  GDRIVE_TOKEN_B64 / GDRIVE_TOKEN_JSON_B64 / GDRIVE_TOKEN
+      folder: GDRIVE_FOLDER_ID / IN_STOCKLIST / GDRIVE_ROOT_FOLDER_ID / GDRIVE_PARENT_ID
+      drive filename: NSE_OUTPUT_NAME / INDIA_MASTER_CSV_DRIVE_NAME / (default: NSE_Stock_Master_Data.csv)
     """
     if not _parse_bool_env("INDIA_MASTER_CSV_AUTO_FETCH", True):
         return False
 
-    # token candidates (you currently have GDRIVE_TOKEN_B64)
-    token_b64 = _get_first_env("GDRIVE_TOKEN_B64", "GDRIVE_TOKEN_JSON_B64", "GDRIVE_TOKEN")
-    # folder id candidates (you currently often only have GDRIVE_ROOT_FOLDER_ID)
-    folder_id = _get_first_env("GDRIVE_FOLDER_ID", "IN_STOCKLIST", "GDRIVE_ROOT_FOLDER_ID", "GDRIVE_PARENT_ID")
+    token_b64, token_key = _get_first_env("GDRIVE_TOKEN_B64", "GDRIVE_TOKEN_JSON_B64", "GDRIVE_TOKEN")
+    folder_id, folder_key = _get_first_env("GDRIVE_FOLDER_ID", "IN_STOCKLIST", "GDRIVE_ROOT_FOLDER_ID", "GDRIVE_PARENT_ID")
 
     if not token_b64 or not folder_id:
         miss = []
@@ -127,19 +130,23 @@ def _maybe_fetch_master_csv_from_drive(path: str) -> bool:
         log(f"⚠️ Drive fetch skipped: missing {', '.join(miss)}")
         return False
 
-    file_name = (os.getenv("NSE_OUTPUT_NAME") or "NSE_Stock_Master_Data.csv").strip() or "NSE_Stock_Master_Data.csv"
+    # Drive 上檔名：允許你另外指定（避免你之後改名）
+    drive_name = (os.getenv("INDIA_MASTER_CSV_DRIVE_NAME") or os.getenv("NSE_OUTPUT_NAME") or "NSE_Stock_Master_Data.csv").strip()
+    if not drive_name:
+        drive_name = "NSE_Stock_Master_Data.csv"
 
     try:
-        log(f"☁️ master CSV missing; try fetch from Drive | folder={folder_id} name={file_name}")
+        log(f"☁️ master CSV missing; try fetch from Drive | folder={folder_id}({folder_key}) name={drive_name} | token={token_key}")
         svc = _get_drive_service_from_token_b64(token_b64)
-        file_id = _find_file_id_in_folder(svc, folder_id, file_name)
+
+        file_id = _find_file_id_in_folder(svc, folder_id, drive_name)
         if not file_id:
-            log(f"⚠️ Drive fetch skipped: file not found | folder={folder_id} name={file_name}")
+            log(f"⚠️ Drive fetch skipped: file not found | folder={folder_id}({folder_key}) name={drive_name}")
             return False
 
-        out_path = Path(path)
+        out_path = Path(local_path)
         _download_drive_file(svc, file_id, out_path)
-        log(f"✅ Drive fetched: {file_name} (fileId={file_id}) -> {out_path}")
+        log(f"✅ Drive fetched: {drive_name} (fileId={file_id}) -> {out_path}")
         return True
     except Exception as e:
         log(f"⚠️ Drive fetch failed: {e}")
@@ -163,9 +170,6 @@ def get_india_stock_list(db_path: str) -> List[Tuple[str, str, str, str, str, st
     """
     Returns list of tuples:
       (yf_symbol, local_symbol, name, industry, sector, market_detail)
-
-    market_detail example:
-      "NSE|band=20|remarks=-|src=master_csv"
     """
     path = _master_csv_path()
     log(f"📡 同步印度 NSE 名單 (master_csv) path={path}")
