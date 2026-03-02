@@ -8,6 +8,7 @@ INDIA pipeline (rolling window, DB-based snapshot builder)
 """
 from __future__ import annotations
 
+import importlib
 import sqlite3
 import time
 from datetime import datetime, timedelta
@@ -35,9 +36,41 @@ from .india_config import (
     log,
 )
 from .india_db import init_db
-from .india_download import bulk_insert_errors, download_batch, download_one_india, insert_prices
 from .india_list import get_india_stock_list, get_india_stock_list_from_db
 from .india_snapshot import run_intraday
+
+
+# =============================================================================
+# Optional import shim: india_download vs in_download vs download
+# =============================================================================
+def _load_india_download_impl():
+    """
+    downloader.py historically expects ".india_download".
+    If your repo uses a different filename (e.g. in_download.py or download.py),
+    we fallback automatically to keep this file stable.
+    """
+    candidates = [
+        "markets.india.india_download",  # markets/india/india_download.py
+        "markets.india.in_download",     # markets/india/in_download.py
+        "markets.india.download",        # markets/india/download.py
+    ]
+    last_err: Exception | None = None
+    for name in candidates:
+        try:
+            return importlib.import_module(name)
+        except Exception as e:
+            last_err = e
+    raise ModuleNotFoundError(
+        "Cannot import INDIA download implementation. "
+        f"Tried {candidates}. Last error: {last_err}"
+    )
+
+
+_mod_dl = _load_india_download_impl()
+bulk_insert_errors = getattr(_mod_dl, "bulk_insert_errors")
+download_batch = getattr(_mod_dl, "download_batch")
+download_one_india = getattr(_mod_dl, "download_one_india")
+insert_prices = getattr(_mod_dl, "insert_prices")
 
 
 def run_sync(
@@ -69,7 +102,10 @@ def run_sync(
         end_date = str(cal["end_ymd"])
         end_excl_date = str(cal["end_excl_ymd"])
         window_mode = "trading_days"
-        log(f"📅 Trading-day window OK (cached) | last {n_days} trading days | {start_date} ~ {end_date} (end_excl={end_excl_date})")
+        log(
+            f"📅 Trading-day window OK (cached) | last {n_days} trading days | "
+            f"{start_date} ~ {end_date} (end_excl={end_excl_date})"
+        )
     else:
         if not start_date:
             start_date = (datetime.now() - timedelta(days=_fallback_rolling_cal_days())).strftime("%Y-%m-%d")
