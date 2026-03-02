@@ -2,14 +2,13 @@ name: Run Shorts (Asia fixed TW time, schedule=public + manual)
 
 on:
   schedule:
-    # GitHub Actions cron uses UTC.
     # JP/KR @ 10:00 TW => 02:00 UTC
     - cron: "0 2 * * 1-5"
 
     # CN @ 10:30 TW => 02:30 UTC
     - cron: "30 2 * * 1-5"
 
-    # TH + IN @ 13:00 TW => 05:00 UTC  ✅ India rides with TH
+    # TH + IN @ 13:00 TW => 05:00 UTC
     - cron: "0 5 * * 1-5"
 
   workflow_dispatch:
@@ -34,37 +33,11 @@ on:
         type: choice
         options: [private, public, unlisted]
 
-      markets_all:
-        description: "Run ALL markets (jp, kr, cn, th, in)"
-        required: false
-        type: boolean
-        default: false   # ✅ IMPORTANT: default false (avoid accidental all-run)
-
-      market_jp:
-        description: "JP"
-        required: false
-        type: boolean
-        default: false
-      market_kr:
-        description: "KR"
-        required: false
-        type: boolean
-        default: false
-      market_cn:
-        description: "CN"
-        required: false
-        type: boolean
-        default: false
-      market_th:
-        description: "TH"
-        required: false
-        type: boolean
-        default: false
-      market_in:
-        description: "IN (India)"
-        required: false
-        type: boolean
-        default: false
+      markets:
+        description: "Manual markets: all | jp,kr,cn,th,in (comma-separated)"
+        required: true
+        default: "in"
+        type: string
 
 concurrency:
   group: run_shorts_asia_fixed_${{ github.ref }}
@@ -73,8 +46,6 @@ concurrency:
 jobs:
   plan:
     runs-on: ubuntu-latest
-
-    # ✅ Let python know which cron fired (stable even if runner starts late)
     env:
       SCHEDULE_CRON: ${{ github.event.schedule }}
 
@@ -86,8 +57,7 @@ jobs:
       privacy: ${{ steps.plan.outputs.privacy }}
 
     steps:
-      - name: Setup Python (for plan)
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -102,28 +72,13 @@ jobs:
           event = (os.getenv("GITHUB_EVENT_NAME","") or "").strip()
           cron  = (os.getenv("SCHEDULE_CRON","") or "").strip()
 
-          # workflow_dispatch inputs come as env: INPUT_<NAME> (upper)
-          in_slot       = (os.getenv("INPUT_SLOT","") or "").strip().lower()
+          in_slot        = (os.getenv("INPUT_SLOT","") or "").strip().lower()
           in_images_ymd  = (os.getenv("INPUT_IMAGES_YMD","") or "").strip()
           in_privacy     = (os.getenv("INPUT_PRIVACY","") or "").strip().lower()
+          in_markets     = (os.getenv("INPUT_MARKETS","") or "").strip().lower()
 
-          def _b(name: str, default: bool=False) -> bool:
-              v = (os.getenv(name,"") or "").strip().lower()
-              if v in ("1","true","yes","y","on"): return True
-              if v in ("0","false","no","n","off",""): return default
-              return default
-
-          # ✅ IMPORTANT: default False to avoid empty-string => True accidents
-          in_all = _b("INPUT_MARKETS_ALL", default=False)
-          b_jp   = _b("INPUT_MARKET_JP", default=False)
-          b_kr   = _b("INPUT_MARKET_KR", default=False)
-          b_cn   = _b("INPUT_MARKET_CN", default=False)
-          b_th   = _b("INPUT_MARKET_TH", default=False)
-          b_in   = _b("INPUT_MARKET_IN", default=False)
-
-          # defaults
           slot       = in_slot if (event=="workflow_dispatch" and in_slot) else "midday"
-          images_ymd  = in_images_ymd if (event=="workflow_dispatch" and in_images_ymd) else "latest"
+          images_ymd = in_images_ymd if (event=="workflow_dispatch" and in_images_ymd) else "latest"
 
           privacy_allowed = {"private","public","unlisted"}
           privacy = in_privacy if (event=="workflow_dispatch" and in_privacy) else "private"
@@ -136,58 +91,40 @@ jobs:
           chosen = []
 
           if event == "workflow_dispatch":
-              # ✅ manual: if ANY individual market is selected, ignore markets_all
-              any_selected = any([b_jp, b_kr, b_cn, b_th, b_in])
-
-              if any_selected:
-                  if b_jp: chosen.append("jp")
-                  if b_kr: chosen.append("kr")
-                  if b_cn: chosen.append("cn")
-                  if b_th: chosen.append("th")
-                  if b_in: chosen.append("in")
+              # manual mode
+              if in_markets in ("all", "*"):
+                  chosen = ALL[:]
               else:
-                  # nothing individually selected
-                  if in_all:
-                      chosen = ALL[:]
-                  else:
-                      chosen = []
+                  parts = [p.strip() for p in in_markets.split(",") if p.strip()]
+                  chosen = [p for p in parts if p in ALL]
 
           else:
-              # ✅ schedule: map by cron expression (immune to GitHub lag)
+              # schedule mode
               mapping = {
                   "0 2 * * 1-5":  ["jp","kr"],
                   "30 2 * * 1-5": ["cn"],
-                  "0 5 * * 1-5":  ["th","in"],  # ✅ TH + IN at 13:00 TW
+                  "0 5 * * 1-5":  ["th","in"],
               }
               chosen = mapping.get(cron, [])
 
-              # ✅ fallback windows (rare): allow runner start delay without mixing
               if not chosen:
                   h = now_utc.hour
                   m = now_utc.minute
 
-                  # JP/KR window around 02:00 UTC (allow some delay)
                   if h == 2 and m < 20:
                       chosen = ["jp","kr"]
-
-                  # CN window around 02:30 UTC (allow some delay)
                   elif h == 2 and 20 <= m <= 55:
                       chosen = ["cn"]
-
-                  # TH/IN window around 05:00 UTC
                   elif h == 5:
                       chosen = ["th","in"]
                   else:
                       chosen = []
 
-              # ✅ IMPORTANT: schedule ALWAYS public
               privacy = "public"
 
-          # de-dup keep order
           seen=set()
           chosen=[x for x in chosen if (x not in seen and not seen.add(x))]
 
-          # ✅ FIX: matrix_json should be {"include":[...]} (NOT {"include":...} inside "matrix")
           matrix = {"include": [{"market": x} for x in chosen]}
           should_run = "true" if chosen else "false"
 
@@ -202,13 +139,7 @@ jobs:
           print("[PLAN]")
           print("  event      =", event)
           print("  schedule   =", cron)
-          print("  now_utc    =", now_utc.isoformat(timespec="seconds"))
-          print("  in_all     =", in_all)
-          print("  flags      =", {"jp": b_jp, "kr": b_kr, "cn": b_cn, "th": b_th, "in": b_in})
           print("  chosen     =", chosen)
-          print("  should_run =", should_run)
-          print("  slot       =", slot)
-          print("  images_ymd =", images_ymd)
           print("  privacy    =", privacy)
           print("  matrix     =", json.dumps(matrix))
           PY
@@ -221,7 +152,6 @@ jobs:
 
     strategy:
       fail-fast: false
-      # ✅ FIX: GitHub expects matrix.include list
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix_json).include }}
 
@@ -229,79 +159,26 @@ jobs:
       MPLBACKEND: Agg
       MPLCONFIGDIR: $RUNNER_TEMP/mpl-${{ matrix.market }}
 
-      RUN_SHORTS_DEBUG_TREE: "1"
-      OVERVIEW_DEBUG_FONTS: "1"
-      OVERVIEW_DEBUG_FOOTER: "1"
-
-      # Google Drive
       GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
-
-      # Keep existing names (your repo uses these somewhere)
       GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
       GDRIVE_CLIENT_SECRET_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_B64 }}
-
-      # ✅ ADD ALIASES: drive_auth.py expects *_JSON_B64 in headless mode
       GDRIVE_TOKEN_JSON_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
       GDRIVE_CLIENT_SECRET_JSON_B64: ${{ secrets.GDRIVE_CLIENT_SECRET_B64 }}
 
-      GDRIVE_ALLOW_INTERACTIVE: "0"
-      GDRIVE_DEBUG: "1"
-
-      # YouTube
       YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
       YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Echo schedule info
-        shell: bash
-        run: |
-          echo "event=${{ github.event_name }}"
-          echo "schedule=${{ github.event.schedule }}"
-          echo "market=${{ matrix.market }}"
-          echo "slot=${{ needs.plan.outputs.slot }}"
-          echo "images_ymd=${{ needs.plan.outputs.images_ymd }}"
-          echo "privacy=${{ needs.plan.outputs.privacy }}"
-          echo "now_utc=$(date -u '+%F %T %Z')"
-          TZ=Asia/Taipei date '+now_tw=%F %T %Z' || true
-          echo "MPLCONFIGDIR=${MPLCONFIGDIR}"
-
-      - name: Debug Drive env presence (safe)
-        shell: bash
-        run: |
-          python - <<'PY'
-          import os
-          for k in ("GDRIVE_CLIENT_SECRET_JSON_B64","GDRIVE_TOKEN_JSON_B64","GDRIVE_CLIENT_SECRET_B64","GDRIVE_TOKEN_B64"):
-              v = (os.getenv(k) or "").strip()
-              print(f"{k}: present={bool(v)} len={len(v)}")
-          PY
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install system deps (FULL FONT STACK)
-        shell: bash
+      - name: Install deps
         run: |
-          set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fontconfig
-          sudo apt-get install -y fonts-dejavu-core fonts-dejavu-extra
-          sudo apt-get install -y fonts-noto-cjk fonts-noto-core || true
-          sudo apt-get install -y fonts-noto-color-emoji || true
-          sudo apt-get install -y fonts-noto-extra fonts-noto-ui-core fonts-noto-unhinted || true
-          sudo apt-get install -y fonts-noto-cjk-extra || true
-          sudo fc-cache -f -v
-          rm -rf ~/.cache/matplotlib ~/.config/matplotlib || true
-          rm -rf "${MPLCONFIGDIR}" || true
-          mkdir -p "${MPLCONFIGDIR}"
-
-      - name: Install python deps
-        shell: bash
-        run: |
-          set -euxo pipefail
+          sudo apt-get install -y ffmpeg fontconfig fonts-dejavu-core fonts-noto-cjk || true
           python -m pip install --upgrade pip
           if [ -f requirements-ci.txt ]; then
             pip install -r requirements-ci.txt
@@ -309,29 +186,8 @@ jobs:
             pip install -r requirements.txt
           fi
 
-      - name: Rebuild matplotlib font manager (verify)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          python - <<'PY'
-          import os, matplotlib
-          matplotlib.use("Agg")
-          from matplotlib import font_manager as fm
-          fm._load_fontmanager(try_read_cache=False)
-          print("MPLCONFIGDIR:", os.environ.get("MPLCONFIGDIR"))
-          print("Fonts:", len({f.name for f in fm.fontManager.ttflist}))
-          PY
-
-      - name: Ensure output directories
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p media/images media/videos outputs
-
       - name: Run shorts
-        shell: bash
         run: |
-          set -euxo pipefail
           python scripts/run_shorts.py \
             --market ${{ matrix.market }} \
             --slot "${{ needs.plan.outputs.slot }}" \
@@ -343,14 +199,3 @@ jobs:
             --drive-upload both \
             --drive-images-mode zip \
             --images-ymd "${{ needs.plan.outputs.images_ymd }}"
-
-      - name: Upload artifacts (always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: artifacts_${{ matrix.market }}_${{ github.run_id }}
-          path: |
-            outputs/**
-            media/videos/**
-            media/images/**/list_video.txt
-          if-no-files-found: ignore
