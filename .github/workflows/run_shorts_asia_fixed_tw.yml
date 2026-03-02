@@ -9,7 +9,7 @@ on:
     # CN @ 10:30 TW => 02:30 UTC
     - cron: "30 2 * * 1-5"
 
-    # TH + IN @ 13:00 TW => 05:00 UTC  ✅ add India here
+    # TH + IN @ 13:00 TW => 05:00 UTC  ✅ India rides with TH
     - cron: "0 5 * * 1-5"
 
   workflow_dispatch:
@@ -38,7 +38,7 @@ on:
         description: "Run ALL markets (jp, kr, cn, th, in)"
         required: false
         type: boolean
-        default: true
+        default: false   # ✅ IMPORTANT: default false (avoid accidental all-run)
 
       market_jp:
         description: "JP"
@@ -100,28 +100,29 @@ jobs:
           from datetime import datetime, timezone
 
           event = (os.getenv("GITHUB_EVENT_NAME","") or "").strip()
-          cron = (os.getenv("SCHEDULE_CRON","") or "").strip()
+          cron  = (os.getenv("SCHEDULE_CRON","") or "").strip()
 
           # workflow_dispatch inputs come as env: INPUT_<NAME> (upper)
-          in_slot = (os.getenv("INPUT_SLOT","") or "").strip().lower()
-          in_images_ymd = (os.getenv("INPUT_IMAGES_YMD","") or "").strip()
-          in_privacy = (os.getenv("INPUT_PRIVACY","") or "").strip().lower()
+          in_slot       = (os.getenv("INPUT_SLOT","") or "").strip().lower()
+          in_images_ymd  = (os.getenv("INPUT_IMAGES_YMD","") or "").strip()
+          in_privacy     = (os.getenv("INPUT_PRIVACY","") or "").strip().lower()
 
-          def _b(name: str, default=False) -> bool:
+          def _b(name: str, default: bool=False) -> bool:
               v = (os.getenv(name,"") or "").strip().lower()
               if v in ("1","true","yes","y","on"): return True
               if v in ("0","false","no","n","off",""): return default
               return default
 
-          in_all = _b("INPUT_MARKETS_ALL", default=True)
-          b_jp = _b("INPUT_MARKET_JP", default=False)
-          b_kr = _b("INPUT_MARKET_KR", default=False)
-          b_cn = _b("INPUT_MARKET_CN", default=False)
-          b_th = _b("INPUT_MARKET_TH", default=False)
-          b_in = _b("INPUT_MARKET_IN", default=False)
+          # ✅ IMPORTANT: default False to avoid empty-string => True accidents
+          in_all = _b("INPUT_MARKETS_ALL", default=False)
+          b_jp   = _b("INPUT_MARKET_JP", default=False)
+          b_kr   = _b("INPUT_MARKET_KR", default=False)
+          b_cn   = _b("INPUT_MARKET_CN", default=False)
+          b_th   = _b("INPUT_MARKET_TH", default=False)
+          b_in   = _b("INPUT_MARKET_IN", default=False)
 
           # defaults
-          slot = in_slot if (event=="workflow_dispatch" and in_slot) else "midday"
+          slot      = in_slot if (event=="workflow_dispatch" and in_slot) else "midday"
           images_ymd = in_images_ymd if (event=="workflow_dispatch" and in_images_ymd) else "latest"
 
           privacy_allowed = {"private","public","unlisted"}
@@ -135,25 +136,32 @@ jobs:
           chosen = []
 
           if event == "workflow_dispatch":
-              # ✅ manual: checkbox selection
-              if in_all:
-                  chosen = ALL[:]
-              else:
+              # ✅ manual: if ANY individual market is selected, ignore markets_all
+              any_selected = any([b_jp, b_kr, b_cn, b_th, b_in])
+
+              if any_selected:
                   if b_jp: chosen.append("jp")
                   if b_kr: chosen.append("kr")
                   if b_cn: chosen.append("cn")
                   if b_th: chosen.append("th")
                   if b_in: chosen.append("in")
+              else:
+                  # nothing individually selected
+                  if in_all:
+                      chosen = ALL[:]
+                  else:
+                      chosen = []
+
           else:
               # ✅ schedule: map by cron expression (immune to GitHub lag)
               mapping = {
-                  "0 2 * * 1-5": ["jp","kr"],
+                  "0 2 * * 1-5":  ["jp","kr"],
                   "30 2 * * 1-5": ["cn"],
-                  "0 5 * * 1-5": ["th","in"],  # ✅ TH + IN at 13:00 TW
+                  "0 5 * * 1-5":  ["th","in"],  # ✅ TH + IN at 13:00 TW
               }
               chosen = mapping.get(cron, [])
 
-              # ✅ fallback window (rare): allow runner start delay without mixing JP/KR and CN
+              # ✅ fallback windows (rare): allow runner start delay without mixing
               if not chosen:
                   h = now_utc.hour
                   m = now_utc.minute
@@ -163,7 +171,7 @@ jobs:
                       chosen = ["jp","kr"]
 
                   # CN window around 02:30 UTC (allow some delay)
-                  elif h == 2 and m >= 20 and m <= 55:
+                  elif h == 2 and 20 <= m <= 55:
                       chosen = ["cn"]
 
                   # TH/IN window around 05:00 UTC
@@ -194,6 +202,8 @@ jobs:
           print("  event      =", event)
           print("  schedule   =", cron)
           print("  now_utc    =", now_utc.isoformat(timespec="seconds"))
+          print("  in_all     =", in_all)
+          print("  flags      =", {"jp": b_jp, "kr": b_kr, "cn": b_cn, "th": b_th, "in": b_in})
           print("  chosen     =", chosen)
           print("  should_run =", should_run)
           print("  slot       =", slot)
@@ -254,7 +264,6 @@ jobs:
           TZ=Asia/Taipei date '+now_tw=%F %T %Z' || true
           echo "MPLCONFIGDIR=${MPLCONFIGDIR}"
 
-      # (Optional) safe debug: confirms Drive envs exist (no secret content)
       - name: Debug Drive env presence (safe)
         shell: bash
         run: |
