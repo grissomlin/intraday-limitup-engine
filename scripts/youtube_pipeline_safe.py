@@ -265,7 +265,7 @@ def load_playlist_id(market: str, playlist_map_path: str) -> str:
 # ===============================
 
 def main():
-    ap = argparse.ArgumentParser(description="YouTube pipeline (env-aware, safe args)")
+    ap = argparse.ArgumentParser(description="YouTube pipeline (env-aware, safe args)", allow_abbrev=False)
     ap.add_argument("--video", required=True)
     ap.add_argument("--token", default="secrets/youtube_token.upload.json")
 
@@ -327,7 +327,7 @@ def main():
         "--privacy", privacy,
     ])
 
-    video_id = extract_video_id(out)
+    video_id = extract_video_id(out).strip()
     print(f"\n[OK] video_id captured: {video_id}")
 
     for line in out.splitlines():
@@ -342,11 +342,12 @@ def main():
             # ✅ use canonical market key from metadata ("INDIA")
             playlist_id = load_playlist_id(str(meta.get("market") or "").strip(), playlist_map_path)
 
+        # ✅ CRITICAL: use --video-id=<id> to avoid argparse treating "-CS3..." as option
         run_capture([
             py,
             "scripts/youtube_add_to_playlist.py",
             "--token", token,
-            "--video-id", video_id,
+            f"--video-id={video_id}",
             "--playlist-id", playlist_id,
         ])
 
