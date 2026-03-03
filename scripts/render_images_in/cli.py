@@ -129,7 +129,7 @@ def _norm_sector_name(s: str) -> str:
 
 def chunk(lst: List[Any], n: int) -> List[List[Any]]:
     n = max(1, int(n))
-    return [lst[i : i + n] for i in range(0, len(lst), n)]
+    return [lst[i: i + n] for i in range(0, len(lst), n)]
 
 
 # =============================================================================
@@ -232,6 +232,28 @@ def _bombed_in(r: Dict[str, Any]) -> bool:
     return _touch_any_in(r) and (not _bool(r.get("is_limitup_locked", False)))
 
 
+def _get_prev_ret(r: Dict[str, Any]) -> Optional[float]:
+    """
+    Best-effort fetch previous session return.
+    Tries multiple common keys across pipelines.
+    Returns a float if found, else None.
+    """
+    for k in ("ret_prev", "ret_prev1", "prev_ret", "ret_1d", "ret_prev_session", "ret_prev_day"):
+        if k in r and r.get(k) is not None:
+            try:
+                return float(r.get(k))
+            except Exception:
+                continue
+    return None
+
+
+def _fmt_prev_line(prev_ret: Optional[float]) -> str:
+    if prev_ret is None:
+        return ""
+    pct = prev_ret * 100.0 if abs(prev_ret) < 1.5 else prev_ret
+    return f"Prev session {pct:+.2f}%"
+
+
 def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     out: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -255,7 +277,6 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
         if limit_rate is None:
             limit_rate = r.get("band_pct", None)
 
-        status = "hit"
         if big10:
             status = "big"
             line2 = "Big Move 10%+"
@@ -287,6 +308,10 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
 
 
 def build_peers_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    ✅ FIXED: fill peer line2 with previous-session return info,
+    so draw_mpl can render it on second line.
+    """
     out: Dict[str, List[Dict[str, Any]]] = {}
 
     for r in universe:
@@ -308,6 +333,9 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[D
         if limit_rate is None:
             limit_rate = r.get("band_pct", None)
 
+        prev_ret = _get_prev_ret(r)
+        line2 = _fmt_prev_line(prev_ret)
+
         out.setdefault(sector, []).append(
             {
                 "symbol": sym,
@@ -316,7 +344,7 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[D
                 "ret": ret,
                 "ret_pct": ret * 100.0,
                 "line1": f"{sym}  {name}",
-                "line2": "",
+                "line2": line2,          # ✅ now not blank
                 "limit_rate": limit_rate,
             }
         )
