@@ -204,20 +204,34 @@ def _bombed_in(r: Dict[str, Any]) -> bool:
     return _touch_any_in(r) and (not _bool(r.get("is_limitup_locked", False)))
 
 
+def _is_display_limitup_in(r: Dict[str, Any]) -> bool:
+    """
+    India mix definition:
+      display_limitup = (touch upper band) OR (ret >= 10%)
+    Prefer aggregator field if present.
+    """
+    if "is_display_limitup" in r:
+        return _bool(r.get("is_display_limitup", False))
+
+    # fallback: touch OR 10%+
+    ret = _pct(r.get("ret", 0.0))
+    return _touch_any_in(r) or (ret >= 0.10)
+
+
 def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     out: Dict[str, List[Dict[str, Any]]] = {}
 
     for r in universe:
+        if not _is_display_limitup_in(r):
+            continue
+
         is_locked = _bool(r.get("is_limitup_locked", False))
         touch_any = _touch_any_in(r)
         touch_only = _bombed_in(r)
         ret = _pct(r.get("ret", 0.0))
 
-        # NOTE: if you want ">=10%" purely by ret, you can switch to: (ret >= 0.10)
-        big10 = bool(_bool(r.get("is_surge_ge10", False)) and (not touch_any))
-
-        if not (is_locked or touch_only or big10):
-            continue
+        # mix-big bucket: >=10% but not touch
+        big10 = bool((ret >= 0.10) and (not touch_any))
 
         sector = _norm_sector_name(_safe_str(r.get("sector") or "Unclassified"))
         sym = _safe_str(r.get("symbol") or "")
@@ -233,9 +247,13 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
         elif touch_only:
             status = "touch"
             line2 = "Touched upper band (not locked)"
-        else:
+        elif is_locked or touch_any:
             status = "hit"
             line2 = "Locked at upper band"
+        else:
+            # safety fallback
+            status = "big"
+            line2 = "Big Move 10%+"
 
         out.setdefault(sector, []).append(
             {
@@ -278,14 +296,17 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[D
     out: Dict[str, List[Dict[str, Any]]] = {}
 
     for r in universe:
-        is_locked = _bool(r.get("is_limitup_locked", False))
-        touch_any = _touch_any_in(r)
-        touch_only = _bombed_in(r)
-        ret = _pct(r.get("ret", 0.0))
-        big10 = bool(_bool(r.get("is_surge_ge10", False)) and (not touch_any))
+        # peers must be NOT display_limitup
+        if _is_display_limitup_in(r):
+            continue
 
-        # peers: exclude locked/touch-only/big10 and exclude touch_any
-        if is_locked or touch_only or big10 or touch_any:
+        touch_any = _touch_any_in(r)
+        if touch_any:
+            continue
+
+        ret = _pct(r.get("ret", 0.0))
+        # extra safety: 10%+ must never appear in peers
+        if ret >= 0.10:
             continue
 
         sector = _norm_sector_name(_safe_str(r.get("sector") or "Unclassified"))
@@ -444,7 +465,7 @@ def main() -> int:
 
     print(f"[IN][DEBUG] sectors(limitup)={len(limitup)} sectors(peers)={len(peers)}")
 
-    # ✅ CRITICAL FIX: sectors should be union(limitup, peers)
+    # ✅ sectors should be union(limitup, peers)
     sectors_raw = sorted(set((limitup or {}).keys()) | set((peers or {}).keys()))
 
     if not sectors_raw:
@@ -483,7 +504,6 @@ def main() -> int:
             L_total = (limitup or {}).get(sector, []) or []
             P = (peers or {}).get(sector, []) or []
 
-            # ✅ if a sector only has peers (no limitup), still render at least 1 page
             max_limitup_show = CAP_PAGES * rows_top
             L_show = L_total[:max_limitup_show]
             L_pages = chunk(L_show, rows_top) if L_show else [[]]
