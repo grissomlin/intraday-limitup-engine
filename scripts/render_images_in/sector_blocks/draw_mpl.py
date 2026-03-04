@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
@@ -38,6 +38,7 @@ def setup_font() -> str | None:
         available = {f.name for f in fm.fontManager.ttflist}
         for f in font_candidates:
             if f in available:
+                plt.rcParams["font.family"] = "sans-serif"
                 plt.rcParams["font.sans-serif"] = [f]
                 plt.rcParams["axes.unicode_minus"] = False
                 return f
@@ -63,13 +64,6 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
         return default
 
 
-def _ellipsize(s: str, max_chars: int) -> str:
-    s = _safe_str(s)
-    if max_chars <= 0:
-        return ""
-    return s if len(s) <= max_chars else (s[: max_chars - 1] + "…")
-
-
 def _fmt_ret_pct(ret: float) -> str:
     r = _safe_float(ret, 0.0)
     pct = (r * 100.0) if abs(r) < 1.5 else r
@@ -80,6 +74,99 @@ def get_ret_color(ret: float, theme: str) -> str:
     if (theme or "dark").strip().lower() == "dark":
         return "#ff6b6b" if ret >= 0 else "#4dabf7"
     return "#d9480f" if ret >= 0 else "#1864ab"
+
+
+def _ellipsize_px(
+    ax,
+    fig,
+    s: str,
+    *,
+    x_left: float,
+    x_right: float,
+    y: float,
+    fontsize: int,
+    weight: str = "bold",
+) -> str:
+    """
+    Ellipsize by pixel width. Much more stable than char-count.
+    """
+    s = _safe_str(s)
+    if not s:
+        return ""
+    # available px from x_left..x_right at y
+    p0 = ax.transData.transform((x_left, y))
+    p1 = ax.transData.transform((x_right, y))
+    avail = max(1.0, p1[0] - p0[0])
+
+    if text_width_px(ax, fig, s, x=x_left, y=y, fontsize=fontsize, weight=weight) <= avail:
+        return s
+
+    ell = "…"
+    lo, hi = 0, len(s)
+    best = ell
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        cand0 = s[:mid].rstrip()
+        cand = (cand0 + ell) if cand0 else ell
+        w = text_width_px(ax, fig, cand, x=x_left, y=y, fontsize=fontsize, weight=weight)
+        if w <= avail:
+            best = cand
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def _count_status(rows: List[Dict[str, Any]]) -> Tuple[int, int, int]:
+    """
+    Return (hit, touch, big) based on limitup_status.
+    """
+    hit = touch = big = 0
+    for r in rows or []:
+        s = _safe_str(r.get("limitup_status")).lower()
+        if s == "big":
+            big += 1
+        elif s in ("touch", "bomb", "touched"):
+            touch += 1
+        elif s:
+            hit += 1
+    return hit, touch, big
+
+
+def _badge_for_top_row(r: Dict[str, Any], theme: str) -> Tuple[str, str, str]:
+    """
+    Decide top-right badge for TOP rows.
+    - big -> Big 10%+
+    - touch -> Limit X% (blue-ish)
+    - hit/locked -> Limit X% (orange-ish)
+    - fallback -> Limit X% (from band)
+    """
+    theme = (theme or "dark").lower()
+    is_dark = theme == "dark"
+
+    # close to your current palette
+    c_orange = "#f59f00" if is_dark else "#f08c00"
+    c_blue = "#4dabf7" if is_dark else "#1c7ed6"
+    c_gray = "#868e96" if is_dark else "#6c757d"
+    c_pink = "#ff6b6b" if is_dark else "#d9480f"
+
+    st = _safe_str(r.get("limitup_status")).lower()
+    if st == "big" or _safe_str(r.get("line2")).lower().startswith("big move"):
+        return ("Big 10%+", c_pink, "#0b0d10" if is_dark else "#ffffff")
+
+    pct = limit_pct_from_row(r, default_pct=10.0)
+    txt = limit_label(pct)
+
+    if st in ("touch", "bomb", "touched", "opened"):
+        return (txt, c_blue, "#0b0d10" if is_dark else "#ffffff")
+
+    if st in ("hit", "locked", "lock"):
+        return (txt, c_orange, "#0b0d10" if is_dark else "#ffffff")
+
+    # fallback
+    if pct <= 5.0:
+        return (txt, c_gray, "#0b0d10" if is_dark else "#ffffff")
+    return (txt, c_orange, "#0b0d10" if is_dark else "#ffffff")
 
 
 # =============================================================================
@@ -102,8 +189,8 @@ def draw_block_table(
     big_total: Optional[int] = None,
     sector_shown_total: Optional[int] = None,
     sector_all_total: Optional[int] = None,
-    limitup_rows: List[Dict[str, Any]] | None = None,
-    peer_rows: List[Dict[str, Any]] | None = None,
+    limitup_rows: Optional[List[Dict[str, Any]]] = None,
+    peer_rows: Optional[List[Dict[str, Any]]] = None,
     page_idx: int = 1,
     page_total: int = 1,
     width: int = 1080,
@@ -125,6 +212,7 @@ def draw_block_table(
     sub = "#adb5bd" if is_dark else "#555555"
     box = "#14171c" if is_dark else "#f6f8fa"
     line = "#343a40" if is_dark else "#d0d7de"
+    line2_color = "#cfd4da" if is_dark else "#495057"
 
     fig = plt.figure(figsize=(width / 100, height / 100), dpi=100)
     ax = fig.add_axes([0, 0, 1, 1])
@@ -135,168 +223,252 @@ def draw_block_table(
     ax.set_facecolor(bg)
 
     # -------------------------------
-    # Header text (title + 1~2 lines)
+    # Header (title + time note + page)
     # -------------------------------
+    title_fs = int(getattr(layout, "title_fs", 62))
+    subtitle_fs = int(getattr(layout, "subtitle_fs", 30))
+
     ax.text(
-        0.5, 0.97, _ellipsize(sector, 22),
+        0.5, 0.97, _safe_str(sector),
         ha="center", va="top",
-        fontsize=int(getattr(layout, "title_fs", 62)),
+        fontsize=title_fs,
         color=fg, weight="bold"
     )
 
+    if int(page_total) > 1:
+        ax.text(
+            0.97, 0.97, f"{int(page_idx)}/{int(page_total)}",
+            ha="right", va="top",
+            fontsize=max(18, subtitle_fs - 8),
+            color=sub, weight="bold"
+        )
+
     header_lines: List[str] = []
     if time_note:
-        header_lines = [x.strip() for x in time_note.split("\n") if x.strip()]
+        header_lines = [x.strip() for x in str(time_note).split("\n") if x.strip()]
 
     if header_lines:
         ax.text(
             0.5, 0.91, header_lines[0],
             ha="center", va="top",
-            fontsize=int(getattr(layout, "subtitle_fs", 30)),
+            fontsize=subtitle_fs,
             color=sub, weight="bold"
         )
         if len(header_lines) > 1:
             ax.text(
                 0.5, 0.88, header_lines[1],
                 ha="center", va="top",
-                fontsize=int(getattr(layout, "subtitle_fs", 30)) - 2,
+                fontsize=max(18, subtitle_fs - 2),
                 color=sub, weight="bold"
             )
 
     ensure_renderer(fig)
 
     # -------------------------------
-    # Layout geometry
-    # Fix: reserve header area so subtitle never gets boxed-in
+    # Layout geometry (prevent subtitle collision)
     # -------------------------------
-    # If 2 subtitle lines, reserve a bit more space.
     reserve_top = 0.86 if len(header_lines) > 1 else 0.88
 
-    top_y0 = getattr(layout, "top_box_y0", 0.84)
-    top_y1 = getattr(layout, "top_box_y1", 0.485)
-    bot_y0 = getattr(layout, "bot_box_y0", 0.465)
-    bot_y1 = getattr(layout, "bot_box_y1", 0.085)
+    top_y0 = float(getattr(layout, "top_box_y0", 0.84))
+    top_y1 = float(getattr(layout, "top_box_y1", 0.485))
+    bot_y0 = float(getattr(layout, "bot_box_y0", 0.465))
+    bot_y1 = float(getattr(layout, "bot_box_y1", 0.085))
 
-    # ✅ clamp the top of the top box
-    # make sure box top is below subtitle area
-    top_y0 = min(float(top_y0), reserve_top)
+    top_y0 = min(top_y0, reserve_top)
 
     ax.add_patch(plt.Rectangle((0.05, top_y1), 0.90, top_y0 - top_y1, facecolor=box, edgecolor=line, linewidth=2))
     ax.add_patch(plt.Rectangle((0.05, bot_y1), 0.90, bot_y0 - bot_y1, facecolor=box, edgecolor=line, linewidth=2))
 
+    # -------------------------------
+    # Box titles
+    # -------------------------------
+    box_title_fs = int(getattr(layout, "box_title_fs", 30))
+    top_title_y = top_y0 - 0.025
+    bot_title_y = bot_y0 - 0.025
+
+    # build title strings
+    L = list(limitup_rows or [])
+    P = list(peer_rows or [])
+
+    # if caller already computed shown/total, use them; else compute from L
+    if hit_total is None or touch_total is None or big_total is None:
+        _h, _t, _b = _count_status(L)
+        hit_total = _h if hit_total is None else hit_total
+        touch_total = _t if touch_total is None else touch_total
+        big_total = _b if big_total is None else big_total
+
+    def top_title() -> str:
+        if not L:
+            return "Top movers (<10%)"
+        if (
+            hit_shown is not None and hit_total is not None and
+            touch_shown is not None and touch_total is not None and
+            big_shown is not None and big_total is not None
+        ):
+            return f"Big 10%+ {int(big_shown)}/{int(big_total)} | Limit Hit {int(hit_shown)}/{int(hit_total)} | Touched {int(touch_shown)}/{int(touch_total)}"
+        return "Big 10%+ | Limit Hit | Touched"
+
+    def bot_title() -> str:
+        if (hit_total or 0) == 0 and (touch_total or 0) == 0 and (big_total or 0) == 0:
+            return "No 10%+ or limit hits"
+        return "Peers (same sector)"
+
+    top_t = _ellipsize_px(ax, fig, top_title(), x_left=0.08, x_right=0.92, y=top_title_y, fontsize=box_title_fs, weight="bold")
+    bot_t = _ellipsize_px(ax, fig, bot_title(), x_left=0.08, x_right=0.92, y=bot_title_y, fontsize=box_title_fs, weight="bold")
+
+    ax.text(0.08, top_title_y, top_t, ha="left", va="center", fontsize=box_title_fs, color=fg, weight="bold")
+    ax.text(0.08, bot_title_y, bot_t, ha="left", va="center", fontsize=box_title_fs, color=fg, weight="bold")
+
+    # -------------------------------
+    # Rows layout
+    # -------------------------------
     two_line = True
-    y_start_top, row_h_top = calc_rows_layout(top_y0 - 0.04, top_y1, rows_per_page, two_line=two_line)
-    y_start_bot, row_h_bot = calc_rows_layout(bot_y0 - 0.04, bot_y1, rows_per_page + 1, two_line=two_line)
+    y_start_top, row_h_top = calc_rows_layout(top_y0 - 0.055, top_y1, int(rows_per_page), two_line=two_line)
+    y_start_bot, row_h_bot = calc_rows_layout(bot_y0 - 0.055, bot_y1, int(rows_per_page) + 1, two_line=two_line)
 
     x_name = 0.08
     x_tag = 0.94
+    sep_x0, sep_x1 = 0.08, 0.91
+
+    row_name_fs = int(getattr(layout, "row_name_fs", 28))
+    row_line2_fs = max(18, row_name_fs - 6)
+    row_tag_fs = max(20, row_name_fs - 4)
+
+    def _draw_empty(y0: float, y1: float, msg: str):
+        ax.text(0.5, (y0 + y1) / 2, msg, ha="center", va="center", fontsize=max(22, row_line2_fs), color=sub, alpha=0.65)
 
     # ================= TOP =================
-    for i, r in enumerate(limitup_rows or []):
-        if i >= rows_per_page:
-            break
+    if not L:
+        _draw_empty(top_y0, top_y1, "(No items)")
+    else:
+        for i, r in enumerate(L[: int(rows_per_page)]):
+            y_center = y_start_top - i * row_h_top
+            y1 = y_center + row_h_top * 0.22
+            y2 = y_center - row_h_top * 0.22
 
-        y_center = y_start_top - i * row_h_top
-        y1 = y_center + row_h_top * 0.22
-        y2 = y_center - row_h_top * 0.22
+            line1 = _safe_str(r.get("line1") or "")
+            line2 = _safe_str(r.get("line2") or "")
 
-        display_line1 = _ellipsize(_safe_str(r.get("line1")), 26)
+            badge_txt, badge_bg, badge_fg = _badge_for_top_row(r, theme)
 
-        ax.text(
-            x_name, y1, display_line1,
-            ha="left", va="center",
-            fontsize=int(getattr(layout, "row_name_fs", 28)),
-            color=fg, weight="bold"
-        )
+            # reserve right space for badge on line1
+            badge_w_px = text_width_px(ax, fig, badge_txt, x=x_tag, y=y1, fontsize=row_tag_fs, weight="bold")
+            badge_pad_px = 26 + 18
+            safe_right = x_tag - px_to_data_dx(ax, badge_w_px + badge_pad_px, y_data=y1)
+            safe_right = max(x_name + 0.10, safe_right)
 
-        pct = limit_pct_from_row(r, default_pct=10.0)
-        pill_text = limit_label(pct)
-        pill_bg, pill_fg = limit_colors(pct, theme)
+            line1_fit = _ellipsize_px(ax, fig, line1, x_left=x_name, x_right=safe_right, y=y1, fontsize=row_name_fs, weight="bold")
+            line2_fit = _ellipsize_px(ax, fig, line2, x_left=x_name, x_right=x_tag - 0.08, y=y2, fontsize=row_line2_fs, weight="regular")
 
-        x_right_limit = x_tag - px_to_data_dx(ax, 180, y_data=y1)
+            ax.text(x_name, y1, line1_fit, ha="left", va="center", fontsize=row_name_fs, color=fg, weight="bold")
+            if line2_fit:
+                ax.text(x_name, y2, line2_fit, ha="left", va="center", fontsize=row_line2_fs, color=line2_color, weight="regular", alpha=0.95)
 
-        draw_pill_after_text(
-            ax, fig,
-            text_x=x_name,
-            text_y=y1,
-            text_str=display_line1,
-            text_fontsize=int(getattr(layout, "row_name_fs", 28)),
-            pill_text=pill_text,
-            pill_fontsize=int(getattr(layout, "row_name_fs", 28)),
-            pill_fg=pill_fg,
-            pill_bg=pill_bg,
-            x_right_limit=x_right_limit,
-            gap_px=10,
-            measure_text_width_px_fn=text_width_px,
-            px_to_data_dx_fn=px_to_data_dx,
-        )
+            # top-right badge
+            ax.text(
+                x_tag, y1, badge_txt,
+                ha="right", va="center",
+                fontsize=row_tag_fs,
+                color=badge_fg, weight="bold",
+                bbox=dict(boxstyle="round,pad=0.35", facecolor=badge_bg, edgecolor="none", alpha=0.95)
+            )
 
-        ret = _safe_float(r.get("ret"), 0.0)
-        ret_text = _fmt_ret_pct(ret)
-        x_ret = x_tag - px_to_data_dx(ax, 18, y_data=y2)
+            # line2 right: ret as small pill (optional)
+            ret = _safe_float(r.get("ret"), 0.0)
+            if abs(ret) > 1e-12:
+                ret_text = _fmt_ret_pct(ret)
+                ax.text(
+                    x_tag, y2, ret_text,
+                    ha="right", va="center",
+                    fontsize=row_tag_fs,
+                    color="#0b0d10" if is_dark else "#ffffff",
+                    weight="bold",
+                    bbox=dict(boxstyle="round,pad=0.30", facecolor=get_ret_color(ret, theme), edgecolor="none", alpha=0.95)
+                )
 
-        ax.text(
-            x_ret, y2, ret_text,
-            ha="right", va="center",
-            fontsize=24,
-            color=get_ret_color(ret, theme),
-            weight="bold"
-        )
+            if i < min(len(L), int(rows_per_page)) - 1:
+                ax.plot([sep_x0, sep_x1], [y_center - row_h_top * 0.44, y_center - row_h_top * 0.44], color=line, lw=1, alpha=0.6)
 
     # ================= BOTTOM =================
-    for i, r in enumerate(peer_rows or []):
-        if i >= rows_per_page + 1:
-            break
+    if not P:
+        _draw_empty(bot_y0, bot_y1, "(No peers)")
+    else:
+        for i, r in enumerate(P[: int(rows_per_page) + 1]):
+            y_center = y_start_bot - i * row_h_bot
+            y1 = y_center + row_h_bot * 0.22
+            y2 = y_center - row_h_bot * 0.22
 
-        y_center = y_start_bot - i * row_h_bot
-        y1 = y_center + row_h_bot * 0.22
+            line1 = _safe_str(r.get("line1") or "")
+            line2 = _safe_str(r.get("line2") or "")
 
-        display_line1 = _ellipsize(_safe_str(r.get("line1")), 26)
+            # ret at far right
+            ret = _safe_float(r.get("ret"), 0.0)
+            ret_text = _fmt_ret_pct(ret) if abs(ret) > 1e-12 else ""
+            ret_fs = 24
 
-        ax.text(
-            x_name, y1, display_line1,
-            ha="left", va="center",
-            fontsize=int(getattr(layout, "row_name_fs", 28)),
-            color=fg, weight="bold"
-        )
+            x_ret = x_tag
+            ret_w_px = text_width_px(ax, fig, ret_text, x=x_ret, y=y1, fontsize=ret_fs, weight="bold") if ret_text else 0.0
+            x_ret_left = x_ret - px_to_data_dx(ax, ret_w_px + 14, y_data=y1) if ret_text else x_ret
 
-        ret = _safe_float(r.get("ret"), 0.0)
-        ret_text = _fmt_ret_pct(ret)
+            # pill BEFORE ret
+            pct = limit_pct_from_row(r, default_pct=10.0)
+            pill_text = limit_label(pct)
+            pill_bg, pill_fg = limit_colors(pct, theme)
 
-        x_ret = x_tag - px_to_data_dx(ax, 18, y_data=y1)
+            # reserve for (pill + ret)
+            pill_w_px = text_width_px(ax, fig, pill_text, x=x_ret, y=y1, fontsize=ret_fs, weight="bold")
+            reserve_px = (ret_w_px + 18) + (pill_w_px + 26 + 18)
+            safe_right = x_tag - px_to_data_dx(ax, reserve_px, y_data=y1)
+            safe_right = max(x_name + 0.10, safe_right)
 
-        ax.text(
-            x_ret, y1, ret_text,
-            ha="right", va="center",
-            fontsize=24,
-            color=get_ret_color(ret, theme),
-            weight="bold"
-        )
+            line1_fit = _ellipsize_px(ax, fig, line1, x_left=x_name, x_right=safe_right, y=y1, fontsize=row_name_fs, weight="bold")
+            line2_fit = _ellipsize_px(ax, fig, line2, x_left=x_name, x_right=x_tag - 0.08, y=y2, fontsize=row_line2_fs, weight="regular")
 
-        pct = limit_pct_from_row(r, default_pct=10.0)
-        pill_text = limit_label(pct)
-        pill_bg, pill_fg = limit_colors(pct, theme)
+            ax.text(x_name, y1, line1_fit, ha="left", va="center", fontsize=row_name_fs, color=fg, weight="bold")
+            if line2_fit:
+                ax.text(x_name, y2, line2_fit, ha="left", va="center", fontsize=row_line2_fs, color=line2_color, weight="regular", alpha=0.95)
 
-        ret_w_px = text_width_px(ax, fig, ret_text, x=x_ret, y=y1, fontsize=24, weight="bold")
-        x_ret_left = x_ret - px_to_data_dx(ax, ret_w_px + 10, y_data=y1)
+            # ret
+            if ret_text:
+                ax.text(
+                    x_ret, y1, ret_text,
+                    ha="right", va="center",
+                    fontsize=ret_fs,
+                    color=get_ret_color(ret, theme),
+                    weight="bold"
+                )
 
-        draw_pill_after_text(
-            ax, fig,
-            text_x=x_name,
-            text_y=y1,
-            text_str=display_line1,
-            text_fontsize=int(getattr(layout, "row_name_fs", 28)),
-            pill_text=pill_text,
-            pill_fontsize=26,
-            pill_fg=pill_fg,
-            pill_bg=pill_bg,
-            x_right_limit=x_ret_left,
-            gap_px=10,
-            measure_text_width_px_fn=text_width_px,
-            px_to_data_dx_fn=px_to_data_dx,
-        )
+            # pill placed to left of ret, after line1
+            draw_pill_after_text(
+                ax, fig,
+                text_x=x_name,
+                text_y=y1,
+                text_str=line1_fit,
+                text_fontsize=row_name_fs,
+                pill_text=pill_text,
+                pill_fontsize=ret_fs,
+                pill_fg=pill_fg,
+                pill_bg=pill_bg,
+                x_right_limit=x_ret_left,
+                gap_px=10,
+                measure_text_width_px_fn=text_width_px,
+                px_to_data_dx_fn=px_to_data_dx,
+            )
+
+            if i < min(len(P), int(rows_per_page) + 1) - 1:
+                ax.plot([sep_x0, sep_x1], [y_center - row_h_bot * 0.44, y_center - row_h_bot * 0.44], color=line, lw=1, alpha=0.6)
+
+        if has_more_peers:
+            ax.text(
+                0.5, bot_y1 + 0.02,
+                "(More items not shown)",
+                ha="center", va="bottom",
+                fontsize=max(20, row_line2_fs),
+                color=sub, alpha=0.85,
+                weight="bold"
+            )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=100)
+    fig.savefig(out_path, dpi=100, facecolor=bg)
     plt.close(fig)
     return out_path
