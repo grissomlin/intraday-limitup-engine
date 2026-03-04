@@ -204,6 +204,30 @@ def _bombed_in(r: Dict[str, Any]) -> bool:
     return _touch_any_in(r) and (not _bool(r.get("is_limitup_locked", False)))
 
 
+def _is_big10_in(r: Dict[str, Any], *, ret: Optional[float] = None, touch_any: Optional[bool] = None, is_locked: Optional[bool] = None) -> bool:
+    """
+    ✅ Big 10%+ logic (robust):
+    - Prefer aggregator flag is_surge_ge10 / is_bigup10 / is_bigmove10
+    - Fallback to pure ret>=0.10
+    - Must NOT be touch_any (otherwise it's band-touch category)
+    - Must NOT be locked (locked is its own category)
+    """
+    if ret is None:
+        ret = _pct(r.get("ret", 0.0))
+    if touch_any is None:
+        touch_any = _touch_any_in(r)
+    if is_locked is None:
+        is_locked = _bool(r.get("is_limitup_locked", False))
+
+    flag10 = (
+        _bool(r.get("is_surge_ge10", False))
+        or _bool(r.get("is_bigup10", False))
+        or _bool(r.get("is_bigmove10", False))
+        or _bool(r.get("is_bigup", False))
+    )
+    return bool((ret >= 0.10 or flag10) and (not touch_any) and (not is_locked))
+
+
 def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     out: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -213,8 +237,7 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
         touch_only = _bombed_in(r)
         ret = _pct(r.get("ret", 0.0))
 
-        # big10: must NOT be touch_any (so it is "big move" not band touch)
-        big10 = bool(_bool(r.get("is_surge_ge10", False)) and (not touch_any))
+        big10 = _is_big10_in(r, ret=ret, touch_any=touch_any, is_locked=is_locked)
 
         if not (is_locked or touch_only or big10):
             continue
@@ -274,7 +297,7 @@ def _fmt_prev_line(prev_ret: Optional[float]) -> str:
     return f"Prev session {pct:+.2f}%"
 
 
-def build_peers_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+def build_peers_by_sector_in(universe: List[Dict[str, Any]], *, peer_ret_min: float = 0.0) -> Dict[str, List[Dict[str, Any]]]:
     out: Dict[str, List[Dict[str, Any]]] = {}
 
     for r in universe:
@@ -282,10 +305,13 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[D
         touch_any = _touch_any_in(r)
         touch_only = _bombed_in(r)
         ret = _pct(r.get("ret", 0.0))
-        big10 = bool(_bool(r.get("is_surge_ge10", False)) and (not touch_any))
+        big10 = _is_big10_in(r, ret=ret, touch_any=touch_any, is_locked=is_locked)
 
         # peers: exclude any display items & exclude touch_any
         if is_locked or touch_only or big10 or touch_any:
+            continue
+
+        if ret < float(peer_ret_min):
             continue
 
         sector = _norm_sector_name(_safe_str(r.get("sector") or "Unclassified"))
@@ -362,6 +388,9 @@ def main() -> int:
 
     ap.add_argument("--lang", default="en")
     ap.add_argument("--no-debug", action="store_true")
+
+    # ✅ NEW: peers filter gate (avoid meaningless negative rows)
+    ap.add_argument("--peer-ret-min", type=float, default=0.0)
 
     args = ap.parse_args()
 
@@ -443,7 +472,7 @@ def main() -> int:
         sector_total_map[s] = sector_total_map.get(s, 0) + 1
 
     limitup = build_limitup_by_sector_in(universe)
-    peers = build_peers_by_sector_in(universe)
+    peers = build_peers_by_sector_in(universe, peer_ret_min=float(args.peer_ret_min))
 
     print(f"[IN][DEBUG] sectors(limitup)={len(limitup)} sectors(peers)={len(peers)}")
 
@@ -488,7 +517,7 @@ def main() -> int:
             sector_fn = _sanitize_filename(sector)
 
             # ----------------------------
-            # CASE A: normal (has limitup/big/touch)
+            # CASE A: normal (has locked/touch/big10)
             # ----------------------------
             if L_total:
                 max_limitup_show = CAP_PAGES * rows_top
@@ -553,8 +582,9 @@ def main() -> int:
                     print(f"[IN] wrote {out_path.name}")
 
             # ----------------------------
-            # CASE B: peers-only sector (NO limitup/big/touch)
-            # Put peers into TOP box so page-1 top is never empty.
+            # CASE B: peers-only sector (NO locked/touch/big10)
+            # ✅ Put peers into TOP box so page-1 top is never empty.
+            # ✅ Also pass titles for TOP/BOT boxes (need draw_mpl to support these args)
             # ----------------------------
             elif P_total:
                 page_pack = rows_top + rows_peer  # top chunk + bottom chunk per page
@@ -603,6 +633,10 @@ def main() -> int:
                         has_more_peers=has_more_peers,
                         lang=str(args.lang or "en"),
                         market="IN",
+
+                        # ✅ NEW titles (requires draw_mpl.py to accept these kwargs)
+                        top_box_title="Top movers (<10%)",
+                        bot_box_title="No 10%+ or limit hits",
                     )
                     print(f"[IN] wrote {out_path.name}")
 
