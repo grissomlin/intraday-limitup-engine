@@ -10,7 +10,6 @@ import pandas as pd
 
 EPS = 1e-6
 
-
 # =============================================================================
 # Env knobs (India)
 # =============================================================================
@@ -29,7 +28,6 @@ INDIA_TICK_DANGER_MAX_TICKS = float(os.getenv("INDIA_TICK_DANGER_MAX_TICKS", "3"
 INDIA_ABS_MOVE_GATE = float(os.getenv("INDIA_ABS_MOVE_GATE", "0.0"))  # 0/0.5/1/2 ...
 
 PEERS_BY_SECTOR_CAP = int(os.getenv("INDIA_PEERS_BY_SECTOR_CAP", "50"))
-
 
 # =============================================================================
 # Helpers
@@ -78,12 +76,6 @@ def _sanitize_nan(obj: Any) -> Any:
 
 
 def _parse_band_pct_from_market_detail(md: Any) -> Optional[float]:
-    """
-    market_detail example:
-      "NSE|band=20|remarks=-|src=master_csv"
-      "NSE|band=No Band|remarks=-|src=master_csv"
-    Return ratio (0.20), not percent.
-    """
     s = ("" if md is None else str(md)).strip()
     if not s:
         return None
@@ -173,8 +165,7 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     df["band_pct"] = df["market_detail"].apply(_parse_band_pct_from_market_detail)
     df["limit_price"] = None
 
-    # ✅ NEW: unify with CN payload field name
-    # CN renderer uses limit_rate (ratio). India band_pct is same meaning.
+    # unify naming
     df["limit_rate"] = df["band_pct"]
     df["limit_rate_pct"] = None
     m_lr = df["limit_rate"].notna()
@@ -222,7 +213,7 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     df_calc = df[~df["is_tick_danger"]].copy() if INDIA_FILTER_TICK_DANGER else df.copy()
 
     # movers
-    df_calc["is_surge_ge10"] = df_calc["ret"] >= float(INDIA_SURGE_RET)
+    df_calc["is_surge_ge10"] = (df_calc["ret"] >= float(INDIA_SURGE_RET))
 
     # optional abs-move gate for movers
     abs_move = (
@@ -238,6 +229,19 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
 
     # display list = touch OR 10%+
     df_calc["is_display_limitup"] = (df_calc["is_limitup_touch"] == True) | (df_calc["is_surge_ge10"] == True)
+
+    # ✅ CRITICAL: write these computed flags back to df
+    # so snapshot_main carries them (your CLI builds from universe=snapshot_main)
+    for col in ["is_surge_ge10", "abs_move", "is_bigmove10_ex_locked", "is_display_limitup"]:
+        if col not in df.columns:
+            df[col] = None
+        # default for excluded rows (tick danger filtered out)
+        df[col] = False if col != "abs_move" else None
+
+    df.loc[df_calc.index, "is_surge_ge10"] = df_calc["is_surge_ge10"].astype(bool)
+    df.loc[df_calc.index, "abs_move"] = df_calc["abs_move"].astype(float)
+    df.loc[df_calc.index, "is_bigmove10_ex_locked"] = df_calc["is_bigmove10_ex_locked"].astype(bool)
+    df.loc[df_calc.index, "is_display_limitup"] = df_calc["is_display_limitup"].astype(bool)
 
     # build limit list
     df_limit = df_calc[df_calc["is_display_limitup"]].copy()
@@ -331,7 +335,7 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     raw_payload["meta"] = _sanitize_nan(meta)
 
     # attach outputs
-    raw_payload["snapshot_main"] = _sanitize_nan(df.to_dict(orient="records"))  # include band_pct/limit_rate/tick flags
+    raw_payload["snapshot_main"] = _sanitize_nan(df.to_dict(orient="records"))  # ✅ now includes is_surge_ge10/is_display_limitup
     raw_payload["limitup"] = _sanitize_nan(limitup_records)
     raw_payload["sector_summary"] = _sanitize_nan(summary_rows)
     raw_payload["peers_by_sector"] = _sanitize_nan(peers_by_sector)
