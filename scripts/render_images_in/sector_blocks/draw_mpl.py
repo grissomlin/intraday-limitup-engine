@@ -201,6 +201,10 @@ def draw_block_table(
     has_more_peers: bool = False,
     lang: str = "en",
     market: str = "IN",
+
+    # ✅ NEW: allow caller override box titles (for peers-only sector pages)
+    top_box_title: Optional[str] = None,
+    bot_box_title: Optional[str] = None,
 ):
     setup_font()
 
@@ -298,6 +302,10 @@ def draw_block_table(
         big_total = _b if big_total is None else big_total
 
     def top_title() -> str:
+        # ✅ caller override (peers-only)
+        if _safe_str(top_box_title):
+            return _safe_str(top_box_title)
+
         if not L:
             return "Top movers (<10%)"
         if (
@@ -309,6 +317,10 @@ def draw_block_table(
         return "Big 10%+ | Limit Hit | Touched"
 
     def bot_title() -> str:
+        # ✅ caller override (peers-only)
+        if _safe_str(bot_box_title):
+            return _safe_str(bot_box_title)
+
         if (hit_total or 0) == 0 and (touch_total or 0) == 0 and (big_total or 0) == 0:
             return "No 10%+ or limit hits"
         return "Peers (same sector)"
