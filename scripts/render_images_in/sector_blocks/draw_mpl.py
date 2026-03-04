@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 
 from .layout import LayoutSpec, calc_rows_layout
 
-from scripts.render_images_in.sector_blocks.mpl_text import (
+# ✅ FIXED: use relative imports (package safe)
+from .mpl_text import (
     ensure_renderer,
     text_width_px,
     px_to_data_dx,
 )
-from scripts.render_images_common.mpl_pills import (
+from .mpl_pills import (
     limit_pct_from_row,
     limit_label,
     limit_colors,
@@ -125,7 +126,6 @@ def draw_block_table(
     sub = "#adb5bd" if is_dark else "#555555"
     box = "#14171c" if is_dark else "#f6f8fa"
     line = "#343a40" if is_dark else "#d0d7de"
-    divider = "#2b2f36" if is_dark else "#e1e5ea"
 
     fig = plt.figure(figsize=(width / 100, height / 100), dpi=100)
     ax = fig.add_axes([0, 0, 1, 1])
@@ -145,23 +145,25 @@ def draw_block_table(
     ax.add_patch(plt.Rectangle((0.05, bot_y1), 0.90, bot_y0 - bot_y1, facecolor=box, edgecolor=line, linewidth=2))
 
     # header
-    ax.text(0.5, 0.97, _ellipsize(sector, 22), ha="center", va="top",
+    ax.text(0.5, 0.97, _ellipsize(sector, 22),
+            ha="center", va="top",
             fontsize=int(getattr(layout, "title_fs", 62)),
             color=fg, weight="bold")
 
     if time_note:
         lines = [x.strip() for x in time_note.split("\n") if x.strip()]
-        ax.text(0.5, 0.91, lines[0], ha="center", va="top",
+        ax.text(0.5, 0.91, lines[0],
+                ha="center", va="top",
                 fontsize=int(getattr(layout, "subtitle_fs", 30)),
                 color=sub, weight="bold")
         if len(lines) > 1:
-            ax.text(0.5, 0.88, lines[1], ha="center", va="top",
+            ax.text(0.5, 0.88, lines[1],
+                    ha="center", va="top",
                     fontsize=int(getattr(layout, "subtitle_fs", 30)) - 2,
                     color=sub, weight="bold")
 
     ensure_renderer(fig)
 
-    # rows layout
     two_line = True
     y_start_top, row_h_top = calc_rows_layout(top_y0 - 0.04, top_y1, rows_per_page, two_line=two_line)
     y_start_bot, row_h_bot = calc_rows_layout(bot_y0 - 0.04, bot_y1, rows_per_page + 1, two_line=two_line)
@@ -169,9 +171,7 @@ def draw_block_table(
     x_name = 0.08
     x_tag = 0.94
 
-    # =======================
-    # TOP rows
-    # =======================
+    # ================= TOP =================
     for i, r in enumerate(limitup_rows or []):
         if i >= rows_per_page:
             break
@@ -187,16 +187,11 @@ def draw_block_table(
                 fontsize=int(getattr(layout, "row_name_fs", 28)),
                 color=fg, weight="bold")
 
-        # ===== LIMIT PILL =====
         pct = limit_pct_from_row(r, default_pct=10.0)
         pill_text = limit_label(pct)
         pill_bg, pill_fg = limit_colors(pct, theme)
 
-        x_right_limit = x_tag - px_to_data_dx(
-            ax,
-            180,
-            y_data=y1,
-        )
+        x_right_limit = x_tag - px_to_data_dx(ax, 180, y_data=y1)
 
         draw_pill_after_text(
             ax, fig,
@@ -218,22 +213,20 @@ def draw_block_table(
         ret_text = _fmt_ret_pct(ret)
 
         x_ret = x_tag - px_to_data_dx(ax, 18, y_data=y2)
+
         ax.text(x_ret, y2, ret_text,
                 ha="right", va="center",
                 fontsize=24,
                 color=get_ret_color(ret, theme),
                 weight="bold")
 
-    # =======================
-    # BOTTOM rows (peer)
-    # =======================
+    # ================= BOTTOM =================
     for i, r in enumerate(peer_rows or []):
         if i >= rows_per_page + 1:
             break
 
         y_center = y_start_bot - i * row_h_bot
         y1 = y_center + row_h_bot * 0.22
-        y2 = y_center - row_h_bot * 0.22
 
         display_line1 = _ellipsize(_safe_str(r.get("line1")), 26)
 
@@ -246,26 +239,18 @@ def draw_block_table(
         ret_text = _fmt_ret_pct(ret)
 
         x_ret = x_tag - px_to_data_dx(ax, 18, y_data=y1)
+
         ax.text(x_ret, y1, ret_text,
                 ha="right", va="center",
                 fontsize=24,
                 color=get_ret_color(ret, theme),
                 weight="bold")
 
-        # ===== peer limit pill =====
         pct = limit_pct_from_row(r, default_pct=10.0)
         pill_text = limit_label(pct)
         pill_bg, pill_fg = limit_colors(pct, theme)
 
-        ret_w_px = text_width_px(
-            ax, fig,
-            ret_text,
-            x=x_ret,
-            y=y1,
-            fontsize=24,
-            weight="bold",
-        )
-
+        ret_w_px = text_width_px(ax, fig, ret_text, x=x_ret, y=y1, fontsize=24, weight="bold")
         x_ret_left = x_ret - px_to_data_dx(ax, ret_w_px + 10, y_data=y1)
 
         draw_pill_after_text(
@@ -282,7 +267,6 @@ def draw_block_table(
             gap_px=10,
             measure_text_width_px_fn=text_width_px,
             px_to_data_dx_fn=px_to_data_dx,
-            fallback_y=y2,
         )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
