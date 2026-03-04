@@ -26,10 +26,21 @@ os.environ.setdefault("OVERVIEW_ENABLE_GAINBINS", "0")
 os.environ.setdefault("OVERVIEW_DISABLE_GAINBINS", "1")
 os.environ.setdefault("OVERVIEW_NO_GAINBINS", "1")
 
+# ----------------------------------------------------------------------
+# Ensure repo root in sys.path (robust for GitHub Actions)
+# ----------------------------------------------------------------------
 THIS = Path(__file__).resolve()
-REPO_ROOT = THIS.parents[2]
+
+# Walk upwards until we find the project root containing "scripts"
+REPO_ROOT = THIS
+while REPO_ROOT != REPO_ROOT.parent:
+    if (REPO_ROOT / "scripts").exists():
+        break
+    REPO_ROOT = REPO_ROOT.parent
+
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+# ----------------------------------------------------------------------
 
 # IN sector pages
 from scripts.render_images_in.sector_blocks.draw_mpl import draw_block_table  # noqa: E402
