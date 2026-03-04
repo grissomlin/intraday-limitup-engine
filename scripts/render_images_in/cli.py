@@ -204,34 +204,20 @@ def _bombed_in(r: Dict[str, Any]) -> bool:
     return _touch_any_in(r) and (not _bool(r.get("is_limitup_locked", False)))
 
 
-def _is_display_limitup_in(r: Dict[str, Any]) -> bool:
-    """
-    India mix definition:
-      display_limitup = (touch upper band) OR (ret >= 10%)
-    Prefer aggregator field if present.
-    """
-    if "is_display_limitup" in r:
-        return _bool(r.get("is_display_limitup", False))
-
-    # fallback: touch OR 10%+
-    ret = _pct(r.get("ret", 0.0))
-    return _touch_any_in(r) or (ret >= 0.10)
-
-
 def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     out: Dict[str, List[Dict[str, Any]]] = {}
 
     for r in universe:
-        if not _is_display_limitup_in(r):
-            continue
-
         is_locked = _bool(r.get("is_limitup_locked", False))
         touch_any = _touch_any_in(r)
         touch_only = _bombed_in(r)
         ret = _pct(r.get("ret", 0.0))
 
-        # mix-big bucket: >=10% but not touch
-        big10 = bool((ret >= 0.10) and (not touch_any))
+        # big10: must NOT be touch_any (so it is "big move" not band touch)
+        big10 = bool(_bool(r.get("is_surge_ge10", False)) and (not touch_any))
+
+        if not (is_locked or touch_only or big10):
+            continue
 
         sector = _norm_sector_name(_safe_str(r.get("sector") or "Unclassified"))
         sym = _safe_str(r.get("symbol") or "")
@@ -247,13 +233,9 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
         elif touch_only:
             status = "touch"
             line2 = "Touched upper band (not locked)"
-        elif is_locked or touch_any:
+        else:
             status = "hit"
             line2 = "Locked at upper band"
-        else:
-            # safety fallback
-            status = "big"
-            line2 = "Big Move 10%+"
 
         out.setdefault(sector, []).append(
             {
@@ -296,17 +278,14 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[D
     out: Dict[str, List[Dict[str, Any]]] = {}
 
     for r in universe:
-        # peers must be NOT display_limitup
-        if _is_display_limitup_in(r):
-            continue
-
+        is_locked = _bool(r.get("is_limitup_locked", False))
         touch_any = _touch_any_in(r)
-        if touch_any:
-            continue
-
+        touch_only = _bombed_in(r)
         ret = _pct(r.get("ret", 0.0))
-        # extra safety: 10%+ must never appear in peers
-        if ret >= 0.10:
+        big10 = bool(_bool(r.get("is_surge_ge10", False)) and (not touch_any))
+
+        # peers: exclude any display items & exclude touch_any
+        if is_locked or touch_only or big10 or touch_any:
             continue
 
         sector = _norm_sector_name(_safe_str(r.get("sector") or "Unclassified"))
@@ -436,7 +415,10 @@ def main() -> int:
 
             payload_for_overview = dict(agg_payload)
             payload_for_overview.setdefault("market", "IN")
-            payload_for_overview.setdefault("asof", payload_for_overview.get("asof") or payload_for_overview.get("slot") or "")
+            payload_for_overview.setdefault(
+                "asof",
+                payload_for_overview.get("asof") or payload_for_overview.get("slot") or ""
+            )
 
             render_overview_png(
                 payload_for_overview,
@@ -465,9 +447,8 @@ def main() -> int:
 
     print(f"[IN][DEBUG] sectors(limitup)={len(limitup)} sectors(peers)={len(peers)}")
 
-    # ✅ sectors should be union(limitup, peers)
+    # sectors = union
     sectors_raw = sorted(set((limitup or {}).keys()) | set((peers or {}).keys()))
-
     if not sectors_raw:
         print("[IN][WARN] No sectors to render (limitup empty & peers empty). Only overview will exist.")
     else:
@@ -502,71 +483,132 @@ def main() -> int:
 
         for sector in ordered_sectors:
             L_total = (limitup or {}).get(sector, []) or []
-            P = (peers or {}).get(sector, []) or []
-
-            max_limitup_show = CAP_PAGES * rows_top
-            L_show = L_total[:max_limitup_show]
-            L_pages = chunk(L_show, rows_top) if L_show else [[]]
-            P_pages = chunk(P, rows_peer) if P else [[]]
-
-            limitup_pages = len(L_pages)
-            peer_pages = len(P_pages)
-
-            total_pages = max(1, limitup_pages)
-            if peer_pages > limitup_pages:
-                total_pages = limitup_pages + 1
-            if total_pages > CAP_PAGES:
-                total_pages = CAP_PAGES
-
-            hit_total, touch_total, big_total = count_hit_touch_big(L_total)
-            hit_shown, touch_shown, big_shown = count_hit_touch_big(L_show)
-
-            sector_all_total = int(sector_total_map.get(sector, 0) or 0)
-            sector_shown_total = int(hit_total + touch_total + big_total)
-
-            locked_cnt = hit_total
-            touch_cnt = touch_total
-            theme_cnt = 0
+            P_total = (peers or {}).get(sector, []) or []
 
             sector_fn = _sanitize_filename(sector)
 
-            for i in range(total_pages):
-                limitup_rows = L_pages[i] if i < len(L_pages) else []
-                peer_rows = P_pages[i] if i < len(P_pages) else []
-                has_more_peers = (peer_pages > total_pages) and (i == total_pages - 1)
+            # ----------------------------
+            # CASE A: normal (has limitup/big/touch)
+            # ----------------------------
+            if L_total:
+                max_limitup_show = CAP_PAGES * rows_top
+                L_show = L_total[:max_limitup_show]
+                L_pages = chunk(L_show, rows_top) if L_show else [[]]
+                P_pages = chunk(P_total, rows_peer) if P_total else [[]]
 
-                out_path = outdir / f"in_{sector_fn}_p{i+1}.png"
+                limitup_pages = len(L_pages)
+                peer_pages = len(P_pages)
 
-                draw_block_table(
-                    out_path=out_path,
-                    layout=layout,
-                    sector=sector,
-                    cutoff=cutoff,
-                    locked_cnt=locked_cnt,
-                    touch_cnt=touch_cnt,
-                    theme_cnt=theme_cnt,
-                    hit_shown=hit_shown,
-                    hit_total=hit_total,
-                    touch_shown=touch_shown,
-                    touch_total=touch_total,
-                    big_shown=big_shown,
-                    big_total=big_total,
-                    sector_shown_total=sector_shown_total,
-                    sector_all_total=sector_all_total,
-                    limitup_rows=limitup_rows,
-                    peer_rows=peer_rows,
-                    page_idx=i + 1,
-                    page_total=total_pages,
-                    width=width,
-                    height=height,
-                    rows_per_page=rows_top,
-                    theme=args.theme,
-                    time_note=time_note,
-                    has_more_peers=has_more_peers,
-                    lang=str(args.lang or "en"),
-                    market="IN",
-                )
-                print(f"[IN] wrote {out_path.name}")
+                total_pages = max(1, limitup_pages)
+                if peer_pages > limitup_pages:
+                    total_pages = limitup_pages + 1
+                if total_pages > CAP_PAGES:
+                    total_pages = CAP_PAGES
+
+                hit_total, touch_total, big_total = count_hit_touch_big(L_total)
+                hit_shown, touch_shown, big_shown = count_hit_touch_big(L_show)
+
+                sector_all_total = int(sector_total_map.get(sector, 0) or 0)
+                sector_shown_total = int(hit_total + touch_total + big_total)
+
+                locked_cnt = hit_total
+                touch_cnt = touch_total
+                theme_cnt = 0
+
+                for i in range(total_pages):
+                    limitup_rows = L_pages[i] if i < len(L_pages) else []
+                    peer_rows = P_pages[i] if i < len(P_pages) else []
+                    has_more_peers = (peer_pages > total_pages) and (i == total_pages - 1)
+
+                    out_path = outdir / f"in_{sector_fn}_p{i+1}.png"
+                    draw_block_table(
+                        out_path=out_path,
+                        layout=layout,
+                        sector=sector,
+                        cutoff=cutoff,
+                        locked_cnt=locked_cnt,
+                        touch_cnt=touch_cnt,
+                        theme_cnt=theme_cnt,
+                        hit_shown=hit_shown,
+                        hit_total=hit_total,
+                        touch_shown=touch_shown,
+                        touch_total=touch_total,
+                        big_shown=big_shown,
+                        big_total=big_total,
+                        sector_shown_total=sector_shown_total,
+                        sector_all_total=sector_all_total,
+                        limitup_rows=limitup_rows,
+                        peer_rows=peer_rows,
+                        page_idx=i + 1,
+                        page_total=total_pages,
+                        width=width,
+                        height=height,
+                        rows_per_page=rows_top,
+                        theme=args.theme,
+                        time_note=time_note,
+                        has_more_peers=has_more_peers,
+                        lang=str(args.lang or "en"),
+                        market="IN",
+                    )
+                    print(f"[IN] wrote {out_path.name}")
+
+            # ----------------------------
+            # CASE B: peers-only sector (NO limitup/big/touch)
+            # Put peers into TOP box so page-1 top is never empty.
+            # ----------------------------
+            elif P_total:
+                page_pack = rows_top + rows_peer  # top chunk + bottom chunk per page
+                total_pages = max(1, (len(P_total) + page_pack - 1) // page_pack)
+                total_pages = min(total_pages, CAP_PAGES)
+
+                hit_total = touch_total = big_total = 0
+                hit_shown = touch_shown = big_shown = 0
+
+                sector_all_total = int(sector_total_map.get(sector, 0) or 0)
+                sector_shown_total = 0
+                locked_cnt = touch_cnt = theme_cnt = 0
+
+                for i in range(total_pages):
+                    start = i * page_pack
+                    top_rows = P_total[start: start + rows_top]
+                    bot_rows = P_total[start + rows_top: start + rows_top + rows_peer]
+                    has_more_peers = (start + page_pack) < len(P_total) and (i == total_pages - 1)
+
+                    out_path = outdir / f"in_{sector_fn}_p{i+1}.png"
+                    draw_block_table(
+                        out_path=out_path,
+                        layout=layout,
+                        sector=sector,
+                        cutoff=cutoff,
+                        locked_cnt=locked_cnt,
+                        touch_cnt=touch_cnt,
+                        theme_cnt=theme_cnt,
+                        hit_shown=hit_shown,
+                        hit_total=hit_total,
+                        touch_shown=touch_shown,
+                        touch_total=touch_total,
+                        big_shown=big_shown,
+                        big_total=big_total,
+                        sector_shown_total=sector_shown_total,
+                        sector_all_total=sector_all_total,
+                        limitup_rows=top_rows,   # ✅ peers moved to TOP
+                        peer_rows=bot_rows,
+                        page_idx=i + 1,
+                        page_total=total_pages,
+                        width=width,
+                        height=height,
+                        rows_per_page=rows_top,
+                        theme=args.theme,
+                        time_note=time_note,
+                        has_more_peers=has_more_peers,
+                        lang=str(args.lang or "en"),
+                        market="IN",
+                    )
+                    print(f"[IN] wrote {out_path.name}")
+
+            else:
+                # nothing to show
+                continue
 
     # -------------------------------------------------------------------------
     # 2) list.txt (CRITICAL for render_video)
