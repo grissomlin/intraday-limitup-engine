@@ -10,7 +10,7 @@ import matplotlib.font_manager as fm
 
 from .layout import LayoutSpec, calc_rows_layout
 
-from scripts.render_images_common.mpl_text import (
+from scripts.render_images_in.sector_blocks.mpl_text import (
     ensure_renderer,
     text_width_px,
     px_to_data_dx,
