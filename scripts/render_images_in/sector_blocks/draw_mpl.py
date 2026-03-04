@@ -10,7 +10,6 @@ import matplotlib.font_manager as fm
 
 from .layout import LayoutSpec, calc_rows_layout
 
-# ✅ FIXED: use relative imports (package safe)
 from .mpl_text import (
     ensure_renderer,
     text_width_px,
@@ -135,34 +134,55 @@ def draw_block_table(
     fig.patch.set_facecolor(bg)
     ax.set_facecolor(bg)
 
-    # layout geometry
+    # -------------------------------
+    # Header text (title + 1~2 lines)
+    # -------------------------------
+    ax.text(
+        0.5, 0.97, _ellipsize(sector, 22),
+        ha="center", va="top",
+        fontsize=int(getattr(layout, "title_fs", 62)),
+        color=fg, weight="bold"
+    )
+
+    header_lines: List[str] = []
+    if time_note:
+        header_lines = [x.strip() for x in time_note.split("\n") if x.strip()]
+
+    if header_lines:
+        ax.text(
+            0.5, 0.91, header_lines[0],
+            ha="center", va="top",
+            fontsize=int(getattr(layout, "subtitle_fs", 30)),
+            color=sub, weight="bold"
+        )
+        if len(header_lines) > 1:
+            ax.text(
+                0.5, 0.88, header_lines[1],
+                ha="center", va="top",
+                fontsize=int(getattr(layout, "subtitle_fs", 30)) - 2,
+                color=sub, weight="bold"
+            )
+
+    ensure_renderer(fig)
+
+    # -------------------------------
+    # Layout geometry
+    # Fix: reserve header area so subtitle never gets boxed-in
+    # -------------------------------
+    # If 2 subtitle lines, reserve a bit more space.
+    reserve_top = 0.86 if len(header_lines) > 1 else 0.88
+
     top_y0 = getattr(layout, "top_box_y0", 0.84)
     top_y1 = getattr(layout, "top_box_y1", 0.485)
     bot_y0 = getattr(layout, "bot_box_y0", 0.465)
     bot_y1 = getattr(layout, "bot_box_y1", 0.085)
 
+    # ✅ clamp the top of the top box
+    # make sure box top is below subtitle area
+    top_y0 = min(float(top_y0), reserve_top)
+
     ax.add_patch(plt.Rectangle((0.05, top_y1), 0.90, top_y0 - top_y1, facecolor=box, edgecolor=line, linewidth=2))
     ax.add_patch(plt.Rectangle((0.05, bot_y1), 0.90, bot_y0 - bot_y1, facecolor=box, edgecolor=line, linewidth=2))
-
-    # header
-    ax.text(0.5, 0.97, _ellipsize(sector, 22),
-            ha="center", va="top",
-            fontsize=int(getattr(layout, "title_fs", 62)),
-            color=fg, weight="bold")
-
-    if time_note:
-        lines = [x.strip() for x in time_note.split("\n") if x.strip()]
-        ax.text(0.5, 0.91, lines[0],
-                ha="center", va="top",
-                fontsize=int(getattr(layout, "subtitle_fs", 30)),
-                color=sub, weight="bold")
-        if len(lines) > 1:
-            ax.text(0.5, 0.88, lines[1],
-                    ha="center", va="top",
-                    fontsize=int(getattr(layout, "subtitle_fs", 30)) - 2,
-                    color=sub, weight="bold")
-
-    ensure_renderer(fig)
 
     two_line = True
     y_start_top, row_h_top = calc_rows_layout(top_y0 - 0.04, top_y1, rows_per_page, two_line=two_line)
@@ -182,10 +202,12 @@ def draw_block_table(
 
         display_line1 = _ellipsize(_safe_str(r.get("line1")), 26)
 
-        ax.text(x_name, y1, display_line1,
-                ha="left", va="center",
-                fontsize=int(getattr(layout, "row_name_fs", 28)),
-                color=fg, weight="bold")
+        ax.text(
+            x_name, y1, display_line1,
+            ha="left", va="center",
+            fontsize=int(getattr(layout, "row_name_fs", 28)),
+            color=fg, weight="bold"
+        )
 
         pct = limit_pct_from_row(r, default_pct=10.0)
         pill_text = limit_label(pct)
@@ -211,14 +233,15 @@ def draw_block_table(
 
         ret = _safe_float(r.get("ret"), 0.0)
         ret_text = _fmt_ret_pct(ret)
-
         x_ret = x_tag - px_to_data_dx(ax, 18, y_data=y2)
 
-        ax.text(x_ret, y2, ret_text,
-                ha="right", va="center",
-                fontsize=24,
-                color=get_ret_color(ret, theme),
-                weight="bold")
+        ax.text(
+            x_ret, y2, ret_text,
+            ha="right", va="center",
+            fontsize=24,
+            color=get_ret_color(ret, theme),
+            weight="bold"
+        )
 
     # ================= BOTTOM =================
     for i, r in enumerate(peer_rows or []):
@@ -230,21 +253,25 @@ def draw_block_table(
 
         display_line1 = _ellipsize(_safe_str(r.get("line1")), 26)
 
-        ax.text(x_name, y1, display_line1,
-                ha="left", va="center",
-                fontsize=int(getattr(layout, "row_name_fs", 28)),
-                color=fg, weight="bold")
+        ax.text(
+            x_name, y1, display_line1,
+            ha="left", va="center",
+            fontsize=int(getattr(layout, "row_name_fs", 28)),
+            color=fg, weight="bold"
+        )
 
         ret = _safe_float(r.get("ret"), 0.0)
         ret_text = _fmt_ret_pct(ret)
 
         x_ret = x_tag - px_to_data_dx(ax, 18, y_data=y1)
 
-        ax.text(x_ret, y1, ret_text,
-                ha="right", va="center",
-                fontsize=24,
-                color=get_ret_color(ret, theme),
-                weight="bold")
+        ax.text(
+            x_ret, y1, ret_text,
+            ha="right", va="center",
+            fontsize=24,
+            color=get_ret_color(ret, theme),
+            weight="bold"
+        )
 
         pct = limit_pct_from_row(r, default_pct=10.0)
         pill_text = limit_label(pct)
