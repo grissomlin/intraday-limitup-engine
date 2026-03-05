@@ -24,6 +24,9 @@ on:
         default: "120"
         type: string
 
+permissions:
+  contents: write
+
 concurrency:
   group: fr_stock_master_${{ github.ref }}
   cancel-in-progress: true
@@ -50,23 +53,39 @@ jobs:
       - name: Run FR stock master -> Google Drive
         env:
           GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
-          # ✅你已經建好的 secret（folder id）
           GDRIVE_FOLDER_ID: ${{ secrets.fr_stocklist }}
 
           FR_MAX_PAGES: ${{ inputs.max_pages }}
           FR_OUTPUT_NAME: ${{ inputs.output_name }}
 
-          # list pages scrape tuning
           FR_SLEEP_SEC: "3"
           FR_HTTP_TIMEOUT_SEC: "20"
 
-          # quote resolve + cache tuning
           FR_TICKER_CACHE_PATH: "data/cache/fr_ticker_cache.csv"
           FR_RESOLVE_MAX: ${{ inputs.resolve_max }}
           FR_RESOLVE_SLEEP_SEC: "0.25"
           FR_MAX_RETRY: "3"
 
-          # optional override file (commit it later when you have 30 fixes)
           FR_OVERRIDE_PATH: "data/overrides/fr_yf_override.csv"
         run: |
           python stocksymboldownload/fr_stock_master_drive.py
+
+      # ✅ Persist cache by committing it back to repo (only if changed)
+      - name: Commit ticker cache (if changed)
+        run: |
+          set -e
+          if [ -f data/cache/fr_ticker_cache.csv ]; then
+            git status --porcelain
+            if [ -n "$(git status --porcelain data/cache/fr_ticker_cache.csv)" ]; then
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git add data/cache/fr_ticker_cache.csv
+              git commit -m "Update FR ticker cache"
+              git push
+              echo "✅ cache committed"
+            else
+              echo "ℹ️ cache unchanged"
+            fi
+          else
+            echo "ℹ️ cache file not found, skip"
+          fi
