@@ -1,725 +1,591 @@
-# scripts/render_images_in/sector_blocks/draw_mpl.py
+# scripts/render_images_common/overview/i18n_font.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+import os
+from typing import Any, Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
+from matplotlib.font_manager import FontProperties
 
-from .layout import LayoutSpec, calc_rows_layout
-from .mpl_text import (
-    ensure_renderer,
-    text_width_px,
-    px_to_data_dx,
-)
-from .mpl_pills import (
-    limit_label,
-    limit_colors,
-    draw_pill_after_text,
-)
+__all__ = [
+    "normalize_market",
+    "resolve_lang",
+    "setup_cjk_font",
+    "has_hangul",
+    "has_kana",
+    "has_han",
+    "has_thai",
+    "has_cjk",
+    "fontprops_for_text",
+]
 
 # =============================================================================
-# Font
+# Text detectors
 # =============================================================================
-def setup_font() -> str | None:
+def has_hangul(text: str) -> bool:
+    if not text:
+        return False
+    for ch in text:
+        o = ord(ch)
+        if (0xAC00 <= o <= 0xD7A3) or (0x1100 <= o <= 0x11FF) or (0x3130 <= o <= 0x318F):
+            return True
+    return False
+
+
+def has_kana(text: str) -> bool:
+    """Hiragana + Katakana (and extensions)."""
+    if not text:
+        return False
+    for ch in text:
+        o = ord(ch)
+        if (0x3040 <= o <= 0x309F) or (0x30A0 <= o <= 0x30FF) or (0x31F0 <= o <= 0x31FF):
+            return True
+    return False
+
+
+def has_han(text: str) -> bool:
+    """CJK Unified Ideographs (Han/Chinese characters)."""
+    if not text:
+        return False
+    for ch in text:
+        o = ord(ch)
+        if 0x4E00 <= o <= 0x9FFF:
+            return True
+    return False
+
+
+def has_thai(text: str) -> bool:
+    """Thai block: 0E00-0E7F."""
+    if not text:
+        return False
+    for ch in text:
+        o = ord(ch)
+        if 0x0E00 <= o <= 0x0E7F:
+            return True
+    return False
+
+
+def has_cjk(text: str) -> bool:
+    """Backward-compat helper: Han + Hiragana/Katakana."""
+    if not text:
+        return False
+    for ch in text:
+        o = ord(ch)
+        if (0x4E00 <= o <= 0x9FFF) or (0x3040 <= o <= 0x30FF):
+            return True
+    return False
+
+
+# =============================================================================
+# Market normalization
+# =============================================================================
+def normalize_market(m: str | None) -> str:
+    m = (m or "").strip().upper()
+    alias = {
+        "TWN": "TW",
+        "TAIWAN": "TW",
+        "HKG": "HK",
+        "HKEX": "HK",
+        "CHN": "CN",
+        "CHINA": "CN",
+        "USA": "US",
+        "NASDAQ": "US",
+        "NYSE": "US",
+        # JP aliases
+        "JPN": "JP",
+        "JAPAN": "JP",
+        "JPX": "JP",
+        "TSE": "JP",
+        "TOSE": "JP",
+        "TOKYO": "JP",
+        # KR aliases
+        "KOR": "KR",
+        "KOREA": "KR",
+        "KRX": "KR",
+        # CA/AU/UK
+        "CAN": "CA",
+        "CANADA": "CA",
+        "TSX": "CA",
+        "TSXV": "CA",
+        "AUS": "AU",
+        "AUSTRALIA": "AU",
+        "ASX": "AU",
+        "GBR": "UK",
+        "GB": "UK",
+        "UNITED KINGDOM": "UK",
+        "LSE": "UK",
+        "LONDON": "UK",
+        # IN
+        "IND": "IN",
+        "INDIA": "IN",
+        "NSE": "IN",
+        "BSE": "IN",
+        # TH
+        "THA": "TH",
+        "THAILAND": "TH",
+        "SET": "TH",
+        # optional EU-ish aliases
+        "EUR": "EU",
+        "EUROPE": "EU",
+        "EUN": "EU",
+        # ✅ FR aliases
+        "FRA": "FR",
+        "FRANCE": "FR",
+        "PAR": "FR",
+        "PARIS": "FR",
+        "EPA": "FR",              # Euronext Paris often shown as "EPA"
+        "EURONEXT PARIS": "FR",
+        "EURONEXT": "EU",         # generic
+    }
+    return alias.get(m, m or "TW")
+
+
+# =============================================================================
+# Env helpers
+# =============================================================================
+def _env_on(name: str) -> bool:
+    v = (os.getenv(name) or "").strip().lower()
+    return v in {"1", "true", "yes", "y", "on"}
+
+
+def _get_font_profile() -> str:
+    """
+    OVERVIEW_FONT_PROFILE:
+      - "TH"      : force TH-like font order (to copy TH "字感" into US/CA/AU/UK)
+      - "DEFAULT" : normal per-market strategy (default)
+    """
+    v = (os.getenv("OVERVIEW_FONT_PROFILE") or "").strip().upper()
+    if v in {"TH", "DEFAULT"}:
+        return v
+    return "DEFAULT"
+
+
+def _debug_print_fonts(market: str, profile: str, font_list: List[str], chosen: Optional[str]) -> None:
+    if not _env_on("OVERVIEW_DEBUG_FONTS"):
+        return
     try:
-        font_candidates = [
-            "Inter", "Segoe UI", "Arial",
-            "Noto Sans", "Noto Sans CJK SC",
-            "Noto Sans CJK TC", "Noto Sans CJK JP",
-            "Microsoft YaHei", "Microsoft JhengHei",
-            "PingFang SC", "PingFang TC",
-            "WenQuanYi Zen Hei", "Arial Unicode MS",
-        ]
-        available = {f.name for f in fm.fontManager.ttflist}
-        for f in font_candidates:
-            if f in available:
-                plt.rcParams["font.family"] = "sans-serif"
-                plt.rcParams["font.sans-serif"] = [f]
-                plt.rcParams["axes.unicode_minus"] = False
-                return f
+        print("[OVERVIEW_FONT_DEBUG]")
+        print("  market =", market)
+        print("  profile =", profile)
+        print("  chosen_primary =", chosen)
+        print(
+            "  selected_font_list =",
+            font_list[:20],
+            ("... (len=%d)" % len(font_list) if len(font_list) > 20 else ""),
+        )
+        print("  rcParams.font.family =", plt.rcParams.get("font.family"))
+        print("  rcParams.font.sans-serif (head) =", (plt.rcParams.get("font.sans-serif") or [])[:15])
     except Exception:
         pass
-    return None
+
+
+def _debug_print_noto_paths() -> None:
+    if not _env_on("OVERVIEW_DEBUG_FONTS"):
+        return
+    try:
+        paths = sorted({f.fname for f in fm.fontManager.ttflist})
+        noto = [p for p in paths if "noto" in p.lower()]
+        print("[OVERVIEW_FONT_DEBUG_PATHS]")
+        print("  matplotlib knows noto paths =", len(noto))
+        for p in noto[:30]:
+            print("   ", p)
+    except Exception:
+        pass
 
 
 # =============================================================================
-# Utils
+# Force-register TTC faces (critical on some CI images)
 # =============================================================================
-def _safe_str(x: Any) -> str:
-    try:
-        return str(x).strip() if x is not None else ""
-    except Exception:
-        return ""
+_CJK_TTC_PATHS = [
+    # Sans CJK
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Light.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-DemiLight.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Thin.ttc",
+    # Serif CJK (optional)
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
+]
 
 
-def _safe_float(x: Any, default: float = 0.0) -> float:
-    try:
-        return float(x)
-    except Exception:
-        return default
-
-
-def _safe_int(x: Any, default: int = 0) -> int:
-    try:
-        return int(float(x))
-    except Exception:
-        return default
-
-
-def _safe_bool(x: Any) -> bool:
-    try:
-        if isinstance(x, bool):
-            return x
-        s = str(x).strip().lower()
-        return s in {"1", "true", "yes", "y", "on"}
-    except Exception:
-        return False
-
-
-def _fmt_ret_pct(ret: float) -> str:
-    r = _safe_float(ret, 0.0)
-    pct = (r * 100.0) if abs(r) < 1.5 else r
-    return f"{pct:+.2f}%"
-
-
-def get_ret_color(ret: float, theme: str) -> str:
-    if (theme or "dark").strip().lower() == "dark":
-        return "#ff6b6b" if ret >= 0 else "#4dabf7"
-    return "#d9480f" if ret >= 0 else "#1864ab"
-
-
-def _ellipsize_px(
-    ax,
-    fig,
-    s: str,
-    *,
-    x_left: float,
-    x_right: float,
-    y: float,
-    fontsize: int,
-    weight: str = "bold",
-) -> str:
+def _try_add_noto_cjk_ttc() -> None:
     """
-    Ellipsize by pixel width. Much more stable than char-count.
+    On some GitHub runner + Matplotlib setups, fontManager scans TTC but only
+    registers one family name (often JP). However the TTC still contains all CJK glyphs.
+
+    Force-add TTC via fontManager.addfont() (idempotent).
     """
-    s = _safe_str(s)
-    if not s:
-        return ""
-    p0 = ax.transData.transform((x_left, y))
-    p1 = ax.transData.transform((x_right, y))
-    avail = max(1.0, p1[0] - p0[0])
+    try:
+        for p in _CJK_TTC_PATHS:
+            if os.path.exists(p):
+                try:
+                    fm.fontManager.addfont(p)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
-    if text_width_px(ax, fig, s, x=x_left, y=y, fontsize=fontsize, weight=weight) <= avail:
-        return s
 
-    ell = "…"
-    lo, hi = 0, len(s)
-    best = ell
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        cand0 = s[:mid].rstrip()
-        cand = (cand0 + ell) if cand0 else ell
-        w = text_width_px(ax, fig, cand, x=x_left, y=y, fontsize=fontsize, weight=weight)
-        if w <= avail:
-            best = cand
-            lo = mid + 1
+# =============================================================================
+# Small helpers
+# =============================================================================
+def _available_font_names() -> set[str]:
+    _try_add_noto_cjk_ttc()
+    return {f.name for f in fm.fontManager.ttflist}
+
+
+def _dedup_keep_order(xs: List[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for x in xs:
+        if x and x not in seen:
+            out.append(x)
+            seen.add(x)
+    return out
+
+
+def _filter_available(order: List[str], available: set[str]) -> List[str]:
+    out: List[str] = []
+    for n in order:
+        if n in available and n not in out:
+            out.append(n)
+    return out
+
+
+def _pick_available_list(candidates: List[str]) -> List[str]:
+    try:
+        available = _available_font_names()
+    except Exception:
+        return []
+    out: List[str] = []
+    for n in candidates:
+        if n in available and n not in out:
+            out.append(n)
+    return out
+
+
+# =============================================================================
+# Font setup (rcParams)
+# =============================================================================
+def setup_cjk_font(payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """
+    Configure matplotlib fonts for rendering + bbox measurement.
+
+    Key rule:
+    - If the market actually DISPLAY CJK/TH, the FIRST font MUST support that script.
+    - On GitHub runners, Noto CJK TTC is often registered ONLY as "Noto Sans CJK JP".
+      So we treat it as a universal CJK fallback to avoid DejaVu tofu warnings.
+    """
+    try:
+        _try_add_noto_cjk_ttc()
+        available = _available_font_names()
+
+        market = ""
+        if payload:
+            market = str(payload.get("market", "") or "").upper()
+        market = normalize_market(market)
+
+        ss = []
+        if payload:
+            ss = payload.get("sector_summary", []) or []
+        if not isinstance(ss, list):
+            ss = []
+
+        need_kr = (market == "KR")
+        if not need_kr and ss:
+            for r in ss[:80]:
+                if has_hangul(str((r or {}).get("sector", "") or "")):
+                    need_kr = True
+                    break
+
+        need_th = (market == "TH")
+        if not need_th and ss:
+            for r in ss[:80]:
+                if has_thai(str((r or {}).get("sector", "") or "")):
+                    need_th = True
+                    break
+
+        need_jp = (market == "JP")
+        if not need_jp and ss:
+            for r in ss[:80]:
+                if has_kana(str((r or {}).get("sector", "") or "")):
+                    need_jp = True
+                    break
+
+        need_han = (market in {"TW", "CN"})
+        if not need_han and ss:
+            for r in ss[:80]:
+                if has_han(str((r or {}).get("sector", "") or "")):
+                    need_han = True
+                    break
+
+        CJK_UNIVERSAL = ["Noto Sans CJK JP", "Noto Sans CJK"]
+
+        primary_cn = [
+            "Noto Sans CJK SC",
+            *CJK_UNIVERSAL,
+            "Noto Sans SC",
+            "Microsoft YaHei",
+            "SimHei",
+            "WenQuanYi Zen Hei",
+        ]
+        primary_tw = [
+            "Noto Sans CJK TC",
+            "Noto Sans CJK HK",
+            *CJK_UNIVERSAL,
+            "Noto Sans TC",
+            "Noto Sans HK",
+            "Microsoft JhengHei",
+            "PingFang TC",
+        ]
+        primary_jp = [
+            "Noto Sans CJK JP",
+            "Noto Sans JP",
+            "Yu Gothic",
+            "Meiryo",
+        ]
+        primary_kr = [
+            "Noto Sans CJK KR",
+            *CJK_UNIVERSAL,
+            "Noto Sans KR",
+            "Malgun Gothic",
+        ]
+
+        primary_th = [
+            "Noto Sans Thai",
+            "Noto Sans Thai UI",
+            "Noto Looped Thai",
+            "Noto Looped Thai UI",
+            "Tahoma",
+            "Leelawadee UI",
+            "TH Sarabun New",
+            "Angsana New",
+        ]
+
+        latin = ["Noto Sans", "DejaVu Sans", "Arial Unicode MS"]
+
+        profile = _get_font_profile()
+        zh_primary = primary_cn if market == "CN" else primary_tw
+
+        # ---- Build order ----
+        if market in {"TW", "CN", "JP", "KR", "TH"} or need_han or need_jp or need_kr or need_th:
+            if market == "TH" or need_th:
+                order = primary_th + latin + zh_primary + primary_jp + primary_kr
+            elif market == "KR" or need_kr:
+                order = primary_kr + latin + zh_primary + primary_jp + primary_th
+            elif market == "JP" or need_jp:
+                order = primary_jp + latin + zh_primary + primary_kr + primary_th
+            elif market == "CN":
+                order = primary_cn + latin + primary_jp + primary_kr + primary_th
+            else:
+                order = primary_tw + latin + primary_jp + primary_kr + primary_th
+
+            order = order + ["DejaVu Sans", "Noto Sans"]
         else:
-            hi = mid - 1
-    return best
+            # ✅ FR 是 latin market，照 latin 走即可（仍可用 profile=TH 模擬字感）
+            if profile == "TH" and market in {"US", "CA", "AU", "UK"}:
+                order = latin + primary_th + zh_primary + primary_kr + primary_jp + ["DejaVu Sans", "Noto Sans"]
+            else:
+                order = latin + zh_primary + primary_jp + primary_kr + primary_th + ["DejaVu Sans", "Noto Sans"]
+
+        order = _dedup_keep_order(order)
+        font_list = _filter_available(order, available)
+        if not font_list:
+            return None
+
+        plt.rcParams["font.family"] = "sans-serif"
+        plt.rcParams["font.sans-serif"] = font_list
+        plt.rcParams["axes.unicode_minus"] = False
+
+        chosen = font_list[0] if font_list else None
+        _debug_print_fonts(market, profile, font_list, chosen)
+        _debug_print_noto_paths()
+        return chosen
+    except Exception:
+        return None
 
 
-def _fit_text_fs(
-    ax,
-    fig,
-    s: str,
-    *,
-    x_left: float,
-    x_right: float,
-    y: float,
-    fs_start: int,
-    fs_min: int,
-    weight: str = "bold",
-) -> Tuple[str, int]:
-    """
-    Prefer shrinking font size to fit, only ellipsize as last resort.
-    """
-    s = _safe_str(s)
-    if not s:
-        return "", fs_start
-
-    p0 = ax.transData.transform((x_left, y))
-    p1 = ax.transData.transform((x_right, y))
-    avail = max(1.0, p1[0] - p0[0])
-
-    fs = int(fs_start)
-    fs_min = int(max(10, fs_min))
-
-    while fs >= fs_min:
-        w = text_width_px(ax, fig, s, x=x_left, y=y, fontsize=fs, weight=weight)
-        if w <= avail:
-            return s, fs
-        fs -= 1
-
-    # still too long -> ellipsize at fs_min
-    s2 = _ellipsize_px(ax, fig, s, x_left=x_left, x_right=x_right, y=y, fontsize=fs_min, weight=weight)
-    return s2, fs_min
-
-
-def _normalize_status(x: Any) -> str:
-    """
-    Normalize any status field into: hit / touch / big / ""
-    Accepts: limit_hit, touched, big10, hit, touch, big, etc.
-    """
-    s = _safe_str(x).lower()
-    if s in {"hit", "limit_hit", "locked"}:
-        return "hit"
-    if s in {"touch", "touched", "opened", "bomb"}:
-        return "touch"
-    if s in {"big", "big10", "big10+", "surge"}:
-        return "big"
-    return ""
-
-
-def _status_from_row(r: Dict[str, Any]) -> str:
-    """
-    Prefer authoritative fields (from snapshot/aggregator):
-      - limitup_status / today_status
-    Fallback to flags only if these are missing.
-    """
-    st = _normalize_status(r.get("limitup_status"))
-    if st:
-        return st
-    st = _normalize_status(r.get("today_status"))
-    if st:
-        return st
-
-    # fallback (older payloads)
-    if _safe_bool(r.get("is_limitup_locked")):
-        return "hit"
-    if _safe_bool(r.get("is_limitup_touch")):
-        return "touch"
-    if _safe_bool(r.get("is_surge_ge10")):
-        return "big"
-    return ""
-
-
-def _count_status(rows: List[Dict[str, Any]]) -> Tuple[int, int, int]:
-    """
-    Return (hit, touch, big) for totals display.
-    """
-    hit = touch = big = 0
-    for r in rows or []:
-        st = _status_from_row(r)
-        if st == "big":
-            big += 1
-        elif st == "touch":
-            touch += 1
-        elif st == "hit":
-            hit += 1
-    return hit, touch, big
-
-
-def _status_badge_for_top_row(r: Dict[str, Any], theme: str) -> Tuple[str, str, str]:
-    """
-    Decide TOP-RIGHT badge for TOP rows:
-    - big   -> Big 10%+
-    - touch -> Touched
-    - hit   -> Limit Hit
-    """
-    theme = (theme or "dark").lower()
-    is_dark = theme == "dark"
-
-    c_orange = "#f59f00" if is_dark else "#f08c00"  # hit
-    c_blue = "#4dabf7" if is_dark else "#1c7ed6"    # touch
-    c_pink = "#ff6b6b" if is_dark else "#d9480f"    # big
-
-    st = _status_from_row(r)
-    if st == "big":
-        return ("Big 10%+", c_pink, "#0b0d10" if is_dark else "#ffffff")
-    if st == "touch":
-        return ("Touched", c_blue, "#0b0d10" if is_dark else "#ffffff")
-    return ("Limit Hit", c_orange, "#0b0d10" if is_dark else "#ffffff")
-
-
-def _limit_pct_optional(r: Dict[str, Any]) -> Optional[float]:
-    """
-    Show Limit X% pill ONLY when band exists.
-    Accept either:
-      - limit_rate_pct (e.g. 5/10/20)
-      - band_pct (ratio 0.05/0.10/0.20)
-    If no band, return None.
-    """
-    v = r.get("limit_rate_pct", None)
-    if v is not None:
-        try:
-            fv = float(v)
-            if fv > 0:
-                return fv
-        except Exception:
-            pass
-
-    bp = r.get("band_pct", None)
-    if bp is not None:
-        try:
-            fb = float(bp)
-            if fb > 0:
-                return fb * 100.0
-        except Exception:
-            pass
-
+# =============================================================================
+# Per-text FontProperties chooser (CRITICAL for bbox measurement)
+# =============================================================================
+def _pick_first_available(candidates: List[str]) -> Optional[str]:
+    try:
+        available = _available_font_names()
+    except Exception:
+        return None
+    for n in candidates:
+        if n in available:
+            return n
     return None
 
 
-def _status_label_short(st: str) -> str:
-    st = _normalize_status(st)
-    if st == "hit":
-        return "Limit Hit"
-    if st == "touch":
-        return "Touched"
-    if st == "big":
-        return "Big 10%+"
-    return ""
-
-
-def _default_line2_top(r: Dict[str, Any]) -> str:
-    """
-    TOP line2 default: show today+prev status + streaks.
-    Ex: "Today: Big 10%+ (2) | Prev: Touched (1)"
-    """
-    today = _status_label_short(r.get("today_status") or r.get("limitup_status"))
-    prev = _status_label_short(r.get("prev_status") or r.get("prev_limitup_status"))
-
-    st_today = _safe_int(r.get("streak_today"), 0)
-    st_prev = _safe_int(r.get("streak_prev"), 0)
-
-    parts: List[str] = []
-    if today:
-        parts.append(f"Today: {today}" + (f" ({st_today})" if st_today > 0 else ""))
-    if prev:
-        parts.append(f"Prev: {prev}" + (f" ({st_prev})" if st_prev > 0 else ""))
-
-    if parts:
-        return " | ".join(parts)
-
-    # ultra fallback: keep old text if exists
-    return ""
-
-
-def _default_line2_peer(r: Dict[str, Any]) -> str:
-    """
-    PEER line2 default:
-    Prefer "Prev session {prev_ret_pct}" plus prev status/streak if available.
-    Ex: "Prev session -5.70% | Prev: Limit Hit (2)"
-    """
-    prev_ret_pct = r.get("prev_ret_pct", None)
-    prev_ret_str = ""
-    if prev_ret_pct is not None:
-        try:
-            prev_ret_str = f"Prev session {float(prev_ret_pct):+.2f}%"
-        except Exception:
-            prev_ret_str = ""
-
-    prev = _status_label_short(r.get("prev_status") or r.get("prev_limitup_status"))
-    st_prev = _safe_int(r.get("streak_prev"), 0)
-
-    tail = ""
-    if prev:
-        tail = f"Prev: {prev}" + (f" ({st_prev})" if st_prev > 0 else "")
-
-    if prev_ret_str and tail:
-        return f"{prev_ret_str} | {tail}"
-    if prev_ret_str:
-        return prev_ret_str
-    if tail:
-        return tail
-    return ""
-
-
-# =============================================================================
-# Draw
-# =============================================================================
-def draw_block_table(
-    out_path: Path,
+def fontprops_for_text(
+    text: str,
     *,
-    layout: LayoutSpec,
-    sector: str,
-    cutoff: str,
-    locked_cnt: int,
-    touch_cnt: int,
-    theme_cnt: int,
-    hit_shown: Optional[int] = None,
-    hit_total: Optional[int] = None,
-    touch_shown: Optional[int] = None,
-    touch_total: Optional[int] = None,
-    big_shown: Optional[int] = None,
-    big_total: Optional[int] = None,
-    sector_shown_total: Optional[int] = None,
-    sector_all_total: Optional[int] = None,
-    limitup_rows: Optional[List[Dict[str, Any]]] = None,
-    peer_rows: Optional[List[Dict[str, Any]]] = None,
-    page_idx: int = 1,
-    page_total: int = 1,
-    width: int = 1080,
-    height: int = 1920,
-    rows_per_page: int = 6,
-    theme: str = "dark",
-    time_note: str = "",
-    has_more_peers: bool = False,
-    lang: str = "en",
-    market: str = "IN",
-    top_box_title: Optional[str] = None,
-    bot_box_title: Optional[str] = None,
-):
-    setup_font()
+    market: str = "",
+    payload: Optional[Dict[str, Any]] = None,
+    weight: Optional[str] = None,
+) -> FontProperties:
+    """
+    Return a family fallback list so Matplotlib can fall back without switching
+    to DejaVu (missing glyph) and without bbox drift.
 
-    theme = (theme or "dark").lower()
-    is_dark = theme == "dark"
+    IMPORTANT:
+    - Treat "Noto Sans CJK JP" as universal CJK fallback on CI.
+    """
+    try:
+        setup_cjk_font(payload or {"market": market})
+    except Exception:
+        pass
 
-    bg = "#0b0d10" if is_dark else "#ffffff"
-    fg = "#f1f3f5" if is_dark else "#111111"
-    sub = "#adb5bd" if is_dark else "#555555"
-    box = "#14171c" if is_dark else "#f6f8fa"
-    line = "#343a40" if is_dark else "#d0d7de"
-    line2_color = "#cfd4da" if is_dark else "#495057"
+    m = normalize_market(market or (payload or {}).get("market", "") if payload else market)
 
-    fig = plt.figure(figsize=(width / 100, height / 100), dpi=100)
-    ax = fig.add_axes([0, 0, 1, 1])
-    ax.set_axis_off()
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    fig.patch.set_facecolor(bg)
-    ax.set_facecolor(bg)
+    CJK_UNIVERSAL = ["Noto Sans CJK JP", "Noto Sans CJK"]
 
-    # -------------------------------
-    # Header (title + time note + page)
-    # -------------------------------
-    title_fs = int(getattr(layout, "title_fs", 62))
-    subtitle_fs = int(getattr(layout, "subtitle_fs", 30))
-
-    ax.text(
-        0.5, 0.97, _safe_str(sector),
-        ha="center", va="top",
-        fontsize=title_fs,
-        color=fg, weight="bold"
-    )
-
-    if int(page_total) > 1:
-        ax.text(
-            0.97, 0.97, f"{int(page_idx)}/{int(page_total)}",
-            ha="right", va="top",
-            fontsize=max(18, subtitle_fs - 8),
-            color=sub, weight="bold"
-        )
-
-    header_lines: List[str] = []
-    if time_note:
-        header_lines = [x.strip() for x in str(time_note).split("\n") if x.strip()]
-
-    if header_lines:
-        ax.text(
-            0.5, 0.91, header_lines[0],
-            ha="center", va="top",
-            fontsize=subtitle_fs,
-            color=sub, weight="bold"
-        )
-        if len(header_lines) > 1:
-            ax.text(
-                0.5, 0.88, header_lines[1],
-                ha="center", va="top",
-                fontsize=max(18, subtitle_fs - 2),
-                color=sub, weight="bold"
-            )
-
-    ensure_renderer(fig)
-
-    # -------------------------------
-    # Layout geometry
-    # -------------------------------
-    reserve_top = 0.86 if len(header_lines) > 1 else 0.88
-
-    top_y0 = float(getattr(layout, "top_box_y0", 0.84))
-    top_y1 = float(getattr(layout, "top_box_y1", 0.485))
-    bot_y0 = float(getattr(layout, "bot_box_y0", 0.465))
-    bot_y1 = float(getattr(layout, "bot_box_y1", 0.085))
-
-    top_y0 = min(top_y0, reserve_top)
-
-    ax.add_patch(plt.Rectangle((0.05, top_y1), 0.90, top_y0 - top_y1, facecolor=box, edgecolor=line, linewidth=2))
-    ax.add_patch(plt.Rectangle((0.05, bot_y1), 0.90, bot_y0 - bot_y1, facecolor=box, edgecolor=line, linewidth=2))
-
-    # -------------------------------
-    # Box titles
-    # -------------------------------
-    box_title_fs = int(getattr(layout, "box_title_fs", 30))
-    top_title_y = top_y0 - 0.025
-    bot_title_y = bot_y0 - 0.025
-
-    L = list(limitup_rows or [])
-    P = list(peer_rows or [])
-
-    # If totals not provided, compute from current L (best-effort fallback)
-    if hit_total is None or touch_total is None or big_total is None:
-        _h, _t, _b = _count_status(L)
-        hit_total = _h if hit_total is None else hit_total
-        touch_total = _t if touch_total is None else touch_total
-        big_total = _b if big_total is None else big_total
-
-    def top_title() -> str:
-        # caller override but never allow "Top movers"
-        if _safe_str(top_box_title):
-            t = _safe_str(top_box_title)
-            if "top movers" in t.lower():
-                return "Big 10%+ | Limit Hit | Touched"
-            return t
-
-        if (
-            hit_shown is not None and hit_total is not None and
-            touch_shown is not None and touch_total is not None and
-            big_shown is not None and big_total is not None
-        ):
-            return (
-                f"Big 10%+ {int(big_shown)}/{int(big_total)} | "
-                f"Limit Hit {int(hit_shown)}/{int(hit_total)} | "
-                f"Touched {int(touch_shown)}/{int(touch_total)}"
-            )
-
-        return "Big 10%+ | Limit Hit | Touched"
-
-    def bot_title() -> str:
-        if _safe_str(bot_box_title):
-            return _safe_str(bot_box_title)
-        if (hit_total or 0) == 0 and (touch_total or 0) == 0 and (big_total or 0) == 0:
-            return "No 10%+ or limit hits"
-        return "Peers (same sector)"
-
-    # ✅ title auto-shrink (no ellipsis unless absolutely necessary)
-    top_t, top_fs = _fit_text_fs(
-        ax, fig, top_title(),
-        x_left=0.08, x_right=0.92, y=top_title_y,
-        fs_start=box_title_fs, fs_min=max(18, box_title_fs - 10),
-        weight="bold",
-    )
-    bot_t, bot_fs = _fit_text_fs(
-        ax, fig, bot_title(),
-        x_left=0.08, x_right=0.92, y=bot_title_y,
-        fs_start=box_title_fs, fs_min=max(18, box_title_fs - 10),
-        weight="bold",
-    )
-
-    ax.text(0.08, top_title_y, top_t, ha="left", va="center", fontsize=top_fs, color=fg, weight="bold")
-    ax.text(0.08, bot_title_y, bot_t, ha="left", va="center", fontsize=bot_fs, color=fg, weight="bold")
-
-    # -------------------------------
-    # Rows layout
-    # -------------------------------
-    two_line = True
-    y_start_top, row_h_top = calc_rows_layout(top_y0 - 0.055, top_y1, int(rows_per_page), two_line=two_line)
-    y_start_bot, row_h_bot = calc_rows_layout(bot_y0 - 0.055, bot_y1, int(rows_per_page) + 1, two_line=two_line)
-
-    x_name = 0.08
-    x_tag = 0.94
-    sep_x0, sep_x1 = 0.08, 0.91
-
-    row_name_fs = int(getattr(layout, "row_name_fs", 28))
-    row_line2_fs = max(18, row_name_fs - 6)
-    row_tag_fs = max(20, row_name_fs - 4)
-
-    def _draw_empty(y0: float, y1: float, msg: str):
-        ax.text(
-            0.5, (y0 + y1) / 2,
-            msg,
-            ha="center", va="center",
-            fontsize=max(22, row_line2_fs),
-            color=sub, alpha=0.65
-        )
-
-    # ================= TOP =================
-    if not L:
-        _draw_empty(top_y0, top_y1, "(No items)")
+    if has_thai(text):
+        primary = [
+            "Noto Sans Thai",
+            "Noto Sans Thai UI",
+            "Noto Looped Thai",
+            "Noto Looped Thai UI",
+            "Tahoma",
+            "Leelawadee UI",
+            *CJK_UNIVERSAL,
+            "DejaVu Sans",
+        ]
+    elif has_hangul(text):
+        primary = [
+            "Noto Sans CJK KR",
+            *CJK_UNIVERSAL,
+            "Noto Sans KR",
+            "Malgun Gothic",
+            "DejaVu Sans",
+        ]
+    elif has_kana(text):
+        primary = [
+            "Noto Sans CJK JP",
+            "Noto Sans JP",
+            "Yu Gothic",
+            "Meiryo",
+            "DejaVu Sans",
+        ]
+    elif has_han(text):
+        if m == "CN":
+            primary = [
+                "Noto Sans CJK SC",
+                *CJK_UNIVERSAL,
+                "Noto Sans SC",
+                "Microsoft YaHei",
+                "SimHei",
+                "WenQuanYi Zen Hei",
+                "DejaVu Sans",
+            ]
+        else:
+            primary = [
+                "Noto Sans CJK TC",
+                "Noto Sans CJK HK",
+                *CJK_UNIVERSAL,
+                "Noto Sans TC",
+                "Noto Sans HK",
+                "Microsoft JhengHei",
+                "PingFang TC",
+                "DejaVu Sans",
+            ]
     else:
-        for i, r in enumerate(L[: int(rows_per_page)]):
-            y_center = y_start_top - i * row_h_top
-            y1 = y_center + row_h_top * 0.22
-            y2 = y_center - row_h_top * 0.22
+        primary = [
+            "Noto Sans",
+            "DejaVu Sans",
+            "Arial Unicode MS",
+        ]
 
-            line1 = _safe_str(r.get("line1") or "")
-            line2 = _safe_str(r.get("line2") or "")
+    families = _pick_available_list(primary)
+    if not families:
+        base = _pick_first_available(primary) or "sans-serif"
+        families = [base]
 
-            # ✅ if caller didn't fill line2: build from today/prev status + streak
-            if not line2:
-                line2 = _default_line2_top(r)
+    w = (weight or "").strip().lower() or None
+    if w is None:
+        return FontProperties(family=families)
 
-            # ✅ Rightmost badge is STATUS (Big/Touched/Limit Hit)
-            status_txt, status_bg, status_fg = _status_badge_for_top_row(r, theme)
+    if w in {"regular", "normal"}:
+        w = "regular"
+    elif w in {"medium"}:
+        w = "medium"
+    elif w in {"bold", "heavy", "black"}:
+        w = "bold"
 
-            badge_w_px = text_width_px(ax, fig, status_txt, x=x_tag, y=y1, fontsize=row_tag_fs, weight="bold")
-            badge_pad_px = 26 + 18
-            x_status_left = x_tag - px_to_data_dx(ax, badge_w_px + badge_pad_px, y_data=y1)
+    return FontProperties(family=families, weight=w)
 
-            safe_right = max(x_name + 0.10, x_status_left - 0.01)
 
-            line1_fit = _ellipsize_px(ax, fig, line1, x_left=x_name, x_right=safe_right, y=y1, fontsize=row_name_fs, weight="bold")
-            line2_fit = _ellipsize_px(ax, fig, line2, x_left=x_name, x_right=x_tag - 0.08, y=y2, fontsize=row_line2_fs, weight="regular")
+# =============================================================================
+# Language resolution
+# =============================================================================
+def _get_payload_lang(payload: Dict[str, Any]) -> str:
+    try:
+        v = (payload.get("lang") or (payload.get("meta") or {}).get("lang") or "")
+        v = str(v).strip().lower()
+        # ✅ add fr
+        if v in {"en", "fr", "zh-tw", "zh-cn", "ja", "ko", "th", "zh_hant", "zh_hans"}:
+            if v == "zh_hant":
+                return "zh-tw"
+            if v == "zh_hans":
+                return "zh-cn"
+            return v
+    except Exception:
+        pass
+    return ""
 
-            ax.text(x_name, y1, line1_fit, ha="left", va="center", fontsize=row_name_fs, color=fg, weight="bold")
-            if line2_fit:
-                ax.text(
-                    x_name, y2, line2_fit,
-                    ha="left", va="center",
-                    fontsize=row_line2_fs,
-                    color=line2_color,
-                    weight="regular",
-                    alpha=0.95
-                )
 
-            # ✅ Limit pill next to company name ONLY if band exists
-            pct = _limit_pct_optional(r)
-            if pct is not None:
-                pill_text = limit_label(pct)
-                pill_bg, pill_fg = limit_colors(pct, theme)
-                draw_pill_after_text(
-                    ax, fig,
-                    text_x=x_name,
-                    text_y=y1,
-                    text_str=line1_fit,
-                    text_fontsize=row_name_fs,
-                    pill_text=pill_text,
-                    pill_fontsize=row_tag_fs,
-                    pill_fg=pill_fg,
-                    pill_bg=pill_bg,
-                    x_right_limit=x_status_left,
-                    gap_px=10,
-                    measure_text_width_px_fn=text_width_px,
-                    px_to_data_dx_fn=px_to_data_dx,
-                )
+def _infer_lang_from_sectors(payload: Dict[str, Any]) -> str:
+    ss = payload.get("sector_summary", []) or []
+    if isinstance(ss, list):
+        for r in ss[:80]:
+            s = str((r or {}).get("sector", "") or "")
+            if has_thai(s):
+                return "th"
+            if has_hangul(s):
+                return "ko"
+            if has_kana(s):
+                return "ja"
+            if has_han(s):
+                return "zh-tw"
+    return "en"
 
-            # ✅ Status badge at far right
-            ax.text(
-                x_tag, y1, status_txt,
-                ha="right", va="center",
-                fontsize=row_tag_fs,
-                color=status_fg, weight="bold",
-                bbox=dict(boxstyle="round,pad=0.35", facecolor=status_bg, edgecolor="none", alpha=0.95)
-            )
 
-            # line2 right: ret as small pill
-            ret = _safe_float(r.get("ret"), 0.0)
-            if abs(ret) > 1e-12:
-                ret_text = _fmt_ret_pct(ret)
-                ax.text(
-                    x_tag, y2, ret_text,
-                    ha="right", va="center",
-                    fontsize=row_tag_fs,
-                    color="#0b0d10" if is_dark else "#ffffff",
-                    weight="bold",
-                    bbox=dict(boxstyle="round,pad=0.30", facecolor=get_ret_color(ret, theme), edgecolor="none", alpha=0.95)
-                )
+def _get_market_lang(market: str) -> str:
+    market = normalize_market(market)
 
-            if i < min(len(L), int(rows_per_page)) - 1:
-                ax.plot(
-                    [sep_x0, sep_x1],
-                    [y_center - row_h_top * 0.44, y_center - row_h_top * 0.44],
-                    color=line, lw=1, alpha=0.6
-                )
+    if market == "KR":
+        return "ko"
+    if market == "JP":
+        return "ja"
+    if market == "CN":
+        return "zh-cn"
+    if market == "TH":
+        return "th"
+    if market == "TW":
+        return "zh-tw"
+    # ✅ FR
+    if market == "FR":
+        return "fr"
 
-    # ================= BOTTOM =================
-    if not P:
-        _draw_empty(bot_y0, bot_y1, "(No peers)")
-    else:
-        for i, r in enumerate(P[: int(rows_per_page) + 1]):
-            y_center = y_start_bot - i * row_h_bot
-            y1 = y_center + row_h_bot * 0.22
-            y2 = y_center - row_h_bot * 0.22
+    EN_MARKETS = {"US", "CA", "AU", "UK", "EU", "IN", "SG", "MY", "PH", "ID", "VN", "HK"}
+    if market in EN_MARKETS:
+        return "en"
 
-            line1 = _safe_str(r.get("line1") or "")
-            line2 = _safe_str(r.get("line2") or "")
+    return "zh-tw"
 
-            # ✅ peer line2 fallback: Prev session + prev status/streak
-            if not line2:
-                line2 = _default_line2_peer(r)
 
-            # ret at far right
-            ret = _safe_float(r.get("ret"), 0.0)
-            ret_text = _fmt_ret_pct(ret) if abs(ret) > 1e-12 else ""
-            ret_fs = 24
-
-            x_ret = x_tag
-            ret_w_px = text_width_px(ax, fig, ret_text, x=x_ret, y=y1, fontsize=ret_fs, weight="bold") if ret_text else 0.0
-            x_ret_left = x_ret - px_to_data_dx(ax, ret_w_px + 14, y_data=y1) if ret_text else x_ret
-
-            # ✅ Limit pill only when band exists (keeps your “No Band” clean)
-            pct = _limit_pct_optional(r)
-            pill_text = limit_label(pct) if pct is not None else ""
-            pill_w_px = text_width_px(ax, fig, pill_text, x=x_ret, y=y1, fontsize=ret_fs, weight="bold") if pill_text else 0.0
-
-            reserve_px = (ret_w_px + 18) + ((pill_w_px + 26 + 18) if pill_text else 0.0)
-            safe_right = x_tag - px_to_data_dx(ax, reserve_px, y_data=y1)
-            safe_right = max(x_name + 0.10, safe_right)
-
-            line1_fit = _ellipsize_px(ax, fig, line1, x_left=x_name, x_right=safe_right, y=y1, fontsize=row_name_fs, weight="bold")
-            line2_fit = _ellipsize_px(ax, fig, line2, x_left=x_name, x_right=x_tag - 0.08, y=y2, fontsize=row_line2_fs, weight="regular")
-
-            ax.text(x_name, y1, line1_fit, ha="left", va="center", fontsize=row_name_fs, color=fg, weight="bold")
-            if line2_fit:
-                ax.text(
-                    x_name, y2, line2_fit,
-                    ha="left", va="center",
-                    fontsize=row_line2_fs,
-                    color=line2_color,
-                    weight="regular",
-                    alpha=0.95
-                )
-
-            # ret
-            if ret_text:
-                ax.text(
-                    x_ret, y1, ret_text,
-                    ha="right", va="center",
-                    fontsize=ret_fs,
-                    color=get_ret_color(ret, theme),
-                    weight="bold"
-                )
-
-            # pill placed after line1, before ret
-            if pct is not None:
-                pill_bg, pill_fg = limit_colors(pct, theme)
-                draw_pill_after_text(
-                    ax, fig,
-                    text_x=x_name,
-                    text_y=y1,
-                    text_str=line1_fit,
-                    text_fontsize=row_name_fs,
-                    pill_text=pill_text,
-                    pill_fontsize=ret_fs,
-                    pill_fg=pill_fg,
-                    pill_bg=pill_bg,
-                    x_right_limit=x_ret_left,
-                    gap_px=10,
-                    measure_text_width_px_fn=text_width_px,
-                    px_to_data_dx_fn=px_to_data_dx,
-                )
-
-            if i < min(len(P), int(rows_per_page) + 1) - 1:
-                ax.plot(
-                    [sep_x0, sep_x1],
-                    [y_center - row_h_bot * 0.44, y_center - row_h_bot * 0.44],
-                    color=line, lw=1, alpha=0.6
-                )
-
-        if has_more_peers:
-            ax.text(
-                0.5, bot_y1 + 0.02,
-                "(More items not shown)",
-                ha="center", va="bottom",
-                fontsize=max(20, row_line2_fs),
-                color=sub, alpha=0.85,
-                weight="bold"
-            )
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=100, facecolor=bg)
-    plt.close(fig)
-    return out_path
+def resolve_lang(payload: Dict[str, Any], market: str) -> str:
+    v = _get_payload_lang(payload)
+    if v:
+        return v
+    v = _get_market_lang(market)
+    if v:
+        return v
+    return _infer_lang_from_sectors(payload)
