@@ -18,7 +18,7 @@ def aggregate(payload: Dict[str, Any]) -> Dict[str, Any]:
     - snapshot_open -> open_limit_watchlist
     - open_limit_sector_summary (kept)
     - sector_summary for overview_mpl (bigmove10/touched + Breadth% via common aggregator)
-    - keep move_band/move_key in watch rows
+    - keep move_band/move_key in watch rows (for sector pages / labels)
     """
     return aggregate_no_limit_market(
         payload,
