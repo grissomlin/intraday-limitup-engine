@@ -194,6 +194,65 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     df["is_limitup_locked"] = is_locked
     df["is_limitup_opened"] = df["is_limitup_touch"] & (~df["is_limitup_locked"])
 
+    # =============================================================================
+    # ✅ Prev-day status fields (needs india_snapshot.py to include prev_* columns)
+    # =============================================================================
+    for col in ["prev_high", "prev_close", "prev_last_close"]:
+        if col not in df.columns:
+            df[col] = None
+
+    df["prev_ret"] = None
+    df["prev_ret_pct"] = None
+    df["prev_ret_high"] = None
+    df["prev_ret_high_pct"] = None
+    df["prev_is_limitup_touch"] = False
+    df["prev_is_limitup_locked"] = False
+    df["prev_is_surge_ge10"] = False
+    df["prev_status"] = None  # "limit_hit" | "touched" | "big10" | None
+
+    prev_c = pd.to_numeric(df["prev_close"], errors="coerce")
+    prev_h = pd.to_numeric(df["prev_high"], errors="coerce")
+    prev_lc = pd.to_numeric(df["prev_last_close"], errors="coerce")
+
+    m_prev = prev_lc.notna() & (prev_lc > 0) & prev_c.notna()
+    df.loc[m_prev, "prev_ret"] = (prev_c.loc[m_prev] / prev_lc.loc[m_prev]) - 1.0
+    df.loc[m_prev, "prev_ret_pct"] = df.loc[m_prev, "prev_ret"] * 100.0
+
+    m_prev_h = prev_lc.notna() & (prev_lc > 0) & prev_h.notna()
+    df.loc[m_prev_h, "prev_ret_high"] = (prev_h.loc[m_prev_h] / prev_lc.loc[m_prev_h]) - 1.0
+    df.loc[m_prev_h, "prev_ret_high_pct"] = df.loc[m_prev_h, "prev_ret_high"] * 100.0
+
+    prev_touch: List[bool] = []
+    prev_locked: List[bool] = []
+    for _, r in df.iterrows():
+        lc = _to_float(r.get("prev_last_close"), 0.0)
+        h = _to_float(r.get("prev_high"), 0.0)
+        c = _to_float(r.get("prev_close"), 0.0)
+        bp = r.get("band_pct", None)
+
+        if (bp is not None) and (lc > 0):
+            lp = _limit_price(lc, float(bp))
+            prev_touch.append(bool(h > 0 and h >= lp - EPS))
+            prev_locked.append(bool(c > 0 and c >= lp - EPS))
+        else:
+            prev_touch.append(False)
+            prev_locked.append(False)
+
+    df["prev_is_limitup_touch"] = prev_touch
+    df["prev_is_limitup_locked"] = prev_locked
+    df["prev_is_surge_ge10"] = (pd.to_numeric(df["prev_ret"], errors="coerce").fillna(0.0) >= float(INDIA_SURGE_RET))
+
+    def _prev_status_row(r: pd.Series) -> Optional[str]:
+        if bool(r.get("prev_is_limitup_locked")):
+            return "limit_hit"
+        if bool(r.get("prev_is_limitup_touch")):
+            return "touched"
+        if bool(r.get("prev_is_surge_ge10")):
+            return "big10"
+        return None
+
+    df["prev_status"] = df.apply(_prev_status_row, axis=1)
+
     # penny / tick danger
     prev_close = pd.to_numeric(df["last_close"], errors="coerce").fillna(0.0).astype(float)
     df["is_penny_20inr"] = (prev_close > 0) & (prev_close < float(INDIA_PENNY_PRICE_MAX))
@@ -230,12 +289,10 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     # display list = touch OR 10%+
     df_calc["is_display_limitup"] = (df_calc["is_limitup_touch"] == True) | (df_calc["is_surge_ge10"] == True)
 
-    # ✅ CRITICAL: write these computed flags back to df
-    # so snapshot_main carries them (your CLI builds from universe=snapshot_main)
+    # ✅ write computed flags back to df so snapshot_main carries them
     for col in ["is_surge_ge10", "abs_move", "is_bigmove10_ex_locked", "is_display_limitup"]:
         if col not in df.columns:
             df[col] = None
-        # default for excluded rows (tick danger filtered out)
         df[col] = False if col != "abs_move" else None
 
     df.loc[df_calc.index, "is_surge_ge10"] = df_calc["is_surge_ge10"].astype(bool)
@@ -335,7 +392,7 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     raw_payload["meta"] = _sanitize_nan(meta)
 
     # attach outputs
-    raw_payload["snapshot_main"] = _sanitize_nan(df.to_dict(orient="records"))  # ✅ now includes is_surge_ge10/is_display_limitup
+    raw_payload["snapshot_main"] = _sanitize_nan(df.to_dict(orient="records"))
     raw_payload["limitup"] = _sanitize_nan(limitup_records)
     raw_payload["sector_summary"] = _sanitize_nan(summary_rows)
     raw_payload["peers_by_sector"] = _sanitize_nan(peers_by_sector)
