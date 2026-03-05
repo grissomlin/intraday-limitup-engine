@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 import os
+
 import pandas as pd
 
 FR_OPEN_WATCHLIST_RET_TH = float(os.getenv("FR_OPEN_WATCHLIST_RET_TH", "0.10"))
@@ -12,8 +13,8 @@ FR_OPEN_WATCHLIST_RET_TH = float(os.getenv("FR_OPEN_WATCHLIST_RET_TH", "0.10"))
 def build_open_limit_watchlist_fr(snapshot_open_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     FR open_limit_watchlist：
-    - 從原始 snapshot_open 過濾 ret >= 門檻
-    - 保留 streak / streak_prev / hit_prev / move_band / move_key / badge_text / status_text
+    - 直接從「原始 snapshot_open」過濾 (ret >= 門檻)
+    - 保留 streak / streak_prev / hit_prev / move_band / move_key / badge_text / status_text... 等欄位
     - 不做過度裁切，避免 sector pages 缺欄位
     """
     if not snapshot_open_rows:
@@ -28,6 +29,7 @@ def build_open_limit_watchlist_fr(snapshot_open_rows: List[Dict[str, Any]]) -> L
     if df.empty:
         return []
 
+    # 補齊必要的 meta 欄位（不覆蓋你原本算好的 streak/status）
     if "limit_type" not in df.columns:
         df["limit_type"] = "open_limit"
 
@@ -41,8 +43,10 @@ def build_open_limit_watchlist_fr(snapshot_open_rows: List[Dict[str, Any]]) -> L
         ("symbol", ""),
         ("bar_date", ""),
         ("status_text", ""),
+        # new preferred fields
         ("move_band", -1),
         ("move_key", ""),
+        # backward compatible
         ("badge_text", ""),
         ("badge_level", 0),
         ("streak", 0),
@@ -60,6 +64,7 @@ def build_open_limit_watchlist_fr(snapshot_open_rows: List[Dict[str, Any]]) -> L
         if c not in df.columns:
             df[c] = dv
 
+    # 保留欄位（FR sector pages / overview builder 常用）
     keep = [
         "symbol",
         "name",
@@ -79,8 +84,10 @@ def build_open_limit_watchlist_fr(snapshot_open_rows: List[Dict[str, Any]]) -> L
         "streak",
         "streak_prev",
         "hit_prev",
+        # ✅ new
         "move_band",
         "move_key",
+        # ✅ old
         "badge_text",
         "badge_level",
         "limit_type",
@@ -91,8 +98,9 @@ def build_open_limit_watchlist_fr(snapshot_open_rows: List[Dict[str, Any]]) -> L
 
     for c in keep:
         if c not in df.columns:
-            df[c] = ""
+            df[c] = ""  # 兜底
 
+    # types cleanup (safe)
     df["move_band"] = pd.to_numeric(df.get("move_band", -1), errors="coerce").fillna(-1).astype(int)
     df["badge_level"] = pd.to_numeric(df.get("badge_level", 0), errors="coerce").fillna(0).astype(int)
     df["volume"] = pd.to_numeric(df.get("volume", 0), errors="coerce").fillna(0).astype(int)
