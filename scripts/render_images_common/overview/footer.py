@@ -243,6 +243,9 @@ def _market_word(lang: str, market: str = "") -> str:
     if m == "KR" or lang == "ko":
         return "시장"
 
+    if lang == "fr":
+        return "Marché"
+
     if _is_zh_cn(lang, m):
         return "市场"
     if lang.startswith("zh"):
@@ -261,10 +264,14 @@ def _note_lines(market: str, lang: str, *, note_mode: str = "exclusive") -> List
     mode = (note_mode or "exclusive").strip().lower()
     lng = (lang or "").strip().lower()
 
-    # ✅ NO-LIMIT markets: fixed English note + disclaimer
+    # ✅ NO-LIMIT markets: English or French note + disclaimer
     if m in NO_LIMIT_MARKETS:
-        note = "※ 10%+ = Close ≥ +10%"
-        disclaimer = "Disclaimer: For learning only. Not financial advice."
+        if lng == "fr":
+            note = "※ 10%+ = Clôture ≥ +10%"
+            disclaimer = "Avertissement : à titre informatif uniquement. Pas un conseil en investissement."
+        else:
+            note = "※ 10%+ = Close ≥ +10%"
+            disclaimer = "Disclaimer: For learning only. Not financial advice."
         return [note, "", disclaimer]
 
     if m == "TH":
@@ -417,7 +424,7 @@ def build_footer_center_lines(
             f"10%+:{int(big10_ex)}",
         ]
 
-    lines: List[str] = [" | ".join(parts)]
+    lines = [" | ".join(parts)]
     lines.extend(_note_lines(mkt, lng, note_mode=nm))
 
     if _debug_any("OVERVIEW_DEBUG_FOOTER"):
@@ -472,7 +479,11 @@ def build_footer_right_text(payload: Dict[str, Any], *, market: Optional[str] = 
     src_raw = str(meta.get("source") or meta.get("data_source") or "").strip()
     src = _normalize_source_text(src_raw)
 
+    # ✅ NO-LIMIT markets: EN or FR
     if mkt in NO_LIMIT_MARKETS:
+        if lng == "fr":
+            disclaimer = "Avertissement : à titre informatif uniquement. Pas un conseil en investissement."
+            return f"Données : {src} | {disclaimer}" if src else disclaimer
         disclaimer = "Disclaimer: For learning only. Not financial advice."
         return f"Data: {src} | {disclaimer}" if src else disclaimer
 
@@ -484,6 +495,11 @@ def build_footer_right_text(payload: Dict[str, Any], *, market: Optional[str] = 
     if lng.startswith("zh"):
         disclaimer = "免責：僅供學習參考，非投資建議"
         return f"資料：{src} | {disclaimer}" if src else disclaimer
+
+    # ✅ FR (non-no-limit markets) also supported
+    if lng == "fr":
+        disclaimer = "Avertissement : à titre informatif uniquement. Pas un conseil en investissement."
+        return f"Données : {src} | {disclaimer}" if src else disclaimer
 
     disclaimer = "Disclaimer: For learning only. Not financial advice."
     return f"Data: {src} | {disclaimer}" if src else disclaimer
