@@ -16,7 +16,6 @@ from .mpl_text import (
     px_to_data_dx,
 )
 from .mpl_pills import (
-    limit_pct_from_row,
     limit_label,
     limit_colors,
     draw_pill_after_text,
@@ -62,6 +61,16 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
         return float(x)
     except Exception:
         return default
+
+
+def _safe_bool(x: Any) -> bool:
+    try:
+        if isinstance(x, bool):
+            return x
+        s = str(x).strip().lower()
+        return s in {"1", "true", "yes", "y", "on"}
+    except Exception:
+        return False
 
 
 def _fmt_ret_pct(ret: float) -> str:
@@ -117,28 +126,44 @@ def _ellipsize_px(
     return best
 
 
+def _status_from_flags(r: Dict[str, Any]) -> str:
+    """
+    India definitive status priority:
+    1) locked -> limit_hit
+    2) touch  -> touched
+    3) surge  -> big10
+    """
+    if _safe_bool(r.get("is_limitup_locked")):
+        return "limit_hit"
+    if _safe_bool(r.get("is_limitup_touch")):
+        return "touched"
+    if _safe_bool(r.get("is_surge_ge10")):
+        return "big10"
+    return ""
+
+
 def _count_status(rows: List[Dict[str, Any]]) -> Tuple[int, int, int]:
     """
-    Return (hit, touch, big) based on limitup_status.
+    Return (hit, touch, big) based on computed flags.
     """
     hit = touch = big = 0
     for r in rows or []:
-        s = _safe_str(r.get("limitup_status")).lower()
-        if s == "big":
+        st = _status_from_flags(r)
+        if st == "big10":
             big += 1
-        elif s in ("touch", "bomb", "touched", "opened"):
+        elif st == "touched":
             touch += 1
-        elif s:
+        elif st == "limit_hit":
             hit += 1
     return hit, touch, big
 
 
 def _status_badge_for_top_row(r: Dict[str, Any], theme: str) -> Tuple[str, str, str]:
     """
-    Decide TOP-RIGHT status badge for TOP rows.
-    - big   -> Big 10%+
-    - touch -> Touched
-    - hit   -> Limit Hit
+    Decide TOP-RIGHT status badge for TOP rows (India):
+    - is_limitup_locked -> Limit Hit
+    - is_limitup_touch  -> Touched
+    - is_surge_ge10     -> Big 10%+
     """
     theme = (theme or "dark").lower()
     is_dark = theme == "dark"
@@ -147,14 +172,59 @@ def _status_badge_for_top_row(r: Dict[str, Any], theme: str) -> Tuple[str, str, 
     c_blue = "#4dabf7" if is_dark else "#1c7ed6"    # touched
     c_pink = "#ff6b6b" if is_dark else "#d9480f"    # big10
 
-    st = _safe_str(r.get("limitup_status")).lower()
-    if st == "big" or _safe_str(r.get("line2")).lower().startswith("big move"):
+    if _safe_bool(r.get("is_surge_ge10")) and (not _safe_bool(r.get("is_limitup_touch"))):
         return ("Big 10%+", c_pink, "#0b0d10" if is_dark else "#ffffff")
 
-    if st in ("touch", "bomb", "touched", "opened"):
+    if _safe_bool(r.get("is_limitup_touch")) and (not _safe_bool(r.get("is_limitup_locked"))):
         return ("Touched", c_blue, "#0b0d10" if is_dark else "#ffffff")
 
+    # default locked (or fallback)
     return ("Limit Hit", c_orange, "#0b0d10" if is_dark else "#ffffff")
+
+
+def _limit_pct_optional(r: Dict[str, Any]) -> Optional[float]:
+    """
+    Show Limit X% pill ONLY when band exists.
+    Accept either:
+      - limit_rate_pct (e.g. 5/10/20)
+      - band_pct (ratio 0.05/0.10/0.20)
+    If no band (No Band), return None.
+    """
+    v = r.get("limit_rate_pct", None)
+    if v is not None:
+        try:
+            fv = float(v)
+            if fv > 0:
+                return fv
+        except Exception:
+            pass
+
+    bp = r.get("band_pct", None)
+    if bp is not None:
+        try:
+            fb = float(bp)
+            if fb > 0:
+                return fb * 100.0
+        except Exception:
+            pass
+
+    # no band
+    return None
+
+
+def _prev_line2_fallback(r: Dict[str, Any]) -> str:
+    """
+    If caller didn't supply line2 for peers, show prev_status from aggregator:
+      prev_status: limit_hit | touched | big10
+    """
+    ps = _safe_str(r.get("prev_status")).lower()
+    if ps == "limit_hit":
+        return "Prev: Limit Hit"
+    if ps == "touched":
+        return "Prev: Touched"
+    if ps == "big10":
+        return "Prev: Big 10%+"
+    return ""
 
 
 # =============================================================================
@@ -289,12 +359,14 @@ def draw_block_table(
         big_total = _b if big_total is None else big_total
 
     def top_title() -> str:
-        # caller override (peers-only pages)
+        # caller override (peers-only pages) — but DO NOT allow "Top movers"
         if _safe_str(top_box_title):
-            return _safe_str(top_box_title)
+            t = _safe_str(top_box_title)
+            if "top movers" in t.lower():
+                return "Big 10%+ | Limit Hit | Touched"
+            return t
 
-        # ✅ IMPORTANT: Never return "Top movers" here.
-        # Even if L is empty (extra peers pages), keep sector semantics.
+        # ✅ India: never say "Top movers (<10%)"
         if (
             hit_shown is not None and hit_total is not None and
             touch_shown is not None and touch_total is not None and
@@ -352,6 +424,10 @@ def draw_block_table(
             line1 = _safe_str(r.get("line1") or "")
             line2 = _safe_str(r.get("line2") or "")
 
+            # If caller didn't fill line2, at least show prev status when available
+            if not line2:
+                line2 = _prev_line2_fallback(r)
+
             # ✅ Rightmost badge is STATUS (Big/Touched/Limit Hit)
             status_txt, status_bg, status_fg = _status_badge_for_top_row(r, theme)
 
@@ -369,26 +445,26 @@ def draw_block_table(
             if line2_fit:
                 ax.text(x_name, y2, line2_fit, ha="left", va="center", fontsize=row_line2_fs, color=line2_color, weight="regular", alpha=0.95)
 
-            # ✅ Limit pill goes next to company name (like bottom box)
-            pct = limit_pct_from_row(r, default_pct=10.0)
-            pill_text = limit_label(pct)
-            pill_bg, pill_fg = limit_colors(pct, theme)
-
-            draw_pill_after_text(
-                ax, fig,
-                text_x=x_name,
-                text_y=y1,
-                text_str=line1_fit,
-                text_fontsize=row_name_fs,
-                pill_text=pill_text,
-                pill_fontsize=row_tag_fs,
-                pill_fg=pill_fg,
-                pill_bg=pill_bg,
-                x_right_limit=x_status_left,
-                gap_px=10,
-                measure_text_width_px_fn=text_width_px,
-                px_to_data_dx_fn=px_to_data_dx,
-            )
+            # ✅ Limit pill next to company name ONLY if band exists
+            pct = _limit_pct_optional(r)
+            if pct is not None:
+                pill_text = limit_label(pct)
+                pill_bg, pill_fg = limit_colors(pct, theme)
+                draw_pill_after_text(
+                    ax, fig,
+                    text_x=x_name,
+                    text_y=y1,
+                    text_str=line1_fit,
+                    text_fontsize=row_name_fs,
+                    pill_text=pill_text,
+                    pill_fontsize=row_tag_fs,
+                    pill_fg=pill_fg,
+                    pill_bg=pill_bg,
+                    x_right_limit=x_status_left,
+                    gap_px=10,
+                    measure_text_width_px_fn=text_width_px,
+                    px_to_data_dx_fn=px_to_data_dx,
+                )
 
             # ✅ Status badge at far right
             ax.text(
@@ -427,6 +503,10 @@ def draw_block_table(
             line1 = _safe_str(r.get("line1") or "")
             line2 = _safe_str(r.get("line2") or "")
 
+            # ✅ fallback prev status if caller didn't provide second line
+            if not line2:
+                line2 = _prev_line2_fallback(r)
+
             # ret at far right
             ret = _safe_float(r.get("ret"), 0.0)
             ret_text = _fmt_ret_pct(ret) if abs(ret) > 1e-12 else ""
@@ -436,14 +516,13 @@ def draw_block_table(
             ret_w_px = text_width_px(ax, fig, ret_text, x=x_ret, y=y1, fontsize=ret_fs, weight="bold") if ret_text else 0.0
             x_ret_left = x_ret - px_to_data_dx(ax, ret_w_px + 14, y_data=y1) if ret_text else x_ret
 
-            # pill BEFORE ret
-            pct = limit_pct_from_row(r, default_pct=10.0)
-            pill_text = limit_label(pct)
-            pill_bg, pill_fg = limit_colors(pct, theme)
+            # ✅ Limit pill only when band exists
+            pct = _limit_pct_optional(r)
+            pill_text = limit_label(pct) if pct is not None else ""
+            pill_w_px = text_width_px(ax, fig, pill_text, x=x_ret, y=y1, fontsize=ret_fs, weight="bold") if pill_text else 0.0
 
             # reserve for (pill + ret)
-            pill_w_px = text_width_px(ax, fig, pill_text, x=x_ret, y=y1, fontsize=ret_fs, weight="bold")
-            reserve_px = (ret_w_px + 18) + (pill_w_px + 26 + 18)
+            reserve_px = (ret_w_px + 18) + ((pill_w_px + 26 + 18) if pill_text else 0.0)
             safe_right = x_tag - px_to_data_dx(ax, reserve_px, y_data=y1)
             safe_right = max(x_name + 0.10, safe_right)
 
@@ -464,22 +543,24 @@ def draw_block_table(
                     weight="bold"
                 )
 
-            # pill placed to left of ret, after line1
-            draw_pill_after_text(
-                ax, fig,
-                text_x=x_name,
-                text_y=y1,
-                text_str=line1_fit,
-                text_fontsize=row_name_fs,
-                pill_text=pill_text,
-                pill_fontsize=ret_fs,
-                pill_fg=pill_fg,
-                pill_bg=pill_bg,
-                x_right_limit=x_ret_left,
-                gap_px=10,
-                measure_text_width_px_fn=text_width_px,
-                px_to_data_dx_fn=px_to_data_dx,
-            )
+            # pill placed after line1, before ret
+            if pct is not None:
+                pill_bg, pill_fg = limit_colors(pct, theme)
+                draw_pill_after_text(
+                    ax, fig,
+                    text_x=x_name,
+                    text_y=y1,
+                    text_str=line1_fit,
+                    text_fontsize=row_name_fs,
+                    pill_text=pill_text,
+                    pill_fontsize=ret_fs,
+                    pill_fg=pill_fg,
+                    pill_bg=pill_bg,
+                    x_right_limit=x_ret_left,
+                    gap_px=10,
+                    measure_text_width_px_fn=text_width_px,
+                    px_to_data_dx_fn=px_to_data_dx,
+                )
 
             if i < min(len(P), int(rows_per_page) + 1) - 1:
                 ax.plot([sep_x0, sep_x1], [y_center - row_h_bot * 0.44, y_center - row_h_bot * 0.44], color=line, lw=1, alpha=0.6)
