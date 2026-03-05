@@ -126,47 +126,35 @@ def _count_status(rows: List[Dict[str, Any]]) -> Tuple[int, int, int]:
         s = _safe_str(r.get("limitup_status")).lower()
         if s == "big":
             big += 1
-        elif s in ("touch", "bomb", "touched"):
+        elif s in ("touch", "bomb", "touched", "opened"):
             touch += 1
         elif s:
             hit += 1
     return hit, touch, big
 
 
-def _badge_for_top_row(r: Dict[str, Any], theme: str) -> Tuple[str, str, str]:
+def _status_badge_for_top_row(r: Dict[str, Any], theme: str) -> Tuple[str, str, str]:
     """
-    Decide top-right badge for TOP rows.
-    - big -> Big 10%+
-    - touch -> Limit X% (blue-ish)
-    - hit/locked -> Limit X% (orange-ish)
-    - fallback -> Limit X% (from band)
+    Decide TOP-RIGHT status badge for TOP rows.
+    - big   -> Big 10%+
+    - touch -> Touched
+    - hit   -> Limit Hit
     """
     theme = (theme or "dark").lower()
     is_dark = theme == "dark"
 
-    # close to your current palette
-    c_orange = "#f59f00" if is_dark else "#f08c00"
-    c_blue = "#4dabf7" if is_dark else "#1c7ed6"
-    c_gray = "#868e96" if is_dark else "#6c757d"
-    c_pink = "#ff6b6b" if is_dark else "#d9480f"
+    c_orange = "#f59f00" if is_dark else "#f08c00"  # hit/locked
+    c_blue = "#4dabf7" if is_dark else "#1c7ed6"    # touched
+    c_pink = "#ff6b6b" if is_dark else "#d9480f"    # big10
 
     st = _safe_str(r.get("limitup_status")).lower()
     if st == "big" or _safe_str(r.get("line2")).lower().startswith("big move"):
         return ("Big 10%+", c_pink, "#0b0d10" if is_dark else "#ffffff")
 
-    pct = limit_pct_from_row(r, default_pct=10.0)
-    txt = limit_label(pct)
-
     if st in ("touch", "bomb", "touched", "opened"):
-        return (txt, c_blue, "#0b0d10" if is_dark else "#ffffff")
+        return ("Touched", c_blue, "#0b0d10" if is_dark else "#ffffff")
 
-    if st in ("hit", "locked", "lock"):
-        return (txt, c_orange, "#0b0d10" if is_dark else "#ffffff")
-
-    # fallback
-    if pct <= 5.0:
-        return (txt, c_gray, "#0b0d10" if is_dark else "#ffffff")
-    return (txt, c_orange, "#0b0d10" if is_dark else "#ffffff")
+    return ("Limit Hit", c_orange, "#0b0d10" if is_dark else "#ffffff")
 
 
 # =============================================================================
@@ -202,7 +190,7 @@ def draw_block_table(
     lang: str = "en",
     market: str = "IN",
 
-    # ✅ NEW: allow caller override box titles (for peers-only sector pages)
+    # allow caller override box titles (mainly for peers-only pages)
     top_box_title: Optional[str] = None,
     bot_box_title: Optional[str] = None,
 ):
@@ -290,11 +278,10 @@ def draw_block_table(
     top_title_y = top_y0 - 0.025
     bot_title_y = bot_y0 - 0.025
 
-    # build title strings
     L = list(limitup_rows or [])
     P = list(peer_rows or [])
 
-    # if caller already computed shown/total, use them; else compute from L
+    # If totals not provided, compute from current L (best-effort fallback)
     if hit_total is None or touch_total is None or big_total is None:
         _h, _t, _b = _count_status(L)
         hit_total = _h if hit_total is None else hit_total
@@ -302,22 +289,26 @@ def draw_block_table(
         big_total = _b if big_total is None else big_total
 
     def top_title() -> str:
-        # ✅ caller override (peers-only)
+        # caller override (peers-only pages)
         if _safe_str(top_box_title):
             return _safe_str(top_box_title)
 
-        if not L:
-            return "Top movers (<10%)"
+        # ✅ IMPORTANT: Never return "Top movers" here.
+        # Even if L is empty (extra peers pages), keep sector semantics.
         if (
             hit_shown is not None and hit_total is not None and
             touch_shown is not None and touch_total is not None and
             big_shown is not None and big_total is not None
         ):
-            return f"Big 10%+ {int(big_shown)}/{int(big_total)} | Limit Hit {int(hit_shown)}/{int(hit_total)} | Touched {int(touch_shown)}/{int(touch_total)}"
+            return (
+                f"Big 10%+ {int(big_shown)}/{int(big_total)} | "
+                f"Limit Hit {int(hit_shown)}/{int(hit_total)} | "
+                f"Touched {int(touch_shown)}/{int(touch_total)}"
+            )
+
         return "Big 10%+ | Limit Hit | Touched"
 
     def bot_title() -> str:
-        # ✅ caller override (peers-only)
         if _safe_str(bot_box_title):
             return _safe_str(bot_box_title)
 
@@ -361,13 +352,15 @@ def draw_block_table(
             line1 = _safe_str(r.get("line1") or "")
             line2 = _safe_str(r.get("line2") or "")
 
-            badge_txt, badge_bg, badge_fg = _badge_for_top_row(r, theme)
+            # ✅ Rightmost badge is STATUS (Big/Touched/Limit Hit)
+            status_txt, status_bg, status_fg = _status_badge_for_top_row(r, theme)
 
-            # reserve right space for badge on line1
-            badge_w_px = text_width_px(ax, fig, badge_txt, x=x_tag, y=y1, fontsize=row_tag_fs, weight="bold")
+            # measure status badge width -> reserve space on line1
+            badge_w_px = text_width_px(ax, fig, status_txt, x=x_tag, y=y1, fontsize=row_tag_fs, weight="bold")
             badge_pad_px = 26 + 18
-            safe_right = x_tag - px_to_data_dx(ax, badge_w_px + badge_pad_px, y_data=y1)
-            safe_right = max(x_name + 0.10, safe_right)
+            x_status_left = x_tag - px_to_data_dx(ax, badge_w_px + badge_pad_px, y_data=y1)
+
+            safe_right = max(x_name + 0.10, x_status_left - 0.01)
 
             line1_fit = _ellipsize_px(ax, fig, line1, x_left=x_name, x_right=safe_right, y=y1, fontsize=row_name_fs, weight="bold")
             line2_fit = _ellipsize_px(ax, fig, line2, x_left=x_name, x_right=x_tag - 0.08, y=y2, fontsize=row_line2_fs, weight="regular")
@@ -376,16 +369,37 @@ def draw_block_table(
             if line2_fit:
                 ax.text(x_name, y2, line2_fit, ha="left", va="center", fontsize=row_line2_fs, color=line2_color, weight="regular", alpha=0.95)
 
-            # top-right badge
-            ax.text(
-                x_tag, y1, badge_txt,
-                ha="right", va="center",
-                fontsize=row_tag_fs,
-                color=badge_fg, weight="bold",
-                bbox=dict(boxstyle="round,pad=0.35", facecolor=badge_bg, edgecolor="none", alpha=0.95)
+            # ✅ Limit pill goes next to company name (like bottom box)
+            pct = limit_pct_from_row(r, default_pct=10.0)
+            pill_text = limit_label(pct)
+            pill_bg, pill_fg = limit_colors(pct, theme)
+
+            draw_pill_after_text(
+                ax, fig,
+                text_x=x_name,
+                text_y=y1,
+                text_str=line1_fit,
+                text_fontsize=row_name_fs,
+                pill_text=pill_text,
+                pill_fontsize=row_tag_fs,
+                pill_fg=pill_fg,
+                pill_bg=pill_bg,
+                x_right_limit=x_status_left,
+                gap_px=10,
+                measure_text_width_px_fn=text_width_px,
+                px_to_data_dx_fn=px_to_data_dx,
             )
 
-            # line2 right: ret as small pill (optional)
+            # ✅ Status badge at far right
+            ax.text(
+                x_tag, y1, status_txt,
+                ha="right", va="center",
+                fontsize=row_tag_fs,
+                color=status_fg, weight="bold",
+                bbox=dict(boxstyle="round,pad=0.35", facecolor=status_bg, edgecolor="none", alpha=0.95)
+            )
+
+            # line2 right: ret as small pill
             ret = _safe_float(r.get("ret"), 0.0)
             if abs(ret) > 1e-12:
                 ret_text = _fmt_ret_pct(ret)
