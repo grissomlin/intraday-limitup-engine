@@ -1,45 +1,41 @@
-name: Run Shorts (UK+FR @ 19:10 TW, scheduled public; manual private)
+name: Run Shorts (UK+FR @ 19:10 TW, schedule=public, manual=private)
 
 on:
   schedule:
-    # GitHub Actions cron uses UTC.
     # 19:10 Asia/Taipei (UTC+8) => 11:10 UTC
     - cron: "10 11 * * 1-5"
 
   workflow_dispatch:
     inputs:
       markets:
-        description: "Select markets (multi-select)"
+        description: "markets to run (manual)"
         required: true
-        type: choice
         default: "uk,fr"
+        type: choice
         options:
-          - "uk"
-          - "fr"
-          - "uk,fr"
+          - uk
+          - fr
+          - uk,fr
+
       slot:
         description: "slot (open/midday/close)"
         required: true
         default: "midday"
         type: choice
-        options:
-          - open
-          - midday
-          - close
+        options: [open, midday, close]
+
       images_ymd:
         description: "images ymd (latest | YYYY-MM-DD)"
         required: true
         default: "latest"
         type: string
+
       privacy:
         description: "YouTube privacy (manual only)"
         required: true
         default: "private"
         type: choice
-        options:
-          - private
-          - public
-          - unlisted
+        options: [private, public, unlisted]
 
 concurrency:
   group: run_shorts_ukfr_1910tw_${{ github.ref }}
@@ -49,7 +45,6 @@ jobs:
   plan:
     runs-on: ubuntu-latest
 
-    # ✅ which cron triggered this run (immune to GitHub runner lag)
     env:
       SCHEDULE_CRON: ${{ github.event.schedule }}
 
@@ -58,7 +53,7 @@ jobs:
       slot: ${{ steps.plan.outputs.slot }}
       images_ymd: ${{ steps.plan.outputs.images_ymd }}
       privacy: ${{ steps.plan.outputs.privacy }}
-      markets_json: ${{ steps.plan.outputs.markets_json }}
+      matrix: ${{ steps.plan.outputs.matrix }}
 
     steps:
       - name: Setup Python (for plan)
@@ -77,38 +72,30 @@ jobs:
           event = os.getenv("GITHUB_EVENT_NAME","")
           cron = (os.getenv("SCHEDULE_CRON","") or "").strip()
 
-          # workflow_dispatch inputs (Actions exposes them as INPUT_*)
+          in_markets = (os.getenv("INPUT_MARKETS","") or "").strip().lower()
           in_slot = (os.getenv("INPUT_SLOT","") or "").strip().lower()
           in_images_ymd = (os.getenv("INPUT_IMAGES_YMD","") or "").strip()
           in_privacy = (os.getenv("INPUT_PRIVACY","") or "").strip().lower()
-          in_markets = (os.getenv("INPUT_MARKETS","") or "").strip().lower()
 
           # defaults
           slot = in_slot if (event=="workflow_dispatch" and in_slot) else "midday"
           images_ymd = in_images_ymd if (event=="workflow_dispatch" and in_images_ymd) else "latest"
 
-          # scheduled = public, manual default private (and you can override in UI)
-          if event == "workflow_dispatch":
-              privacy = in_privacy if in_privacy else "private"
-          else:
-              privacy = "public"
-
-          # markets: schedule => both; manual => parse input
-          if event == "workflow_dispatch":
-              # support "uk", "fr", "uk,fr"
-              parts = [p.strip() for p in in_markets.split(",") if p.strip()]
-              markets = []
-              for p in parts:
-                  if p in ("uk","fr") and p not in markets:
-                      markets.append(p)
-              if not markets:
-                  markets = ["uk","fr"]
-          else:
+          # schedule behavior: always run BOTH markets, privacy PUBLIC
+          if event != "workflow_dispatch":
               markets = ["uk","fr"]
+              privacy = "public"
+          else:
+              # manual: allow choose markets + default privacy private
+              privacy = in_privacy if in_privacy else "private"
+              if in_markets in ("uk","fr"):
+                  markets = [in_markets]
+              else:
+                  markets = ["uk","fr"]
 
           now_utc = datetime.now(timezone.utc)
 
-          # schedule run gating (anti-lag):
+          # anti-lag gating
           should_run = False
           if event == "workflow_dispatch":
               should_run = True
@@ -116,10 +103,11 @@ jobs:
               if cron == "10 11 * * 1-5":
                   should_run = True
               else:
-                  # fallback window: 11:00~12:59 UTC (tolerate delays)
-                  h = now_utc.hour
-                  if 11 <= h <= 12:
+                  # fallback window: 11:00~12:59 UTC
+                  if 11 <= now_utc.hour <= 12:
                       should_run = True
+
+          matrix = {"include": [{"market": m} for m in markets]}
 
           out_path = os.environ["GITHUB_OUTPUT"]
           with open(out_path, "a", encoding="utf-8") as f:
@@ -127,17 +115,18 @@ jobs:
               f.write(f"slot={slot}\n")
               f.write(f"images_ymd={images_ymd}\n")
               f.write(f"privacy={privacy}\n")
-              f.write("markets_json=" + json.dumps(markets) + "\n")
+              f.write(f"matrix={json.dumps(matrix)}\n")
 
           print("[PLAN]")
           print("  event      =", event)
           print("  schedule   =", cron)
           print("  now_utc    =", now_utc.isoformat(timespec="seconds"))
           print("  should_run =", should_run)
+          print("  markets    =", markets)
+          print("  privacy    =", privacy)
           print("  slot       =", slot)
           print("  images_ymd =", images_ymd)
-          print("  privacy    =", privacy)
-          print("  markets    =", markets)
+          print("  matrix     =", matrix)
           PY
 
   run:
@@ -149,8 +138,7 @@ jobs:
 
     strategy:
       fail-fast: false
-      matrix:
-        market: ${{ fromJson(needs.plan.outputs.markets_json) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     env:
       MPLBACKEND: Agg
@@ -169,6 +157,14 @@ jobs:
       # YouTube
       YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
       YOUTUBE_PLAYLIST_MAP_JSON: ${{ secrets.YOUTUBE_PLAYLIST_MAP_JSON }}
+
+      # -------------------------
+      # FR filters (your request)
+      # -------------------------
+      FR_MIN_PRICE: "0.10"
+      FR_MIN_VOLUME: "50000"
+      FR_TICK_EUR: "0.01"
+      FR_EXCLUDE_ONE_TICK_10PCT: "1"
 
     steps:
       - name: Checkout
@@ -201,9 +197,12 @@ jobs:
         run: |
           set -euxo pipefail
           sudo apt-get update
+
           sudo apt-get install -y \
             ffmpeg \
-            fontconfig \
+            fontconfig
+
+          sudo apt-get install -y \
             fonts-dejavu-core \
             fonts-dejavu-extra
 
@@ -222,9 +221,9 @@ jobs:
 
           sudo fc-cache -f -v
 
-          echo "---- fc-list (CJK/TC/SC/KR candidates) ----"
+          echo "---- fc-list (CJK candidates) ----"
           fc-list | grep -iE "noto sans (cjk|tc|sc|kr)|noto serif (cjk|tc|sc|kr)|noto sans (tc|sc|kr)" || true
-          echo "------------------------------------------"
+          echo "----------------------------------"
 
           rm -rf ~/.cache/matplotlib ~/.config/matplotlib || true
           rm -rf "${MPLCONFIGDIR}" || true
@@ -268,7 +267,6 @@ jobs:
               "Noto Sans CJK KR",
               "Noto Sans CJK SC",
               "Noto Sans CJK TC",
-              "Noto Serif CJK JP",
               "Noto Color Emoji",
           ]
 
@@ -287,7 +285,7 @@ jobs:
           set -euxo pipefail
           mkdir -p media/images media/videos outputs
 
-      - name: Run shorts (${{ matrix.market }})
+      - name: Run shorts (UK/FR)
         shell: bash
         run: |
           set -euxo pipefail
