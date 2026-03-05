@@ -67,6 +67,40 @@ def title_for_metric(metric: str, market: str, lang: str) -> str:
         return "業種別 銘柄数"
 
     # -----------------------------
+    # French
+    # -----------------------------
+    if lang == "fr":
+        prefix_map_fr = {
+            "US": "États-Unis ",
+            "CA": "Canada ",
+            "AU": "Australie ",
+            "UK": "Royaume-Uni ",
+            "CN": "Chine ",
+            "HK": "Hong Kong ",
+            "JP": "Japon ",
+            "KR": "Corée ",
+            "TW": "Taïwan ",
+            "TH": "Thaïlande ",
+            "EU": "Europe ",
+            "FR": "France ",
+        }
+        prefix = prefix_map_fr.get(mkt, f"{mkt} " if mkt else "")
+
+        if m == "gainbins":
+            return f"{prefix}Hausse par tranche de performance\n(10%+ / sans baisse)"
+        if m == "bigmove10":
+            return f"{prefix}Secteurs les plus forts\n(mouvements 10%+)"
+        if m == "locked":
+            return f"{prefix}Nombre de titres au plafond (par secteur)"
+        if m == "touched":
+            return f"{prefix}Nombre de titres ayant touché le plafond (par secteur)"
+        if m in ("locked+touched", "locked_plus_touched"):
+            return f"{prefix}Titres au plafond (par secteur)\n(au plafond + touché)"
+        if m == "mix":
+            return f"{prefix}Dynamique par secteur\n(10%+ / plafond / touché)"
+        return f"{prefix}Nombre par secteur"
+
+    # -----------------------------
     # English
     # -----------------------------
     if lang == "en":
@@ -83,6 +117,7 @@ def title_for_metric(metric: str, market: str, lang: str) -> str:
             "TW": "Taiwan ",
             "TH": "Thailand ",
             "EU": "EU ",
+            "FR": "France ",
         }
         prefix = prefix_map.get(mkt, f"{mkt} " if mkt else "")
 
@@ -116,6 +151,7 @@ def title_for_metric(metric: str, market: str, lang: str) -> str:
             "AU": "澳大利亚",
             "UK": "英国",
             "EU": "欧盟",
+            "FR": "法国",
         }
         cn_prefix = prefix_map_cn.get(mkt, mkt) if mkt else ""
         pre = f"{cn_prefix}" if cn_prefix else ""
@@ -125,13 +161,12 @@ def title_for_metric(metric: str, market: str, lang: str) -> str:
         if m == "locked":
             return f"{pre}行业别涨停家数(10%+)"
         if m == "touched":
-            return f"{pre}行业炸板家数"  # 你原本就用“炸板”，保留
+            return f"{pre}行业炸板家数"
         if m in ("locked+touched", "locked_plus_touched"):
             return f"{pre}行业涨停+炸板家数"
         if m == "bigmove10":
             return f"{pre}行业大涨10%+家数"
         if m == "mix":
-            # ✅ 觸及 -> 涨停失败（命名一致）
             return f"{pre}行业热度家数\n(10%+ / 涨停 / 涨停失败)"
         return f"{pre}行业家数统计"
 
@@ -150,6 +185,7 @@ def title_for_metric(metric: str, market: str, lang: str) -> str:
         "AU": "澳洲",
         "UK": "英國",
         "EU": "歐盟",
+        "FR": "法國",
     }
     tw_prefix = prefix_map_tw.get(mkt, mkt) if mkt else ""
     pre = f"{tw_prefix}" if tw_prefix else ""
@@ -159,20 +195,18 @@ def title_for_metric(metric: str, market: str, lang: str) -> str:
     if m == "locked":
         return f"{pre}行業別漲停家數(10%+)"
     if m == "touched":
-        # ✅ 觸及 -> 漲停失敗（命名一致）
         return f"{pre}行業別漲停失敗家數"
     if m == "bigmove10":
         return f"{pre}行業別大漲 10%+ 家數"
     if m in ("locked+touched", "locked_plus_touched"):
         return f"{pre}行業別漲停（含漲停失敗）家數"
     if m == "mix":
-        # ✅ 觸及 -> 漲停失敗（命名一致）
         return f"{pre}行業別熱度家數\n(10%+ / 漲停 / 漲停失敗)"
     return f"{pre}行業別家數統計"
 
 
 # =============================================================================
-# Footer Right
+# Footer Right (small label at bottom-right of overview card)
 # =============================================================================
 def footer_right_for_market(market: str, lang: str, normalize_market) -> str:
     market = normalize_market(market)
@@ -181,11 +215,12 @@ def footer_right_for_market(market: str, lang: str, normalize_market) -> str:
 
     if lang == "th":
         return "สแนปช็อต"
-
     if lang == "ko":
         return "장중 스냅샷"
     if lang == "ja":
         return "スナップショット"
+    if lang == "fr":
+        return "instantané"
     if lang == "en":
         return "snapshot"
     return ""
@@ -206,6 +241,7 @@ def footer_note(metric: str, market: str, lang: str, normalize_market) -> str:
     FOOTNOTE_RULES = {
         ("bigmove10", "*"): {
             "en": "10%+ gainers (proxy for limit-up)\n(no daily price limit)",
+            "fr": "Hausse 10%+ (proxy du plafond)\n(pas de limite quotidienne)",
             "zh": "註：10%+ 代表強勢股\n（無固定漲停制度）",
             "ja": "注：10%+ 上昇は強い銘柄の目安\n（値幅制限のない市場向け）",
             "ko": "주: 10%+ 상승은 강세 종목의 지표\n(상한가 제도 없는 시장용)",
@@ -213,6 +249,7 @@ def footer_note(metric: str, market: str, lang: str, normalize_market) -> str:
         },
         ("mix", "KR"): {
             "en": "10%+ movers + limit-up + touched\n(KR limit-up = 30%)",
+            "fr": "10%+ + plafond + touché\n(KR plafond = 30%)",
             "zh": "註：韓國漲停為 30%\n本榜含 10%+ / 漲停 / 觸及",
             "ja": "注：韓国のストップ高は 30%\n本榜は 10%+ / ストップ高 / 到達 を含む",
             "ko": "주: 한국 상한가는 30%\n본 목록은 10%+ / 상한가 / 터치 포함",
@@ -230,6 +267,8 @@ def footer_note(metric: str, market: str, lang: str, normalize_market) -> str:
 
     if lang == "th":
         return rule.get("th", "")
+    if lang == "fr":
+        return rule.get("fr", "")
     if lang == "en":
         return rule.get("en", "")
     if lang.startswith("zh"):
@@ -286,6 +325,19 @@ def empty_text_for_metric(metric: str, lang: str) -> str:
             return "本日強い業種なし"
         return "本日データなし"
 
+    if lang == "fr":
+        if m == "gainbins":
+            return "Aucune hausse aujourd'hui"
+        if m == "bigmove10":
+            return "Aucun secteur 10%+ aujourd'hui"
+        if m == "mix":
+            return "Aucun secteur fort aujourd'hui"
+        if m == "locked":
+            return "Aucun titre au plafond aujourd'hui"
+        if m == "touched":
+            return "Aucun titre touchant le plafond aujourd'hui"
+        return "Aucune donnée aujourd'hui"
+
     if lang == "en":
         if m == "gainbins":
             return "No gainers today"
@@ -330,6 +382,8 @@ def breadth_legend_text(lang: str, metric: str = "") -> str:
     if m == "gainbins":
         if lang == "th":
             return "สัดส่วน = จำนวนในช่วง ÷ ทั้งตลาด"
+        if lang == "fr":
+            return "Part = nombre dans la tranche ÷ total du marché"
         if lang == "zh-cn":
             return "占比 = 该区间家数 ÷ 全市场总数"
         if lang == "zh-tw":
@@ -342,10 +396,12 @@ def breadth_legend_text(lang: str, metric: str = "") -> str:
 
     if lang == "th":
         return "สัดส่วน = หุ้นเด่น ÷ ทั้งกลุ่ม"
+    if lang == "fr":
+        return "Part = titres forts ÷ total du secteur"
     if lang == "zh-cn":
         return "占比 = 强势股 ÷ 行业总数"
     if lang == "zh-tw":
-        return "佔比 = 強勢股 ÷ 行業總數"  # ✅ typo fix
+        return "佔比 = 強勢股 ÷ 行業總數"
     if lang == "ja":
         return "割合 = 強い銘柄 ÷ 業種総数"
     if lang == "ko":
@@ -359,6 +415,8 @@ def breadth_legend_text(lang: str, metric: str = "") -> str:
 def disclaimer_one_line(lang: str) -> str:
     if lang == "th":
         return "คำเตือน: เพื่อการเรียนรู้ ไม่ใช่คำแนะนำการลงทุน"
+    if lang == "fr":
+        return "Avertissement : à titre informatif uniquement. Pas un conseil en investissement."
     if lang == "zh-cn":
         return "免责声明：仅供学习交流，不构成投资建议"
     if lang == "zh-tw":
