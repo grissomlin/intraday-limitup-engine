@@ -420,7 +420,66 @@ def run_market_kr(args: argparse.Namespace, base_dir: Path, ymd: str, meta: dict
     payload.setdefault("generated_at", datetime.now().isoformat(timespec="seconds"))
     return payload
 
+# =============================================================================
+# FR (France open movers market) ✅ NEW (markets/fr/)
+# =============================================================================
+def run_market_fr(args: argparse.Namespace, base_dir: Path, ymd: str, meta: dict) -> Dict[str, Any]:
+    """
+    France = open movers market like UK/CA/AU.
 
+    We use module: markets.fr.fr_snapshot
+      - run_sync(start_date, end_date, refresh_list=bool)  (optional but recommended)
+      - run_intraday(slot, asof, ymd) -> raw_payload
+
+    Aggregation:
+      - markets.fr.aggregator.aggregate(raw_payload)
+    """
+    import importlib
+    from datetime import datetime
+
+    from markets.guard import run_nontrading_guard_or_raise
+
+    mod_dl = importlib.import_module("markets.fr.fr_snapshot")
+    mod_ag = importlib.import_module("markets.fr.aggregator")
+
+    run_fr_sync = getattr(mod_dl, "run_sync", None)
+    run_fr_intraday = getattr(mod_dl, "run_intraday")
+    aggregate_fr = getattr(mod_ag, "aggregate")
+
+    start_date = args.start
+    end_date = args.end
+    refresh_list = not args.no_refresh_list
+
+    res_sync = None
+    if callable(run_fr_sync):
+        res_sync = run_fr_sync(start_date, end_date, refresh_list=refresh_list)
+
+    raw_payload = run_fr_intraday(slot=args.slot, asof=args.asof, ymd=ymd)
+
+    raw_payload.setdefault("ymd", ymd)
+    raw_payload.setdefault("slot", args.slot)
+    raw_payload.setdefault("asof", args.asof)
+    raw_payload.setdefault("generated_at", datetime.now().isoformat(timespec="seconds"))
+
+    raw_payload.setdefault("filters", {})
+    raw_payload["filters"].setdefault("enable_open_watchlist", True)
+    if res_sync is not None:
+        raw_payload["filters"]["fr_sync"] = res_sync
+
+    raw_payload = run_nontrading_guard_or_raise(
+        market="fr",
+        today=ymd,
+        raw_payload=raw_payload,
+        allow_nontrading_flag=bool(args.allow_nontrading),
+    )
+
+    payload = raw_payload if args.raw_only else aggregate_fr(raw_payload)
+
+    payload.setdefault("ymd", ymd)
+    payload.setdefault("slot", args.slot)
+    payload.setdefault("asof", args.asof)
+    payload.setdefault("generated_at", datetime.now().isoformat(timespec="seconds"))
+    return payload
 # =============================================================================
 # Runner registry
 # =============================================================================
