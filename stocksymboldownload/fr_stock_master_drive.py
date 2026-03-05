@@ -3,10 +3,6 @@
 FR Stock Master (daily) from MarketScreener + quote-page ticker resolver (cached)
 + Google Drive upload (update-in-place)
 
-Why ticker is missing?
-- The france-51 LIST page often does NOT include a ticker/symbol column.
-- So we must resolve ticker from each quote page (ms_link).
-
 Env required:
 - GDRIVE_TOKEN_B64           : base64(json) of Google OAuth token (authorized_user_info)
 - GDRIVE_FOLDER_ID           : Google Drive folder id to store output
@@ -173,10 +169,6 @@ def _clean_text(s: str) -> str:
     return (s or "").replace("\xa0", " ").strip()
 
 
-def _safe_upper(s: str) -> str:
-    return str(s or "").strip().upper()
-
-
 # =============================================================================
 # MarketScreener LIST Scraper
 # =============================================================================
@@ -239,7 +231,7 @@ def normalize_list_records(records: List[Dict[str, str]]) -> pd.DataFrame:
     """
     Normalize list page results:
     - name, sector, ms_link, _raw
-    Note: symbol/ticker often NOT available on list page.
+    Note: ticker often NOT available on list page.
     """
     if not records:
         return pd.DataFrame()
@@ -330,25 +322,21 @@ def _fetch_quote_html(url: str) -> str:
 
 def parse_ticker_isin_from_quote(html: str) -> Tuple[str, str]:
     """
-    Best-effort parse ticker and ISIN from quote page.
-    We search full text for label patterns.
+    Best-effort parse ticker and ISIN from quote page text.
     """
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text(" ", strip=True)
 
-    # ISIN
     isin = ""
     m = re.search(r"\bISIN\b\s*[:\-]?\s*([A-Z]{2}[A-Z0-9]{10})\b", text, flags=re.I)
     if m:
         isin = m.group(1).upper()
 
-    # Ticker / Symbol / Mnemonic
     ticker = ""
     m2 = re.search(r"\b(Ticker|Symbol|Mnemonic)\b\s*[:\-]?\s*([A-Z0-9\.\-]{1,12})\b", text, flags=re.I)
     if m2:
         ticker = m2.group(2).upper()
 
-    # Extra fallback: sometimes "Mnemonic: SU"
     if not ticker:
         m3 = re.search(r"\bMnemonic\b\s*[:\-]?\s*([A-Z0-9\.\-]{1,12})\b", text, flags=re.I)
         if m3:
@@ -364,8 +352,10 @@ def resolve_missing_tickers(df: pd.DataFrame) -> pd.DataFrame:
     Use cache first; then resolve from quote pages for missing (up to RESOLVE_MAX).
     """
     df = df.copy()
-    df["ticker"] = ""
-    df["isin"] = ""
+    if "ticker" not in df.columns:
+        df["ticker"] = ""
+    if "isin" not in df.columns:
+        df["isin"] = ""
 
     cache = load_ticker_cache(CACHE_PATH)
     cache_map = {r["ms_link"]: (r.get("ticker", ""), r.get("isin", "")) for _, r in cache.iterrows()}
@@ -428,29 +418,40 @@ def resolve_missing_tickers(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 def apply_overrides(df: pd.DataFrame, path: Path) -> pd.DataFrame:
     """
-    Optional override file to fix ~30 mismatched tickers.
+    Optional override file to fix mismatched tickers.
     Supported schemas:
       - ms_link,yf_symbol_override
       - isin,yf_symbol_override
     """
     if not path.exists():
+        # ensure column exists
+        df = df.copy()
+        if "yf_symbol_override" not in df.columns:
+            df["yf_symbol_override"] = ""
         return df
 
     try:
         ov = pd.read_csv(path)
     except Exception as e:
         print(f"⚠️ overrides 讀取失敗，略過: {path} err={e}")
+        df = df.copy()
+        if "yf_symbol_override" not in df.columns:
+            df["yf_symbol_override"] = ""
         return df
 
     ov_cols = {c.lower(): c for c in ov.columns}
     if "yf_symbol_override" not in ov_cols:
         print(f"⚠️ overrides 缺少 yf_symbol_override 欄位，略過: {path}")
+        df = df.copy()
+        if "yf_symbol_override" not in df.columns:
+            df["yf_symbol_override"] = ""
         return df
 
     override_col = ov_cols["yf_symbol_override"]
 
     df = df.copy()
-    df["yf_symbol_override"] = df.get("yf_symbol_override", "")
+    if "yf_symbol_override" not in df.columns:
+        df["yf_symbol_override"] = ""
 
     if "ms_link" in ov_cols:
         key = ov_cols["ms_link"]
@@ -487,21 +488,33 @@ def apply_overrides(df: pd.DataFrame, path: Path) -> pd.DataFrame:
 
 
 # =============================================================================
-# Main
+# Build yf symbols (FIXED)
 # =============================================================================
 def build_yf_symbols(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Always ensures yf_symbol_override exists as a column.
+    Uses vectorized fill: yf_symbol = override if present else guess.
+    """
     df = df.copy()
+
     df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
     df["yf_symbol_guess"] = df["ticker"].apply(lambda t: f"{t}.PA" if t else "")
-    df["yf_symbol_override"] = df.get("yf_symbol_override", "").astype(str)
 
-    df["yf_symbol"] = df.apply(
-        lambda r: (str(r.get("yf_symbol_override", "")).strip() or str(r.get("yf_symbol_guess", "")).strip()),
-        axis=1,
-    )
+    # ✅ FIX: guarantee override column exists and is Series
+    if "yf_symbol_override" not in df.columns:
+        df["yf_symbol_override"] = ""
+    df["yf_symbol_override"] = df["yf_symbol_override"].astype(str).str.strip()
+
+    df["yf_symbol"] = df["yf_symbol_override"]
+    mask = df["yf_symbol"].eq("")
+    df.loc[mask, "yf_symbol"] = df.loc[mask, "yf_symbol_guess"]
+
     return df
 
 
+# =============================================================================
+# Main
+# =============================================================================
 def run():
     if not GDRIVE_FOLDER_ID:
         print("❌ 錯誤: 找不到 GDRIVE_FOLDER_ID / FR_STOCKLIST (Google Drive 資料夾 ID)")
@@ -512,8 +525,7 @@ def run():
     print("=" * 70)
     print(f"FR Stock Master | pages={MAX_PAGES} | resolve_max={RESOLVE_MAX} | out={OUTPUT_NAME}")
     print(f"cache={CACHE_PATH}")
-    if OVERRIDE_PATH:
-        print(f"overrides={OVERRIDE_PATH} (exists={OVERRIDE_PATH.exists()})")
+    print(f"overrides={OVERRIDE_PATH} (exists={OVERRIDE_PATH.exists()})")
     print("=" * 70)
 
     all_rows: List[Dict[str, str]] = []
@@ -525,7 +537,6 @@ def run():
             print(f"⚠️  第 {p} 頁無資料，停止")
             break
 
-        # Detect repeated page (blocked/free-limit)
         fp = ""
         try:
             fp = json.dumps(data[0], sort_keys=True, ensure_ascii=False)
