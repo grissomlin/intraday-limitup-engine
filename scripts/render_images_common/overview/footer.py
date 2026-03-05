@@ -424,7 +424,7 @@ def build_footer_center_lines(
             f"10%+:{int(big10_ex)}",
         ]
 
-    lines = [" | ".join(parts)]
+    lines: List[str] = [" | ".join(parts)]
     lines.extend(_note_lines(mkt, lng, note_mode=nm))
 
     if _debug_any("OVERVIEW_DEBUG_FOOTER"):
