@@ -18,6 +18,11 @@ on:
         required: false
         default: "FR_Stock_Master_Data.csv"
         type: string
+      resolve_max:
+        description: "How many quote pages to resolve tickers this run (default 120)"
+        required: false
+        default: "120"
+        type: string
 
 concurrency:
   group: fr_stock_master_${{ github.ref }}
@@ -26,7 +31,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -45,12 +50,23 @@ jobs:
       - name: Run FR stock master -> Google Drive
         env:
           GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
+          # ✅你已經建好的 secret（folder id）
           GDRIVE_FOLDER_ID: ${{ secrets.fr_stocklist }}
 
           FR_MAX_PAGES: ${{ inputs.max_pages }}
           FR_OUTPUT_NAME: ${{ inputs.output_name }}
 
+          # list pages scrape tuning
           FR_SLEEP_SEC: "3"
           FR_HTTP_TIMEOUT_SEC: "20"
+
+          # quote resolve + cache tuning
+          FR_TICKER_CACHE_PATH: "data/cache/fr_ticker_cache.csv"
+          FR_RESOLVE_MAX: ${{ inputs.resolve_max }}
+          FR_RESOLVE_SLEEP_SEC: "0.25"
+          FR_MAX_RETRY: "3"
+
+          # optional override file (commit it later when you have 30 fixes)
+          FR_OVERRIDE_PATH: "data/overrides/fr_yf_override.csv"
         run: |
           python stocksymboldownload/fr_stock_master_drive.py
