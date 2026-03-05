@@ -489,7 +489,8 @@ RUNNERS: Dict[str, Callable[[argparse.Namespace, Path, str, dict], Dict[str, Any
     "uk": run_market_uk,
     "ca": run_market_ca,
     "au": run_market_au,
-
+    # ✅ NEW
+    "fr": run_market_fr,
     # open movers / hybrid
     "in": run_market_in,
     "th": run_market_th,
