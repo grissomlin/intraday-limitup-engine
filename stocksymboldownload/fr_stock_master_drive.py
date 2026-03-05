@@ -23,9 +23,8 @@ Ticker resolve + cache:
 
 Overrides (optional):
 - FR_OVERRIDE_PATH           : csv path with overrides (default: data/overrides/fr_yf_override.csv)
-                               columns: (ms_link OR isin) + yf_symbol_override
-                               accepted headers:
-                                 - ms_link,yf_symbol_override
+                               columns:
+                                 - ms_link,yf_symbol_override   OR
                                  - isin,yf_symbol_override
 """
 
@@ -69,13 +68,13 @@ USER_AGENT = os.environ.get(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
 )
 
-# Ticker resolve + cache
+# resolve + cache
 CACHE_PATH = Path(os.environ.get("FR_TICKER_CACHE_PATH", "data/cache/fr_ticker_cache.csv"))
 RESOLVE_MAX = int(os.environ.get("FR_RESOLVE_MAX", "120"))
 RESOLVE_SLEEP = float(os.environ.get("FR_RESOLVE_SLEEP_SEC", "0.25"))
 MAX_RETRY = int(os.environ.get("FR_MAX_RETRY", "3"))
 
-# Overrides
+# overrides
 OVERRIDE_PATH = Path(os.environ.get("FR_OVERRIDE_PATH", "data/overrides/fr_yf_override.csv"))
 
 REQ_HEADERS = {
@@ -170,7 +169,7 @@ def _clean_text(s: str) -> str:
 
 
 # =============================================================================
-# MarketScreener LIST Scraper
+# List scraper
 # =============================================================================
 def _find_first_table(soup: BeautifulSoup):
     for cls in ["std_tlist", "table", "tlist", "screener-table"]:
@@ -228,11 +227,6 @@ def scrape_page(p: int) -> List[Dict[str, str]]:
 
 
 def normalize_list_records(records: List[Dict[str, str]]) -> pd.DataFrame:
-    """
-    Normalize list page results:
-    - name, sector, ms_link, _raw
-    Note: ticker often NOT available on list page.
-    """
     if not records:
         return pd.DataFrame()
 
@@ -265,7 +259,6 @@ def normalize_list_records(records: List[Dict[str, str]]) -> pd.DataFrame:
         )
 
     df = pd.DataFrame(rows)
-
     df = df[df["name"].astype(str).str.strip().ne("")]
     df = df[~df["name"].astype(str).str.contains("Add to a list", na=False)]
 
@@ -274,11 +267,16 @@ def normalize_list_records(records: List[Dict[str, str]]) -> pd.DataFrame:
     df = df.drop_duplicates(subset=["name"], keep="first").reset_index(drop=True)
 
     df.insert(0, "asof_utc", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+
+    # ensure columns for later steps
+    df["ticker"] = ""
+    df["isin"] = ""
+    df["yf_symbol_override"] = ""
     return df
 
 
 # =============================================================================
-# Quote-page Ticker/ISIN resolve (cached)
+# Quote-page resolve (DOM-first) + cache
 # =============================================================================
 def load_ticker_cache(path: Path) -> pd.DataFrame:
     if path.exists():
@@ -290,7 +288,9 @@ def load_ticker_cache(path: Path) -> pd.DataFrame:
             df["ms_link"] = df["ms_link"].astype(str).str.strip()
             df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
             df["isin"] = df["isin"].astype(str).str.strip().str.upper()
-            return df.drop_duplicates("ms_link", keep="last").reset_index(drop=True)
+            # keep last
+            df = df.drop_duplicates("ms_link", keep="last").reset_index(drop=True)
+            return df
         except Exception as e:
             print(f"⚠️ 讀取 ticker cache 失敗，將重建: {path} err={e}")
     return pd.DataFrame(columns=["asof_utc", "ms_link", "ticker", "isin"])
@@ -320,47 +320,102 @@ def _fetch_quote_html(url: str) -> str:
     raise RuntimeError(f"quote fetch failed: {url} err={last_err}")
 
 
+def _pick_value_from_kv_table(soup: BeautifulSoup, labels: List[str]) -> str:
+    """
+    Find value next to label in common key-value tables.
+    Example:
+      <tr><td>ISIN</td><td>FR0000121014</td></tr>
+      <tr><th>Mnemonic</th><td>MC</td></tr>
+    """
+    for lab in labels:
+        node = soup.find(string=re.compile(rf"^\s*{re.escape(lab)}\s*$", flags=re.I))
+        if not node:
+            continue
+        cell = node.find_parent(["td", "th"])
+        if not cell:
+            continue
+        row = cell.find_parent("tr")
+        if not row:
+            continue
+        cells = row.find_all(["td", "th"])
+        if len(cells) < 2:
+            continue
+        try:
+            idx = cells.index(cell)
+        except ValueError:
+            idx = 0
+        if idx + 1 < len(cells):
+            val = _clean_text(cells[idx + 1].get_text(" ", strip=True))
+            if val:
+                return val
+    return ""
+
+
 def parse_ticker_isin_from_quote(html: str) -> Tuple[str, str]:
     """
-    Best-effort parse ticker and ISIN from quote page text.
+    Robust parse ticker(=mnemo) and ISIN from MarketScreener quote page.
+    Priority:
+      1) DOM table lookup
+      2) HTML regex fallback
+      3) Text fallback
     """
     soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text(" ", strip=True)
 
-    isin = ""
-    m = re.search(r"\bISIN\b\s*[:\-]?\s*([A-Z]{2}[A-Z0-9]{10})\b", text, flags=re.I)
-    if m:
-        isin = m.group(1).upper()
+    # 1) DOM lookup
+    isin = _pick_value_from_kv_table(soup, ["ISIN"])
+    ticker = _pick_value_from_kv_table(soup, ["Mnemonic", "Mnemo", "Ticker", "Symbol", "Stock symbol"])
 
-    ticker = ""
-    m2 = re.search(r"\b(Ticker|Symbol|Mnemonic)\b\s*[:\-]?\s*([A-Z0-9\.\-]{1,12})\b", text, flags=re.I)
-    if m2:
-        ticker = m2.group(2).upper()
+    isin = (isin or "").strip().upper()
+    ticker = (ticker or "").strip().upper()
+
+    # 2) HTML regex fallback
+    if not isin:
+        m = re.search(r'data-isin\s*=\s*"([A-Z]{2}[A-Z0-9]{10})"', html, flags=re.I)
+        if m:
+            isin = m.group(1).upper()
 
     if not ticker:
-        m3 = re.search(r"\bMnemonic\b\s*[:\-]?\s*([A-Z0-9\.\-]{1,12})\b", text, flags=re.I)
-        if m3:
-            ticker = m3.group(1).upper()
+        for pat in [
+            r'"mnemo"\s*:\s*"([^"]+)"',
+            r'"mnemonic"\s*:\s*"([^"]+)"',
+            r'"symbol"\s*:\s*"([^"]+)"',
+            r'"ticker"\s*:\s*"([^"]+)"',
+        ]:
+            m = re.search(pat, html, flags=re.I)
+            if m:
+                ticker = m.group(1).strip().upper()
+                break
+
+    # 3) Text fallback
+    if not isin or not ticker:
+        text = soup.get_text(" ", strip=True)
+
+        if not isin:
+            m = re.search(r"\bISIN\b\s*[:\-]?\s*([A-Z]{2}[A-Z0-9]{10})\b", text, flags=re.I)
+            if m:
+                isin = m.group(1).upper()
+
+        if not ticker:
+            m = re.search(
+                r"\b(Mnemo|Mnemonic|Ticker|Symbol)\b\s*[:\-]?\s*([A-Z0-9\.\-]{1,12})\b",
+                text,
+                flags=re.I,
+            )
+            if m:
+                ticker = m.group(2).upper()
 
     ticker = re.sub(r"[^A-Z0-9\.\-]", "", ticker).strip().upper()
+    isin = re.sub(r"[^A-Z0-9]", "", isin).strip().upper()
     return ticker, isin
 
 
 def resolve_missing_tickers(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add columns: ticker, isin
-    Use cache first; then resolve from quote pages for missing (up to RESOLVE_MAX).
-    """
     df = df.copy()
-    if "ticker" not in df.columns:
-        df["ticker"] = ""
-    if "isin" not in df.columns:
-        df["isin"] = ""
 
+    # apply cache first
     cache = load_ticker_cache(CACHE_PATH)
     cache_map = {r["ms_link"]: (r.get("ticker", ""), r.get("isin", "")) for _, r in cache.iterrows()}
 
-    # cache apply
     for i in range(len(df)):
         link = str(df.at[i, "ms_link"]).strip()
         if link and link in cache_map:
@@ -386,20 +441,33 @@ def resolve_missing_tickers(df: pd.DataFrame) -> pd.DataFrame:
 
         try:
             html = _fetch_quote_html(link)
+
+            # member wall / blocked detection
+            low = html.lower()
+            if ("must be a member" in low) or ("log in" in low and "sign up" in low):
+                print("    ⚠️ member wall / blocked page, skip")
+                continue
+
             ticker, isin = parse_ticker_isin_from_quote(html)
+
             if ticker:
                 df.at[i, "ticker"] = ticker
             if isin:
                 df.at[i, "isin"] = isin
 
-            new_cache_rows.append(
-                {
-                    "asof_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-                    "ms_link": link,
-                    "ticker": ticker,
-                    "isin": isin,
-                }
-            )
+            # ✅ IMPORTANT: only cache when we found something (avoid empty pollution)
+            if (ticker or "").strip() or (isin or "").strip():
+                new_cache_rows.append(
+                    {
+                        "asof_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                        "ms_link": link,
+                        "ticker": ticker,
+                        "isin": isin,
+                    }
+                )
+            else:
+                print("    ⚠️ parsed empty ticker/isin (skip cache)")
+
         except Exception as e:
             print(f"    ⚠️ resolve failed: {e}")
 
@@ -409,6 +477,8 @@ def resolve_missing_tickers(df: pd.DataFrame) -> pd.DataFrame:
         cache2 = pd.concat([cache, pd.DataFrame(new_cache_rows)], ignore_index=True)
         save_ticker_cache(CACHE_PATH, cache2)
         print(f"💾 ticker cache 已更新：{CACHE_PATH} (+{len(new_cache_rows)})")
+    else:
+        print("ℹ️ 本次沒有成功解析到 ticker/isin，因此 cache 未更新")
 
     return df
 
@@ -417,44 +487,28 @@ def resolve_missing_tickers(df: pd.DataFrame) -> pd.DataFrame:
 # Overrides (optional)
 # =============================================================================
 def apply_overrides(df: pd.DataFrame, path: Path) -> pd.DataFrame:
-    """
-    Optional override file to fix mismatched tickers.
-    Supported schemas:
-      - ms_link,yf_symbol_override
-      - isin,yf_symbol_override
-    """
     if not path.exists():
-        # ensure column exists
-        df = df.copy()
-        if "yf_symbol_override" not in df.columns:
-            df["yf_symbol_override"] = ""
         return df
 
     try:
         ov = pd.read_csv(path)
     except Exception as e:
         print(f"⚠️ overrides 讀取失敗，略過: {path} err={e}")
-        df = df.copy()
-        if "yf_symbol_override" not in df.columns:
-            df["yf_symbol_override"] = ""
         return df
 
-    ov_cols = {c.lower(): c for c in ov.columns}
-    if "yf_symbol_override" not in ov_cols:
+    cols = {c.lower(): c for c in ov.columns}
+    if "yf_symbol_override" not in cols:
         print(f"⚠️ overrides 缺少 yf_symbol_override 欄位，略過: {path}")
-        df = df.copy()
-        if "yf_symbol_override" not in df.columns:
-            df["yf_symbol_override"] = ""
         return df
 
-    override_col = ov_cols["yf_symbol_override"]
+    override_col = cols["yf_symbol_override"]
 
     df = df.copy()
-    if "yf_symbol_override" not in df.columns:
-        df["yf_symbol_override"] = ""
+    df["yf_symbol_override"] = df.get("yf_symbol_override", "")
+    df["yf_symbol_override"] = df["yf_symbol_override"].astype(str).str.strip()
 
-    if "ms_link" in ov_cols:
-        key = ov_cols["ms_link"]
+    if "ms_link" in cols:
+        key = cols["ms_link"]
         ov2 = ov[[key, override_col]].copy()
         ov2[key] = ov2[key].astype(str).str.strip()
         ov2[override_col] = ov2[override_col].astype(str).str.strip()
@@ -468,8 +522,8 @@ def apply_overrides(df: pd.DataFrame, path: Path) -> pd.DataFrame:
             print(f"✅ overrides (by ms_link) 套用 {len(ov2)} 筆：{path}")
             return df
 
-    if "isin" in ov_cols:
-        key = ov_cols["isin"]
+    if "isin" in cols:
+        key = cols["isin"]
         ov2 = ov[[key, override_col]].copy()
         ov2[key] = ov2[key].astype(str).str.strip().str.upper()
         ov2[override_col] = ov2[override_col].astype(str).str.strip()
@@ -488,19 +542,15 @@ def apply_overrides(df: pd.DataFrame, path: Path) -> pd.DataFrame:
 
 
 # =============================================================================
-# Build yf symbols (FIXED)
+# Build yfinance symbols
 # =============================================================================
 def build_yf_symbols(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Always ensures yf_symbol_override exists as a column.
-    Uses vectorized fill: yf_symbol = override if present else guess.
-    """
     df = df.copy()
 
     df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+
     df["yf_symbol_guess"] = df["ticker"].apply(lambda t: f"{t}.PA" if t else "")
 
-    # ✅ FIX: guarantee override column exists and is Series
     if "yf_symbol_override" not in df.columns:
         df["yf_symbol_override"] = ""
     df["yf_symbol_override"] = df["yf_symbol_override"].astype(str).str.strip()
@@ -564,22 +614,15 @@ def run():
     print("📊 list normalize 完成")
     print(f"   rows={len(df)} empty_sector={empty_sector}")
 
-    # resolve tickers (cached)
     df = resolve_missing_tickers(df)
-
-    # apply overrides (optional)
     df = apply_overrides(df, OVERRIDE_PATH)
-
-    # build yf symbols
     df = build_yf_symbols(df)
 
-    # stats
     empty_ticker = int(df["ticker"].astype(str).str.strip().eq("").sum())
     empty_yf = int(df["yf_symbol"].astype(str).str.strip().eq("").sum())
     print("📊 resolve 完成")
     print(f"   empty_ticker={empty_ticker} empty_yf_symbol={empty_yf}")
 
-    # reorder
     preferred = [
         "asof_utc",
         "ticker",
