@@ -79,7 +79,6 @@ def _parse_band_pct_from_market_detail(md: Any) -> Optional[float]:
     s = ("" if md is None else str(md)).strip()
     if not s:
         return None
-
     parts = s.split("|")
     band_raw = None
     for p in parts:
@@ -88,11 +87,9 @@ def _parse_band_pct_from_market_detail(md: Any) -> Optional[float]:
             break
     if not band_raw:
         return None
-
     br = band_raw.strip()
     if not br or br.lower() in {"-", "no band", "none", "nan"}:
         return None
-
     try:
         v = float(br)
         if v <= 0:
@@ -123,6 +120,17 @@ def _add_ret_fields(df: pd.DataFrame) -> pd.DataFrame:
     df["ret_high"] = ret_high.astype(float)
     df["ret_high_pct"] = (df["ret_high"] * 100.0).astype(float)
     return df
+
+
+def _normalize_status(x: Any) -> str:
+    s = ("" if x is None else str(x)).strip().lower()
+    if s in {"hit", "locked"}:
+        return "hit"
+    if s in {"touch", "touched", "opened", "bomb"}:
+        return "touch"
+    if s in {"big", "big10", "big10+"}:
+        return "big"
+    return ""
 
 
 # =============================================================================
@@ -158,14 +166,17 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     for col in ["open", "high", "low", "close", "last_close"]:
         df[col] = df[col].apply(_to_float)
 
-    # ret fields
+    # ret fields (today)
     df = _add_ret_fields(df)
 
     # parse band pct per symbol (ratio: 0.20)
-    df["band_pct"] = df["market_detail"].apply(_parse_band_pct_from_market_detail)
+    df["band_pct"] = df.get("band_pct")
+    if "band_pct" not in df.columns or df["band_pct"].isna().all():
+        df["band_pct"] = df["market_detail"].apply(_parse_band_pct_from_market_detail)
+
     df["limit_price"] = None
 
-    # unify naming
+    # unify naming for renderer pill
     df["limit_rate"] = df["band_pct"]
     df["limit_rate_pct"] = None
     m_lr = df["limit_rate"].notna()
@@ -193,65 +204,6 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     df["is_limitup_touch"] = is_touch
     df["is_limitup_locked"] = is_locked
     df["is_limitup_opened"] = df["is_limitup_touch"] & (~df["is_limitup_locked"])
-
-    # =============================================================================
-    # ✅ Prev-day status fields (needs india_snapshot.py to include prev_* columns)
-    # =============================================================================
-    for col in ["prev_high", "prev_close", "prev_last_close"]:
-        if col not in df.columns:
-            df[col] = None
-
-    df["prev_ret"] = None
-    df["prev_ret_pct"] = None
-    df["prev_ret_high"] = None
-    df["prev_ret_high_pct"] = None
-    df["prev_is_limitup_touch"] = False
-    df["prev_is_limitup_locked"] = False
-    df["prev_is_surge_ge10"] = False
-    df["prev_status"] = None  # "limit_hit" | "touched" | "big10" | None
-
-    prev_c = pd.to_numeric(df["prev_close"], errors="coerce")
-    prev_h = pd.to_numeric(df["prev_high"], errors="coerce")
-    prev_lc = pd.to_numeric(df["prev_last_close"], errors="coerce")
-
-    m_prev = prev_lc.notna() & (prev_lc > 0) & prev_c.notna()
-    df.loc[m_prev, "prev_ret"] = (prev_c.loc[m_prev] / prev_lc.loc[m_prev]) - 1.0
-    df.loc[m_prev, "prev_ret_pct"] = df.loc[m_prev, "prev_ret"] * 100.0
-
-    m_prev_h = prev_lc.notna() & (prev_lc > 0) & prev_h.notna()
-    df.loc[m_prev_h, "prev_ret_high"] = (prev_h.loc[m_prev_h] / prev_lc.loc[m_prev_h]) - 1.0
-    df.loc[m_prev_h, "prev_ret_high_pct"] = df.loc[m_prev_h, "prev_ret_high"] * 100.0
-
-    prev_touch: List[bool] = []
-    prev_locked: List[bool] = []
-    for _, r in df.iterrows():
-        lc = _to_float(r.get("prev_last_close"), 0.0)
-        h = _to_float(r.get("prev_high"), 0.0)
-        c = _to_float(r.get("prev_close"), 0.0)
-        bp = r.get("band_pct", None)
-
-        if (bp is not None) and (lc > 0):
-            lp = _limit_price(lc, float(bp))
-            prev_touch.append(bool(h > 0 and h >= lp - EPS))
-            prev_locked.append(bool(c > 0 and c >= lp - EPS))
-        else:
-            prev_touch.append(False)
-            prev_locked.append(False)
-
-    df["prev_is_limitup_touch"] = prev_touch
-    df["prev_is_limitup_locked"] = prev_locked
-    df["prev_is_surge_ge10"] = (pd.to_numeric(df["prev_ret"], errors="coerce").fillna(0.0) >= float(INDIA_SURGE_RET))
-
-    def _prev_status_row(r: pd.Series) -> Optional[str]:
-        if bool(r.get("prev_is_limitup_locked")):
-            return "limit_hit"
-        if bool(r.get("prev_is_limitup_touch")):
-            return "touched"
-        if bool(r.get("prev_is_surge_ge10")):
-            return "big10"
-        return None
-
-    df["prev_status"] = df.apply(_prev_status_row, axis=1)
 
     # penny / tick danger
     prev_close = pd.to_numeric(df["last_close"], errors="coerce").fillna(0.0).astype(float)
@@ -289,16 +241,58 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     # display list = touch OR 10%+
     df_calc["is_display_limitup"] = (df_calc["is_limitup_touch"] == True) | (df_calc["is_surge_ge10"] == True)
 
-    # ✅ write computed flags back to df so snapshot_main carries them
-    for col in ["is_surge_ge10", "abs_move", "is_bigmove10_ex_locked", "is_display_limitup"]:
+    # ✅ bring snapshot-provided streak/status
+    if "today_status" not in df_calc.columns:
+        df_calc["today_status"] = ""
+    if "prev_status" not in df_calc.columns:
+        df_calc["prev_status"] = ""
+    if "streak_today" not in df_calc.columns:
+        df_calc["streak_today"] = 0
+    if "streak_prev" not in df_calc.columns:
+        df_calc["streak_prev"] = 0
+
+    df_calc["today_status"] = df_calc["today_status"].apply(_normalize_status)
+    df_calc["prev_status"] = df_calc["prev_status"].apply(_normalize_status)
+
+    # ✅ renderer uses "limitup_status" as today badge selector
+    df_calc["limitup_status"] = df_calc["today_status"]  # "hit" / "touch" / "big" / ""
+
+    # also keep prev status for line2 usage
+    df_calc["prev_limitup_status"] = df_calc["prev_status"]
+
+    # ✅ CRITICAL: write computed flags back to df (snapshot_main)
+    for col in [
+        "is_surge_ge10",
+        "abs_move",
+        "is_bigmove10_ex_locked",
+        "is_display_limitup",
+        "limitup_status",
+        "prev_limitup_status",
+        "streak_today",
+        "streak_prev",
+        "today_status",
+        "prev_status",
+        "limit_rate_pct",
+    ]:
         if col not in df.columns:
             df[col] = None
-        df[col] = False if col != "abs_move" else None
+        df[col] = False if col in {"is_surge_ge10", "is_bigmove10_ex_locked", "is_display_limitup"} else df[col]
 
     df.loc[df_calc.index, "is_surge_ge10"] = df_calc["is_surge_ge10"].astype(bool)
     df.loc[df_calc.index, "abs_move"] = df_calc["abs_move"].astype(float)
     df.loc[df_calc.index, "is_bigmove10_ex_locked"] = df_calc["is_bigmove10_ex_locked"].astype(bool)
     df.loc[df_calc.index, "is_display_limitup"] = df_calc["is_display_limitup"].astype(bool)
+
+    df.loc[df_calc.index, "limitup_status"] = df_calc["limitup_status"]
+    df.loc[df_calc.index, "prev_limitup_status"] = df_calc["prev_limitup_status"]
+    df.loc[df_calc.index, "streak_today"] = pd.to_numeric(df_calc["streak_today"], errors="coerce").fillna(0).astype(int)
+    df.loc[df_calc.index, "streak_prev"] = pd.to_numeric(df_calc["streak_prev"], errors="coerce").fillna(0).astype(int)
+    df.loc[df_calc.index, "today_status"] = df_calc["today_status"]
+    df.loc[df_calc.index, "prev_status"] = df_calc["prev_status"]
+
+    # ensure pill works (some rows band_pct exists but limit_rate_pct None)
+    m_lr2 = df["limit_rate"].notna() & df["limit_rate_pct"].isna()
+    df.loc[m_lr2, "limit_rate_pct"] = (pd.to_numeric(df.loc[m_lr2, "limit_rate"], errors="coerce") * 100.0)
 
     # build limit list
     df_limit = df_calc[df_calc["is_display_limitup"]].copy()
