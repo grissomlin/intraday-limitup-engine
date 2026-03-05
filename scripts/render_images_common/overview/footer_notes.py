@@ -17,6 +17,18 @@ def note_lines(market: str, lang: str, *, note_mode: str = "exclusive") -> List[
     mode = (note_mode or "exclusive").strip().lower()
     lng = (lang or "").strip().lower()
 
+    # ✅ French (generic; mainly for FR/EU/any market if you set lang=fr)
+    # Keep it simple & consistent with footer.py behavior.
+    if lng == "fr" and m not in {"TH", "KR", "JP"} and not (m in {"TW", "CN", "HK", "MO"} or is_zh_any(lng)):
+        # NOTE: For no-limit markets, footer.py uses "Clôture ≥ +10%" (exclusive).
+        # Here we keep mode-aware wording.
+        if mode == "inclusive":
+            note = "※ 10%+ = Variation ≥ +10% (inclut plafond / touché)"
+        else:
+            note = "※ 10%+ = Clôture ≥ +10% (hors plafond / touché)"
+        disclaimer = "Avertissement : à titre informatif uniquement. Pas un conseil en investissement."
+        return [note, "", disclaimer]
+
     if m == "TH":
         note = (
             "※ 10%+ = ≥ +10% (รวม แตะซิลลิ่ง/ติดซิลลิ่ง)"
@@ -47,6 +59,8 @@ def note_lines(market: str, lang: str, *, note_mode: str = "exclusive") -> List[
     if m in {"TW", "CN", "HK", "MO"} or is_zh_any(lng):
         is_cn = is_zh_cn(lng, m)
         if mode == "inclusive":
+            # ✅ align to your newer naming (涨停失败/漲停失敗) would be even better,
+            # but keep backward-compat as this file previously used 触及/觸及.
             note = "※ 10%+ = 涨幅 ≥ +10%（含涨停/触及）" if is_cn else "※ 10%+ = 漲幅 ≥ +10%（含漲停/觸及）"
         else:
             note = "※ 10%+ = 收盘 ≥ +10%（不含涨停/触及）" if is_cn else "※ 10%+ = 收盤 ≥ +10%（不含漲停/觸及）"
