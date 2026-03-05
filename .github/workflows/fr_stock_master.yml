@@ -1,0 +1,56 @@
+name: FR Stock Master (daily to Drive)
+
+on:
+  schedule:
+    # GitHub Actions cron uses UTC.
+    # 01:10 Asia/Taipei (UTC+8) => 17:10 UTC (previous day)
+    - cron: "10 17 * * *"
+
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: "Max pages to scrape (default 11)"
+        required: false
+        default: "11"
+        type: string
+      output_name:
+        description: "Output CSV name on Drive"
+        required: false
+        default: "FR_Stock_Master_Data.csv"
+        type: string
+
+concurrency:
+  group: fr_stock_master_${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests beautifulsoup4 google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2
+
+      - name: Run FR stock master -> Google Drive
+        env:
+          GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_B64 }}
+          GDRIVE_FOLDER_ID: ${{ secrets.fr_stocklist }}
+
+          FR_MAX_PAGES: ${{ inputs.max_pages }}
+          FR_OUTPUT_NAME: ${{ inputs.output_name }}
+
+          FR_SLEEP_SEC: "3"
+          FR_HTTP_TIMEOUT_SEC: "20"
+        run: |
+          python stocksymboldownload/fr_stock_master_drive.py
