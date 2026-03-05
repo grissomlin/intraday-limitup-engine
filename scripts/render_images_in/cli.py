@@ -88,9 +88,14 @@ def _sanitize_filename(s: str) -> str:
 
 
 def _norm_sector_name(s: str) -> str:
-    ss = _safe_str(s or "")
-    if ss.strip() in ("", "—", "-", "--", "－", "–"):
+    ss = _safe_str(s or "").strip()
+    if ss in ("", "—", "-", "--", "－", "–"):
         return "Unclassified"
+
+    low = ss.lower()
+    if low in ("error", "unknown", "n/a", "na", "none", "null"):
+        return "Unclassified"
+
     return ss
 
 
@@ -204,7 +209,13 @@ def _bombed_in(r: Dict[str, Any]) -> bool:
     return _touch_any_in(r) and (not _bool(r.get("is_limitup_locked", False)))
 
 
-def _is_big10_in(r: Dict[str, Any], *, ret: Optional[float] = None, touch_any: Optional[bool] = None, is_locked: Optional[bool] = None) -> bool:
+def _is_big10_in(
+    r: Dict[str, Any],
+    *,
+    ret: Optional[float] = None,
+    touch_any: Optional[bool] = None,
+    is_locked: Optional[bool] = None
+) -> bool:
     """
     ✅ Big 10%+ logic (robust):
     - Prefer aggregator flag is_surge_ge10 / is_bigup10 / is_bigmove10
@@ -528,9 +539,9 @@ def main() -> int:
                 limitup_pages = len(L_pages)
                 peer_pages = len(P_pages)
 
-                total_pages = max(1, limitup_pages)
-                if peer_pages > limitup_pages:
-                    total_pages = limitup_pages + 1
+                # ✅ IMPORTANT FIX:
+                # Do NOT do (limitup_pages + 1). Use max pages instead.
+                total_pages = max(1, limitup_pages, peer_pages)
                 if total_pages > CAP_PAGES:
                     total_pages = CAP_PAGES
 
@@ -545,8 +556,8 @@ def main() -> int:
                 theme_cnt = 0
 
                 for i in range(total_pages):
-                    limitup_rows = L_pages[i] if i < len(L_pages) else []
-                    peer_rows = P_pages[i] if i < len(P_pages) else []
+                    limitup_rows = L_pages[i] if i < limitup_pages else []
+                    peer_rows = P_pages[i] if i < peer_pages else []
                     has_more_peers = (peer_pages > total_pages) and (i == total_pages - 1)
 
                     out_path = outdir / f"in_{sector_fn}_p{i+1}.png"
@@ -584,7 +595,6 @@ def main() -> int:
             # ----------------------------
             # CASE B: peers-only sector (NO locked/touch/big10)
             # ✅ Put peers into TOP box so page-1 top is never empty.
-            # ✅ Also pass titles for TOP/BOT boxes (need draw_mpl to support these args)
             # ----------------------------
             elif P_total:
                 page_pack = rows_top + rows_peer  # top chunk + bottom chunk per page
@@ -634,9 +644,9 @@ def main() -> int:
                         lang=str(args.lang or "en"),
                         market="IN",
 
-                        # ✅ NEW titles (requires draw_mpl.py to accept these kwargs)
+                        # Optional titles for peers-only
                         top_box_title="Top movers (<10%)",
-                        bot_box_title="No 10%+ or limit hits",
+                        bot_box_title="Peers (same sector)",
                     )
                     print(f"[IN] wrote {out_path.name}")
 
