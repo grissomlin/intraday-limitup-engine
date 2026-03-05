@@ -1,4 +1,4 @@
-name: Run Shorts (UK @ 19:10 TW, public)
+name: Run Shorts (UK+FR @ 19:10 TW, scheduled public; manual private)
 
 on:
   schedule:
@@ -8,6 +8,15 @@ on:
 
   workflow_dispatch:
     inputs:
+      markets:
+        description: "Select markets (multi-select)"
+        required: true
+        type: choice
+        default: "uk,fr"
+        options:
+          - "uk"
+          - "fr"
+          - "uk,fr"
       slot:
         description: "slot (open/midday/close)"
         required: true
@@ -22,9 +31,18 @@ on:
         required: true
         default: "latest"
         type: string
+      privacy:
+        description: "YouTube privacy (manual only)"
+        required: true
+        default: "private"
+        type: choice
+        options:
+          - private
+          - public
+          - unlisted
 
 concurrency:
-  group: run_shorts_uk_1910tw_${{ github.ref }}
+  group: run_shorts_ukfr_1910tw_${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -39,6 +57,8 @@ jobs:
       should_run: ${{ steps.plan.outputs.should_run }}
       slot: ${{ steps.plan.outputs.slot }}
       images_ymd: ${{ steps.plan.outputs.images_ymd }}
+      privacy: ${{ steps.plan.outputs.privacy }}
+      markets_json: ${{ steps.plan.outputs.markets_json }}
 
     steps:
       - name: Setup Python (for plan)
@@ -51,9 +71,8 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import os
+          import os, json
           from datetime import datetime, timezone
-          import re
 
           event = os.getenv("GITHUB_EVENT_NAME","")
           cron = (os.getenv("SCHEDULE_CRON","") or "").strip()
@@ -61,16 +80,35 @@ jobs:
           # workflow_dispatch inputs (Actions exposes them as INPUT_*)
           in_slot = (os.getenv("INPUT_SLOT","") or "").strip().lower()
           in_images_ymd = (os.getenv("INPUT_IMAGES_YMD","") or "").strip()
+          in_privacy = (os.getenv("INPUT_PRIVACY","") or "").strip().lower()
+          in_markets = (os.getenv("INPUT_MARKETS","") or "").strip().lower()
 
           # defaults
           slot = in_slot if (event=="workflow_dispatch" and in_slot) else "midday"
           images_ymd = in_images_ymd if (event=="workflow_dispatch" and in_images_ymd) else "latest"
 
+          # scheduled = public, manual default private (and you can override in UI)
+          if event == "workflow_dispatch":
+              privacy = in_privacy if in_privacy else "private"
+          else:
+              privacy = "public"
+
+          # markets: schedule => both; manual => parse input
+          if event == "workflow_dispatch":
+              # support "uk", "fr", "uk,fr"
+              parts = [p.strip() for p in in_markets.split(",") if p.strip()]
+              markets = []
+              for p in parts:
+                  if p in ("uk","fr") and p not in markets:
+                      markets.append(p)
+              if not markets:
+                  markets = ["uk","fr"]
+          else:
+              markets = ["uk","fr"]
+
           now_utc = datetime.now(timezone.utc)
 
           # schedule run gating (anti-lag):
-          # - if schedule is exactly our cron => run
-          # - fallback: if cron missing, allow a time WINDOW around 11:10 UTC (runner lag safe)
           should_run = False
           if event == "workflow_dispatch":
               should_run = True
@@ -88,6 +126,8 @@ jobs:
               f.write(f"should_run={'true' if should_run else 'false'}\n")
               f.write(f"slot={slot}\n")
               f.write(f"images_ymd={images_ymd}\n")
+              f.write(f"privacy={privacy}\n")
+              f.write("markets_json=" + json.dumps(markets) + "\n")
 
           print("[PLAN]")
           print("  event      =", event)
@@ -96,18 +136,25 @@ jobs:
           print("  should_run =", should_run)
           print("  slot       =", slot)
           print("  images_ymd =", images_ymd)
+          print("  privacy    =", privacy)
+          print("  markets    =", markets)
           PY
 
   run:
     needs: plan
     if: needs.plan.outputs.should_run == 'true'
-    name: run_shorts uk
+    name: run_shorts ${{ matrix.market }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
+    strategy:
+      fail-fast: false
+      matrix:
+        market: ${{ fromJson(needs.plan.outputs.markets_json) }}
+
     env:
       MPLBACKEND: Agg
-      MPLCONFIGDIR: $RUNNER_TEMP/mpl-uk
+      MPLCONFIGDIR: $RUNNER_TEMP/mpl-ukfr
 
       RUN_SHORTS_DEBUG_TREE: "1"
       OVERVIEW_DEBUG_FONTS: "1"
@@ -133,8 +180,10 @@ jobs:
           echo "event=${{ github.event_name }}"
           echo "schedule=${{ github.event.schedule }}"
           echo "TW target=19:10 (UTC=11:10)"
+          echo "market=${{ matrix.market }}"
           echo "slot=${{ needs.plan.outputs.slot }}"
           echo "images_ymd=${{ needs.plan.outputs.images_ymd }}"
+          echo "privacy=${{ needs.plan.outputs.privacy }}"
           echo "now_utc=$(date -u '+%F %T %Z')"
           TZ=Asia/Taipei date '+now_tw=%F %T %Z' || true
           echo "MPLCONFIGDIR=${MPLCONFIGDIR}"
@@ -151,48 +200,33 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-
           sudo apt-get update
-
-          # video/font infra
           sudo apt-get install -y \
             ffmpeg \
-            fontconfig
-
-          # core fallbacks (DejaVu)
-          sudo apt-get install -y \
+            fontconfig \
             fonts-dejavu-core \
             fonts-dejavu-extra
 
-          # ✅ Noto stacks
           sudo apt-get install -y \
             fonts-noto-cjk \
             fonts-noto-core || true
 
-          # emoji (some runners may not have it)
           sudo apt-get install -y fonts-noto-color-emoji || true
 
-          # Optional but often helpful on runner images
           sudo apt-get install -y \
             fonts-noto-extra \
             fonts-noto-ui-core \
             fonts-noto-unhinted || true
 
-          # Some runner images provide this, some don't
           sudo apt-get install -y fonts-noto-cjk-extra || true
 
-          # Rebuild fontconfig cache
           sudo fc-cache -f -v
 
-          # Quick sanity listing
           echo "---- fc-list (CJK/TC/SC/KR candidates) ----"
           fc-list | grep -iE "noto sans (cjk|tc|sc|kr)|noto serif (cjk|tc|sc|kr)|noto sans (tc|sc|kr)" || true
           echo "------------------------------------------"
 
-          # Clear matplotlib cache (global)
           rm -rf ~/.cache/matplotlib ~/.config/matplotlib || true
-
-          # Clear isolated MPLCONFIGDIR (per job)
           rm -rf "${MPLCONFIGDIR}" || true
           mkdir -p "${MPLCONFIGDIR}"
 
@@ -234,15 +268,8 @@ jobs:
               "Noto Sans CJK KR",
               "Noto Sans CJK SC",
               "Noto Sans CJK TC",
-              "Noto Sans KR",
-              "Noto Sans SC",
-              "Noto Sans TC",
               "Noto Serif CJK JP",
               "Noto Color Emoji",
-              "Noto Sans Thai",
-              "Noto Sans Thai UI",
-              "Noto Looped Thai",
-              "Noto Looped Thai UI",
           ]
 
           print("\n[FONT CHECK]")
@@ -254,28 +281,21 @@ jobs:
           print("  font.sans-serif =", (plt.rcParams.get("font.sans-serif") or [])[:30])
           PY
 
-      - name: Verify fontconfig families (fc-list)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          echo "[fc-list grep]"
-          fc-list | grep -iE "noto sans (cjk|tc|sc|kr)|noto serif (cjk|tc|sc|kr)|noto sans (tc|sc|kr)" || true
-
       - name: Ensure output directories
         shell: bash
         run: |
           set -euxo pipefail
           mkdir -p media/images media/videos outputs
 
-      - name: Run shorts (UK, public)
+      - name: Run shorts (${{ matrix.market }})
         shell: bash
         run: |
           set -euxo pipefail
           python scripts/run_shorts.py \
-            --market uk \
+            --market "${{ matrix.market }}" \
             --slot "${{ needs.plan.outputs.slot }}" \
             --full \
-            --privacy public \
+            --privacy "${{ needs.plan.outputs.privacy }}" \
             --drive \
             --drive-parent-id "${GDRIVE_ROOT_FOLDER_ID}" \
             --drive-order after_youtube \
@@ -287,7 +307,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: artifacts_uk_${{ github.run_id }}
+          name: artifacts_${{ matrix.market }}_${{ github.run_id }}
           path: |
             outputs/**
             media/videos/**
