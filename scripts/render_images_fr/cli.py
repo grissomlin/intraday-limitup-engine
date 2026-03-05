@@ -10,7 +10,7 @@ import os
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 # =============================================================================
-# ✅ DEFAULT DEBUG ON (overview + footer)
+# ✅ DEFAULT DEBUG ON (overview + footer) — align JP/KR/TW/TH
 # =============================================================================
 os.environ.setdefault("OVERVIEW_DEBUG_FOOTER", "1")
 os.environ.setdefault("OVERVIEW_DEBUG_FONTS", "1")
@@ -27,15 +27,14 @@ REPO_ROOT = THIS.parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# ✅ FR uses UK-like open_limit rendering (big move / touched / peers)
-from scripts.render_images_fr.sector_blocks.draw_mpl import (
+from scripts.render_images_fr.sector_blocks.draw_mpl import (  # ✅ FR version
     draw_block_table,
     parse_cutoff,
     get_market_time_info,
 )
 
-# ✅ quickest: reuse UK layout (same 1080x1920 blocks)
-from scripts.render_images_uk.sector_blocks.layout import get_layout
+# ✅ Reuse UK layout to avoid duplicating layout.py
+from scripts.render_images_uk.sector_blocks.layout import get_layout  # type: ignore
 
 # ✅ shared ordering helpers (NO local duplicate funcs)
 from scripts.render_images_common.sector_order import (
@@ -112,36 +111,50 @@ def _ellipsize(s: str, max_len: int) -> str:
     return s[: max_len - 1].rstrip() + "…"
 
 
-def short_company_name(name: str, max_len: int = 30) -> str:
-    """
-    FR 公司名通常會長一點：砍常見尾巴，然後 ellipsis。
-    """
+def short_company_name(name: str, max_len: int = 28) -> str:
+    # FR names can be long; keep mild trim only
     s = (name or "").strip()
     if not s:
         return s
-
-    tails = [
-        " S.A.", " SA", " S.A", " SAS", " S.A.S", " S.A.S.",
-        " SOCIETE ANONYME", " SOCIÉTÉ ANONYME",
-        " GROUPE", " HOLDING",
-    ]
-    ss = s
+    tails = [" SA", " S.A.", " SAS", " SE", " PLC", " LTD", " Limited", " Ltd", " SCA"]
     for t in tails:
-        if ss.upper().endswith(t.upper()):
-            ss = ss[: -len(t)].rstrip(" -")
+        if s.endswith(t):
+            s = s[: -len(t)].rstrip()
             break
+    return _ellipsize(s, max_len=max_len)
 
-    return _ellipsize(ss, max_len=max_len)
+
+def normalize_sector_fr(sec: Any) -> str:
+    """
+    Fix payload garbage sector keys:
+      - "nan" (string)
+      - "-"
+      - "" / None
+      - "N/A" / "NA" / "Unknown"
+    => "Non classé"
+    """
+    s = str(sec).strip() if sec is not None else ""
+    s_low = s.lower()
+
+    if (not s) or (s_low in ("nan", "none", "null", "n/a", "na", "unknown", "-", "--")):
+        return "Non classé"
+
+    # Sometimes sector becomes literal "0" or weird placeholders
+    if s_low in ("0", "undef", "undefined"):
+        return "Non classé"
+
+    return s
 
 
-def prev_text(streak_prev: int) -> str:
-    # FR 沒有漲停連板，沿用 >=10% streak 的語意
+def prev_text_fr(streak_prev: int) -> str:
+    # FR 沒漲停連板概念：沿用「前一日是否 >=10%」
     if streak_prev and streak_prev > 0:
-        return f"Prev >=10% for {streak_prev} day(s)"
-    return "Prev < 10%"
+        return f"Veille : ≥10% pendant {streak_prev} jour(s)"
+    return "Veille : <10%"
 
 
 def mover_badge(ret_pct: float) -> str:
+    # keep badge words short; sector pages UI already in French
     if ret_pct >= 100.0:
         return "MOON"
     if ret_pct >= 30.0:
@@ -158,7 +171,7 @@ def chunk(lst: List[Any], n: int) -> List[List[Any]]:
 # Payload ymd/slot helpers
 # =============================================================================
 def _payload_ymd(payload: Dict[str, Any]) -> Optional[str]:
-    for k in ("ymd_effective", "ymd", "bar_date", "date"):
+    for k in ("ymd", "ymd_effective", "bar_date", "date"):
         v = str(payload.get(k) or "").strip()
         if re.match(r"^\d{4}-\d{2}-\d{2}$", v):
             return v
@@ -196,9 +209,9 @@ def _default_outdir_from_payload(payload: Dict[str, Any], market: str) -> Path:
     return REPO_ROOT / "media" / "images" / market.lower() / ymd / slot
 
 
-def write_list_txt(outdir: Path, market: str) -> Path:
+def write_list_txt(outdir: Path) -> Path:
     """
-    Fallback behavior (filename sorted).
+    Fallback: filename sorted, overview first.
     """
     pngs = sorted([p for p in outdir.glob("*.png") if p.is_file()], key=lambda p: p.name)
 
@@ -217,7 +230,7 @@ def write_list_txt(outdir: Path, market: str) -> Path:
 
 
 # =============================================================================
-# Builders (FR open_limit style)
+# Builders
 # =============================================================================
 def build_bigmove_by_sector(universe: List[Dict[str, Any]], ret_th: float):
     """
@@ -238,20 +251,20 @@ def build_bigmove_by_sector(universe: List[Dict[str, Any]], ret_th: float):
         if not (is_big or is_touch):
             continue
 
-        sector = str(r.get("sector") or "Unknown").strip() or "Unknown"
+        sector = normalize_sector_fr(r.get("sector"))
         sym = str(r.get("symbol") or "").strip()
 
         raw_name = str(r.get("name") or r.get("company_name") or sym).strip() or sym
-        name = short_company_name(raw_name, max_len=30)
+        name = short_company_name(raw_name, max_len=28)
 
         streak_prev = _int(r.get("streak_prev", 0))
-        ptxt = prev_text(streak_prev)
+        ptxt = prev_text_fr(streak_prev)
 
         if is_touch:
-            line2 = f"Touched {ret_th*100:.0f}% intraday, then pulled back | {ptxt}"
+            line2 = f"A touché {ret_th*100:.0f}% en séance, puis repli | {ptxt}"
             status = "touch"
         else:
-            line2 = f"Close >= {ret_th*100:.0f}% | {ptxt}"
+            line2 = f"Clôture ≥ {ret_th*100:.0f}% | {ptxt}"
             status = "big"
 
         ret_pct = ret * 100.0
@@ -273,6 +286,7 @@ def build_bigmove_by_sector(universe: List[Dict[str, Any]], ret_th: float):
             )
         )
 
+    # order: big desc, then touch desc
     for k, rows in out.items():
         big_rows = [x for x in rows if not x.get("touched_only")]
         touch_rows = [x for x in rows if x.get("touched_only")]
@@ -296,11 +310,11 @@ def build_peers_by_sector(universe: List[Dict[str, Any]], ret_th: float):
         if (ret >= ret_th) or (touched_only and ret < ret_th):
             continue
 
-        sector = str(r.get("sector") or "Unknown").strip() or "Unknown"
+        sector = normalize_sector_fr(r.get("sector"))
         sym = str(r.get("symbol") or "").strip()
 
         raw_name = str(r.get("name") or r.get("company_name") or sym).strip() or sym
-        name = short_company_name(raw_name, max_len=30)
+        name = short_company_name(raw_name, max_len=28)
 
         streak_prev = _int(r.get("streak_prev", 0))
         out.setdefault(sector, []).append(
@@ -310,7 +324,7 @@ def build_peers_by_sector(universe: List[Dict[str, Any]], ret_th: float):
                 sector=sector,
                 ret=ret,
                 line1=f"{sym}  {name}",
-                line2=prev_text(streak_prev),
+                line2=prev_text_fr(streak_prev),
                 streak_prev=streak_prev,
             )
         )
@@ -328,7 +342,6 @@ def main() -> int:
     ap = argparse.ArgumentParser()
 
     ap.add_argument("--payload", required=True)
-
     ap.add_argument(
         "--outdir",
         default=None,
@@ -336,7 +349,7 @@ def main() -> int:
     )
 
     ap.add_argument("--theme", default="dark")
-    ap.add_argument("--layout", default="uk")  # ✅ reuse uk layout spec
+    ap.add_argument("--layout", default="uk")  # ✅ reuse UK layout
 
     ap.add_argument("--rows-per-box", type=int, default=6)
     ap.add_argument("--ret-th", type=float, default=0.10)
@@ -402,12 +415,6 @@ def main() -> int:
                 if pp.is_file():
                     ordered_for_list.append(pp)
 
-            print(
-                "[FR][DEBUG] raw _overview_sector_order exists?:",
-                isinstance(payload.get("_overview_sector_order"), list),
-            )
-            print("[FR][DEBUG] raw overview order head:", (payload.get("_overview_sector_order", []) or [])[:20])
-
             overview_order_keys = extract_overview_sector_order(payload)
             if overview_order_keys:
                 met_eff = str(payload.get("_overview_metric_eff") or "").strip()
@@ -415,7 +422,6 @@ def main() -> int:
                     f"[FR] overview sector order loaded: n={len(overview_order_keys)}"
                     + (f" metric={met_eff}" if met_eff else "")
                 )
-                print("[FR] normalized overview order head:", overview_order_keys[:20])
             else:
                 print("[FR][WARN] overview order empty after normalization", flush=True)
 
@@ -525,9 +531,9 @@ def main() -> int:
     if overview_order_keys:
         write_list_txt_ordered(outdir, ordered_for_list, filename="list.txt")
     else:
-        write_list_txt(outdir, market=MARKET)
+        write_list_txt(outdir)
 
-    print("\n✅ FR render finished.")
+    print("\n✅ FR render finished (Drive upload removed).")
     return 0
 
 
