@@ -35,9 +35,26 @@ def _norm_market(market: str) -> str:
       - latest_meta.json market field
     """
     m = (market or "").upper().strip()
+
     alias = {
-        "IN": "INDIA",       # ✅ alias
-        "IND": "INDIA",      # optional
+        # India
+        "IN": "INDIA",
+        "IND": "INDIA",
+        "NSE": "INDIA",
+
+        # France (allow a few aliases just in case)
+        "FRANCE": "FR",
+        "PARIS": "FR",
+
+        # Taiwan / China common variants (optional safety net)
+        "TWSE": "TW",
+        "TPEX": "TW",
+        "CHINA": "CN",
+        "A": "CN",
+
+        # US common variants
+        "USA": "US",
+        "UNITEDSTATES": "US",
     }
     return alias.get(m, m)
 
@@ -165,10 +182,6 @@ def _desc_en_ca(region_name: str) -> str:
 
 
 def _desc_en_india() -> str:
-    """
-    India-specific note:
-    NSE symbols often use .NS suffix in data sources; corporate actions and mapping can affect outliers.
-    """
     return _safe_desc(
         "Highlights large movers in the India (NSE) market, grouped by sector.\n"
         "\n"
@@ -181,6 +194,27 @@ def _desc_en_india() -> str:
         "\n"
         "--- Data Quality ---\n"
         "Outliers (e.g. extreme % moves) can occur due to data glitches, corporate actions (splits), low-liquidity prints, or symbol mapping.\n"
+    )
+
+
+def _desc_fr(region_name: str = "France") -> str:
+    """
+    France (Euronext Paris) – French copy.
+    Keep it simple and consistent with other markets.
+    """
+    return _safe_desc(
+        f"Résumé des plus fortes variations sur le marché {region_name}, regroupées par secteur.\n"
+        "\n"
+        "--- Note ---\n"
+        "Ceci est une expérimentation : génération automatique de Shorts à partir des données de marché.\n"
+        "\n"
+        "--- Avertissement ---\n"
+        "Contenu informatif uniquement. Ce n'est PAS un conseil en investissement.\n"
+        "Les calculs quasi temps réel peuvent être retardés ou imprécis. Veuillez vérifier via les sources officielles.\n"
+        "\n"
+        "--- Qualité des données ---\n"
+        "Des valeurs aberrantes (variations extrêmes) peuvent survenir à cause d'erreurs de données, d'opérations sur titres (split),\n"
+        "de faibles volumes/liquidité, ou de problèmes de correspondance des symboles.\n"
     )
 
 
@@ -225,6 +259,12 @@ def build_metadata(market: str, ymd: str, slot: str) -> Dict[str, Any]:
         title = f"INDIA｜NSE Market Movers｜{ymd} {slot}"
         desc = _desc_en_india()
         tags = ["INDIA", "NSE", "MarketMovers", "Shorts"]
+
+    elif m == "FR":
+        # ✅ France in French
+        title = f"FR｜Marché français : fortes variations｜{ymd} {slot}"
+        desc = _desc_fr("France")
+        tags = ["FR", "France", "Euronext", "Paris", "Variations", "Shorts"]
 
     elif m in ("US", "CA", "UK", "AU"):
         name_map = {
