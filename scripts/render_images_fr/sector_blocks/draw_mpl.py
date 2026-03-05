@@ -8,8 +8,8 @@ from typing import Any, Dict, List, Tuple, Optional
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 
-# ✅ reuse UK layout spec (same blocks)
-from scripts.render_images_uk.sector_blocks.layout import LayoutSpec, calc_rows_layout
+# ✅ reuse UK layout primitives to avoid duplicating layout.py in FR
+from scripts.render_images_uk.sector_blocks.layout import LayoutSpec, calc_rows_layout  # type: ignore
 
 try:
     from scripts.render_images_common.time_note import build_time_note as _build_time_note  # type: ignore
@@ -17,21 +17,21 @@ except Exception:
     _build_time_note = None  # type: ignore
 
 
-def setup_font() -> str | None:
-    """
-    FR: mostly Latin, but keep safe stack (also harmless if mixed chars).
-    """
+def setup_chinese_font() -> str | None:
+    # keep same safe font setup (harmless for FR, helpful if mixed chars)
     try:
         font_candidates = [
-            "Inter",
-            "Segoe UI",
-            "Arial",
-            "DejaVu Sans",
-            "Noto Sans",
+            "Microsoft JhengHei",
+            "Microsoft YaHei",
+            "PingFang TC",
+            "PingFang SC",
             "Noto Sans CJK TC",
             "Noto Sans CJK SC",
             "Noto Sans CJK JP",
+            "SimHei",
+            "WenQuanYi Zen Hei",
             "Noto Sans CJK KR",
+            "Noto Sans",
             "Arial Unicode MS",
         ]
         available = {f.name for f in fm.fontManager.ttflist}
@@ -46,7 +46,7 @@ def setup_font() -> str | None:
 
 
 def parse_cutoff(payload: Dict[str, Any]) -> str:
-    # ✅ FR: display effective trading day first
+    # ✅ display effective trading day first
     ymd = str(payload.get("ymd_effective") or payload.get("ymd") or payload.get("bar_date") or "").strip()
     return ymd or ""
 
@@ -102,18 +102,26 @@ def _compact_utc_offset(s: str) -> str:
     return f"{sign}{hh2}:{mm}"
 
 
+def _clean_sector_title_fr(sector: str) -> str:
+    s = (sector or "").strip()
+    s_low = s.lower()
+    if (not s) or (s_low in ("nan", "-", "--", "n/a", "na", "unknown", "null", "none")):
+        return "Non classé"
+    return s
+
+
 def get_market_time_info(payload: Dict[str, Any]) -> Tuple[str, str]:
     """
-    FR sector subtitle: force 2 lines (stable DST/offset display)
-      line1: Data date YYYY-MM-DD
-      line2: Updated YYYY-MM-DD HH:MM (UTC+XX)
+    FR sector subtitle: force 2 lines
+      line1: Date des données YYYY-MM-DD
+      line2: Mis à jour YYYY-MM-DD HH:MM (UTC+XX)
     """
     ymd = parse_cutoff(payload)
 
     # If shared builder exists and already returns a 2-line note, keep it.
     if _build_time_note is not None:
         try:
-            ymd2, note = _build_time_note(payload, market="FR", lang="en")
+            ymd2, note = _build_time_note(payload, market="FR", lang="fr")
             ymd_eff = (ymd2 or ymd).strip()
             note = (note or "").strip()
             if "\n" in note:
@@ -144,9 +152,9 @@ def get_market_time_info(payload: Dict[str, Any]) -> Tuple[str, str]:
     off_eff = _compact_utc_offset(off_raw)
     tz_part = f" (UTC{off_eff})" if off_eff else ""
 
-    line1 = f"Data date {trade_ymd}".strip()
+    line1 = f"Date des données {trade_ymd}".strip()
     if hm:
-        line2 = f"Updated {upd_ymd} {hm}{tz_part}".strip()
+        line2 = f"Mis à jour {upd_ymd} {hm}{tz_part}".strip()
         return trade_ymd, f"{line1}\n{line2}".strip()
 
     return trade_ymd, line1
@@ -160,7 +168,7 @@ def get_ret_color(ret: float, theme: str = "light") -> str:
 
 def pick_big_tag(ret_decimal: float) -> Tuple[str, str]:
     """
-    6 tiers with distinct color families (same as UK version)
+    Keep short English tier labels to avoid width overflow.
     """
     if ret_decimal >= 1.00:
         return ("MOON", "#f59f00")        # Gold
@@ -201,7 +209,7 @@ def draw_block_table(
     sector_shown_total: Optional[int] = None,
     sector_all_total: Optional[int] = None,
 ):
-    setup_font()
+    setup_chinese_font()
 
     theme = (theme or "dark").strip().lower()
     if theme == "light":
@@ -298,10 +306,12 @@ def draw_block_table(
     title_x0 = 0.06
     title_x1 = 0.90 if page_total > 1 else 0.94
     title_y = layout.header_title_y
-    title_txt = _fit_center_ellipsis(sector, title_x0, title_x1, title_y, fontsize=layout.title_fs)
+
+    sector_title = _clean_sector_title_fr(sector)
+    title_txt = _fit_center_ellipsis(sector_title, title_x0, title_x1, title_y, fontsize=layout.title_fs)
     ax.text(0.5, title_y, title_txt, ha="center", va="top", fontsize=layout.title_fs, color=fg, weight="bold")
 
-    # Subtitle (2 lines supported)
+    # Subtitle (time_note) — support 2 lines
     subtitle = (time_note or "").strip()
     if subtitle:
         lines = [ln.strip() for ln in subtitle.split("\n") if ln.strip()]
@@ -323,7 +333,7 @@ def draw_block_table(
     ax.text(
         0.05,
         layout.footer_y2,
-        "Source: Public market data | For information only. Not financial advice.",
+        "Source : données de marché publiques | Information seulement. Pas un conseil financier.",
         ha="left",
         va="bottom",
         fontsize=layout.footer_fs_2,
@@ -346,7 +356,7 @@ def draw_block_table(
     ax.text(
         0.08,
         bot_title_y,
-        "Peers (not Big Move)",
+        "Pairs (hors grand mouvement)",
         ha="left",
         va="center",
         fontsize=layout.box_title_fs,
@@ -404,9 +414,9 @@ def draw_block_table(
     def draw_rows(rows: List[Dict[str, Any]], y_start: float, row_h: float, kind: str):
         if not rows:
             if kind == "limitup":
-                draw_empty_hint(top_y0, top_y1, "(No big movers on this page)")
+                draw_empty_hint(top_y0, top_y1, "(Aucun titre sur cette page)")
             else:
-                draw_empty_hint(bot_y0, bot_y1, "(No data on this page)")
+                draw_empty_hint(bot_y0, bot_y1, "(Aucune donnée sur cette page)")
             return
 
         n = min(len(rows), MAX_ROWS_PER_BOX)
@@ -431,7 +441,7 @@ def draw_block_table(
                 if kind == "limitup":
                     is_touch = bool(r.get("touched_only")) or (str(r.get("limitup_status") or "") == "touch")
                     if is_touch:
-                        tag_text = "Touched 10%"
+                        tag_text = "Touché 10%"
                         tag_bg = tag_theme_touch
                     else:
                         ret_pct = float(r.get("ret_pct", 0.0) or 0.0)
@@ -507,10 +517,10 @@ def draw_block_table(
             hint_y = (y_start - (n - 1) * row_h) - row_h * 0.75
             ax.text(
                 0.5, hint_y,
-                "(More rows not shown)",
+                "(Plus de titres non affichés)",
                 ha="center", va="top",
                 fontsize=max(layout.footer_fs_2 + 6, 26),
-                color=sub, alpha=0.85, weight="bold",
+                color=sub, alpha=0.85, weight="bold"
             )
 
     draw_rows(limitup_rows, y_start_top, row_h_top, "limitup")
@@ -532,11 +542,11 @@ def draw_block_table(
             total = int(sector_all_total)
             if total > 0:
                 pct = round(shown / total * 100.0)
-                pct_part = f" ({pct:.0f}% of sector)"
+                pct_part = f" ({pct:.0f}% du secteur)"
     except Exception:
         pct_part = ""
 
-    top_title = f"Big Move {big_n}  /  Touched {touch_n}{pct_part}"
+    top_title = f"Grand mouvement {big_n}  /  Touché {touch_n}{pct_part}"
 
     fs = int(layout.box_title_fs)
     _ensure_renderer()
