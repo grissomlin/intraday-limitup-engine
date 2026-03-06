@@ -9,6 +9,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None  # type: ignore
+
 from .fr_config import (
     FR_BADGE_FALLBACK_LANG,
     FR_PEER_EXTRA_PAGES,
@@ -59,11 +64,32 @@ def _ceil_div(a: int, b: int) -> int:
     return (a + b - 1) // b if b > 0 else 0
 
 
-def _clean_sector_text(x: Any) -> str:
+def _clean_text(x: Any, default: str = "Unknown") -> str:
     s = ("" if x is None else str(x)).strip()
-    if (not s) or s.lower() in {"nan", "none", "-", "—", "--"}:
-        return "Unknown"
+    if (not s) or s.lower() in {"nan", "none", "null", "-", "—", "--", "n/a", "na"}:
+        return default
     return s
+
+
+def _clean_sector_text(x: Any) -> str:
+    return _clean_text(x, default="Unknown")
+
+
+def _paris_offset_colon() -> str:
+    """
+    Return Europe/Paris current UTC offset with colon, e.g.:
+      +01:00
+      +02:00
+    """
+    try:
+        if ZoneInfo is not None:
+            now_paris = datetime.now(ZoneInfo("Europe/Paris"))
+            off = now_paris.strftime("%z")  # +0100 / +0200
+            if off and len(off) == 5:
+                return f"{off[:3]}:{off[3:]}"
+    except Exception:
+        pass
+    return "+01:00"
 
 
 def _compute_streaks(df: pd.DataFrame) -> pd.DataFrame:
@@ -90,6 +116,60 @@ def _compute_streaks(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=["g"], errors="ignore")
 
 
+def _base_payload(
+    *,
+    slot: str,
+    asof: str,
+    ymd: str,
+    ymd_effective: str,
+    dbp: Path,
+    time_meta: Dict[str, Any],
+    snapshot_open_count: int = 0,
+    skipped_no_prev: int = 0,
+    peers_sectors: int = 0,
+    peers_flat_count: int = 0,
+    errors: Optional[List[Dict[str, Any]]] = None,
+    snapshot_open: Optional[List[Dict[str, Any]]] = None,
+    peers_by_sector: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    peers_not_limitup: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    return {
+        "market": "fr",
+        "slot": slot,
+        "asof": asof,
+        "ymd": ymd,
+        "ymd_effective": ymd_effective,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "filters": {
+            "enable_open_watchlist": True,
+            "note": "FR treated as open_limit (no daily limit). Built from local DB.",
+            "ret_th": FR_RET_TH,
+            "touch_th": FR_TOUCH_TH,
+            "rows_per_box": FR_ROWS_PER_BOX,
+            "peer_extra_pages": FR_PEER_EXTRA_PAGES,
+            "badge_fallback_lang": FR_BADGE_FALLBACK_LANG,
+            "streak_lookback_rows": int(FR_STREAK_LOOKBACK_ROWS),
+        },
+        "stats": {
+            "snapshot_main_count": 0,
+            "snapshot_open_count": int(snapshot_open_count),
+            "snapshot_open_skipped_no_prev": int(skipped_no_prev),
+            "peers_sectors": int(peers_sectors),
+            "peers_flat_count": int(peers_flat_count),
+        },
+        "snapshot_main": [],
+        "snapshot_open": snapshot_open or [],
+        "peers_by_sector": peers_by_sector or {},
+        "peers_not_limitup": peers_not_limitup or [],
+        "errors": errors or [],
+        "meta": {
+            "db_path": str(dbp),
+            "ymd_effective": ymd_effective,
+            "time": time_meta,
+        },
+    }
+
+
 def run_intraday(slot: str, asof: str, ymd: str, db_path_override: Optional[Path] = None) -> Dict[str, Any]:
     dbp = db_path_override or Path(db_path())
     if isinstance(dbp, str):
@@ -97,6 +177,11 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path_override: Optional[Path
 
     if not dbp.exists():
         raise FileNotFoundError(f"FR DB not found: {dbp} (set FR_DB_PATH to override)")
+
+    time_meta: Dict[str, Any] = {
+        "market_tz": "Europe/Paris",
+        "market_tz_offset": _paris_offset_colon(),
+    }
 
     conn = sqlite3.connect(str(dbp))
     try:
@@ -129,37 +214,32 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path_override: Optional[Path
     finally:
         conn.close()
 
-    time_meta: Dict[str, Any] = {}
-
     if df.empty:
-        return {
-            "market": "fr",
-            "slot": slot,
-            "asof": asof,
-            "ymd": ymd,
-            "ymd_effective": ymd_effective,
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "filters": {
-                "enable_open_watchlist": True,
-                "note": "FR treated as open_limit (no daily limit). Built from local DB.",
-                "ret_th": FR_RET_TH,
-                "touch_th": FR_TOUCH_TH,
-                "rows_per_box": FR_ROWS_PER_BOX,
-                "peer_extra_pages": FR_PEER_EXTRA_PAGES,
-                "streak_lookback_rows": FR_STREAK_LOOKBACK_ROWS,
-            },
-            "stats": {"snapshot_main_count": 0, "snapshot_open_count": 0},
-            "snapshot_main": [],
-            "snapshot_open": [],
-            "peers_by_sector": {},
-            "peers_not_limitup": [],
-            "errors": [{"reason": "no_rows_for_ymd_effective"}],
-            "meta": {"db_path": str(dbp), "ymd_effective": ymd_effective, "time": time_meta},
-        }
+        return _base_payload(
+            slot=slot,
+            asof=asof,
+            ymd=ymd,
+            ymd_effective=ymd_effective,
+            dbp=dbp,
+            time_meta=time_meta,
+            errors=[{"reason": "no_rows_for_ymd_effective"}],
+        )
 
-    df["name"] = df["name"].fillna("Unknown").astype(str).str.strip().replace({"": "Unknown", "nan": "Unknown", "None": "Unknown"})
+    df["name"] = (
+        df["name"]
+        .fillna("Unknown")
+        .astype(str)
+        .str.strip()
+        .replace({"": "Unknown", "nan": "Unknown", "None": "Unknown", "none": "Unknown"})
+    )
     df["sector"] = df["sector"].apply(_clean_sector_text)
-    df["market_detail"] = df["market_detail"].fillna("Unknown").astype(str).str.strip().replace({"": "Unknown", "nan": "Unknown", "None": "Unknown"})
+    df["market_detail"] = (
+        df["market_detail"]
+        .fillna("Unknown")
+        .astype(str)
+        .str.strip()
+        .replace({"": "Unknown", "nan": "Unknown", "None": "Unknown", "none": "Unknown"})
+    )
 
     for col in ("prev_close", "open", "high", "low", "close"):
         if col in df.columns:
@@ -170,31 +250,18 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path_override: Optional[Path
     m = df["prev_close"].notna() & (df["prev_close"] > 0) & df["close"].notna()
     skipped_no_prev = int((~m).sum())
     df = df[m].copy()
+
     if df.empty:
-        return {
-            "market": "fr",
-            "slot": slot,
-            "asof": asof,
-            "ymd": ymd,
-            "ymd_effective": ymd_effective,
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "filters": {
-                "enable_open_watchlist": True,
-                "note": "FR treated as open_limit (no daily limit). Built from local DB.",
-                "ret_th": FR_RET_TH,
-                "touch_th": FR_TOUCH_TH,
-                "rows_per_box": FR_ROWS_PER_BOX,
-                "peer_extra_pages": FR_PEER_EXTRA_PAGES,
-                "streak_lookback_rows": FR_STREAK_LOOKBACK_ROWS,
-            },
-            "stats": {"snapshot_main_count": 0, "snapshot_open_count": 0, "snapshot_open_skipped_no_prev": skipped_no_prev},
-            "snapshot_main": [],
-            "snapshot_open": [],
-            "peers_by_sector": {},
-            "peers_not_limitup": [],
-            "errors": [{"reason": "all_rows_missing_prev_close_or_close"}],
-            "meta": {"db_path": str(dbp), "ymd_effective": ymd_effective, "time": time_meta},
-        }
+        return _base_payload(
+            slot=slot,
+            asof=asof,
+            ymd=ymd,
+            ymd_effective=ymd_effective,
+            dbp=dbp,
+            time_meta=time_meta,
+            skipped_no_prev=skipped_no_prev,
+            errors=[{"reason": "all_rows_missing_prev_close_or_close"}],
+        )
 
     df["ret"] = (df["close"] / df["prev_close"]) - 1.0
     df["touch_ret"] = (df["high"] / df["prev_close"]) - 1.0
@@ -214,30 +281,25 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path_override: Optional[Path
 
     df_day = df[df["ymd"].astype(str) == str(ymd_effective)].copy()
     if df_day.empty:
-        return {
-            "market": "fr",
-            "slot": slot,
-            "asof": asof,
-            "ymd": ymd,
-            "ymd_effective": ymd_effective,
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "filters": {
-                "enable_open_watchlist": True,
-                "note": "FR treated as open_limit (no daily limit). Built from local DB.",
-                "ret_th": FR_RET_TH,
-                "touch_th": FR_TOUCH_TH,
-                "rows_per_box": FR_ROWS_PER_BOX,
-                "peer_extra_pages": FR_PEER_EXTRA_PAGES,
-                "streak_lookback_rows": FR_STREAK_LOOKBACK_ROWS,
-            },
-            "stats": {"snapshot_main_count": 0, "snapshot_open_count": 0, "snapshot_open_skipped_no_prev": skipped_no_prev},
-            "snapshot_main": [],
-            "snapshot_open": [],
-            "peers_by_sector": {},
-            "peers_not_limitup": [],
-            "errors": [{"reason": "no_rows_for_ymd_effective_after_history_load"}],
-            "meta": {"db_path": str(dbp), "ymd_effective": ymd_effective, "time": time_meta},
-        }
+        return _base_payload(
+            slot=slot,
+            asof=asof,
+            ymd=ymd,
+            ymd_effective=ymd_effective,
+            dbp=dbp,
+            time_meta=time_meta,
+            skipped_no_prev=skipped_no_prev,
+            errors=[{"reason": "no_rows_for_ymd_effective_after_history_load"}],
+        )
+
+    # helpful meta time fields for renderers
+    try:
+        hm = str(asof).strip()
+        if len(hm) >= 5 and ":" in hm:
+            time_meta["market_finished_hm"] = hm[:5]
+    except Exception:
+        pass
+    time_meta["market_finished_at"] = datetime.now().isoformat(timespec="seconds")
 
     snapshot_open: List[Dict[str, Any]] = []
     for _, r in df_day.iterrows():
@@ -348,34 +410,18 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path_override: Optional[Path
     for _, rows in peers_by_sector.items():
         peers_not_limitup.extend(rows)
 
-    return {
-        "market": "fr",
-        "slot": slot,
-        "asof": asof,
-        "ymd": ymd,
-        "ymd_effective": ymd_effective,
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "filters": {
-            "enable_open_watchlist": True,
-            "note": "FR treated as open_limit (no daily limit). Built from local DB.",
-            "ret_th": FR_RET_TH,
-            "touch_th": FR_TOUCH_TH,
-            "rows_per_box": FR_ROWS_PER_BOX,
-            "peer_extra_pages": FR_PEER_EXTRA_PAGES,
-            "badge_fallback_lang": FR_BADGE_FALLBACK_LANG,
-            "streak_lookback_rows": int(FR_STREAK_LOOKBACK_ROWS),
-        },
-        "stats": {
-            "snapshot_main_count": 0,
-            "snapshot_open_count": len(snapshot_open),
-            "snapshot_open_skipped_no_prev": skipped_no_prev,
-            "peers_sectors": int(len(peers_by_sector)),
-            "peers_flat_count": int(len(peers_not_limitup)),
-        },
-        "snapshot_main": [],
-        "snapshot_open": snapshot_open,
-        "peers_by_sector": peers_by_sector,
-        "peers_not_limitup": peers_not_limitup,
-        "errors": [],
-        "meta": {"db_path": str(dbp), "ymd_effective": ymd_effective, "time": {}},
-    }
+    return _base_payload(
+        slot=slot,
+        asof=asof,
+        ymd=ymd,
+        ymd_effective=ymd_effective,
+        dbp=dbp,
+        time_meta=time_meta,
+        snapshot_open_count=len(snapshot_open),
+        skipped_no_prev=skipped_no_prev,
+        peers_sectors=len(peers_by_sector),
+        peers_flat_count=len(peers_not_limitup),
+        snapshot_open=snapshot_open,
+        peers_by_sector=peers_by_sector,
+        peers_not_limitup=peers_not_limitup,
+    )
