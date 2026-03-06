@@ -24,7 +24,6 @@ REPO_ROOT = THIS_FILE.parents[2]  # intraday-limitup-engine/
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# sanity check
 if not (REPO_ROOT / "scripts" / "render_images_common").exists():
     raise RuntimeError(
         f"[IN CLI] Cannot locate project root properly. "
@@ -39,7 +38,7 @@ os.environ.setdefault("OVERVIEW_DEBUG_FONTS", "1")
 os.environ.setdefault("OVERVIEW_DEBUG", "1")
 
 # =============================================================================
-# IMPORTS (guaranteed safe)
+# IMPORTS
 # =============================================================================
 from scripts.render_images_in.sector_blocks.draw_mpl import draw_block_table
 from scripts.render_images_in.sector_blocks.layout import get_layout
@@ -163,7 +162,7 @@ def build_in_time_note(payload: Dict[str, Any]) -> str:
 
 
 # =============================================================================
-# list.txt generator (unified)
+# list.txt generator
 # =============================================================================
 def write_list_txt(
     outdir: Path,
@@ -223,13 +222,6 @@ def _is_big10_in(
     touch_any: Optional[bool] = None,
     is_locked: Optional[bool] = None
 ) -> bool:
-    """
-    ✅ Big 10%+ logic (robust):
-    - Prefer aggregator flag is_surge_ge10 / is_bigup10 / is_bigmove10
-    - Fallback to pure ret>=0.10
-    - Must NOT be touch_any (otherwise it's band-touch category)
-    - Must NOT be locked (locked is its own category)
-    """
     if ret is None:
         ret = _pct(r.get("ret", 0.0))
     if touch_any is None:
@@ -247,9 +239,6 @@ def _is_big10_in(
 
 
 def _pick_band_pct(r: Dict[str, Any]) -> Optional[float]:
-    """
-    normalized band ratio, e.g. 0.05 / 0.10 / 0.20
-    """
     for k in ("band_pct", "limit_rate_pct", "limit_rate", "limit_pct"):
         if k not in r:
             continue
@@ -260,7 +249,6 @@ def _pick_band_pct(r: Dict[str, Any]) -> Optional[float]:
             fv = float(v)
             if fv <= 0:
                 continue
-            # pct form like 5 / 10 / 20 -> convert to ratio
             if fv > 1.5:
                 fv = fv / 100.0
             return fv
@@ -270,19 +258,11 @@ def _pick_band_pct(r: Dict[str, Any]) -> Optional[float]:
 
 
 def _row_prev_status(r: Dict[str, Any]) -> str:
-    return _safe_str(
-        r.get("prev_status")
-        or r.get("prev_limitup_status")
-        or ""
-    )
+    return _safe_str(r.get("prev_status") or r.get("prev_limitup_status") or "")
 
 
 def _row_today_status(r: Dict[str, Any]) -> str:
-    return _safe_str(
-        r.get("today_status")
-        or r.get("limitup_status")
-        or ""
-    )
+    return _safe_str(r.get("today_status") or r.get("limitup_status") or "")
 
 
 def _row_streak_today(r: Dict[str, Any]) -> int:
@@ -328,20 +308,14 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
                 "ret_pct": ret * 100.0,
                 "line1": f"{sym}  {name}",
                 "line2": "",
-
-                # status / streak fields for top 2nd line
                 "limitup_status": status,
                 "today_status": _row_today_status(r) or status,
                 "prev_status": _row_prev_status(r),
                 "streak_today": _row_streak_today(r),
                 "streak_prev": _row_streak_prev(r),
-
-                # band fields for Limit X% pill
                 "band_pct": band_pct,
                 "limit_rate": (band_pct * 100.0) if band_pct is not None else None,
                 "limit_rate_pct": (band_pct * 100.0) if band_pct is not None else None,
-
-                # keep raw helpers
                 "market_detail": r.get("market_detail"),
             }
         )
@@ -353,9 +327,6 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
 
 
 def _get_prev_ret_pct(r: Dict[str, Any]) -> Optional[float]:
-    """
-    Return percent value for display, e.g. +5.23 not 0.0523
-    """
     if "prev_ret_pct" in r and r.get("prev_ret_pct") is not None:
         try:
             return float(r.get("prev_ret_pct"))
@@ -382,7 +353,6 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]], *, peer_ret_min: fl
         ret = _pct(r.get("ret", 0.0))
         big10 = _is_big10_in(r, ret=ret, touch_any=touch_any, is_locked=is_locked)
 
-        # peers: exclude any display items & exclude touch_any
         if is_locked or touch_only or big10 or touch_any:
             continue
 
@@ -404,21 +374,14 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]], *, peer_ret_min: fl
                 "ret_pct": ret * 100.0,
                 "line1": f"{sym}  {name}",
                 "line2": "",
-
-                # peer 2nd line fields
                 "prev_ret_pct": prev_ret_pct,
                 "prev_status": _row_prev_status(r),
                 "streak_prev": _row_streak_prev(r),
-
-                # optional keep today too
                 "today_status": _row_today_status(r),
                 "streak_today": _row_streak_today(r),
-
-                # band fields for Limit X% pill
                 "band_pct": band_pct,
                 "limit_rate": (band_pct * 100.0) if band_pct is not None else None,
                 "limit_rate_pct": (band_pct * 100.0) if band_pct is not None else None,
-
                 "market_detail": r.get("market_detail"),
             }
         )
@@ -465,6 +428,8 @@ def main() -> int:
     ap.add_argument("--theme", default="dark")
     ap.add_argument("--layout", default="us")
     ap.add_argument("--rows-per-box", type=int, default=6)
+
+    # 保留參數相容，但不再拿它當 hard cap
     ap.add_argument("--cap-pages", type=int, default=5)
 
     ap.add_argument("--no-overview", action="store_true")
@@ -473,8 +438,6 @@ def main() -> int:
 
     ap.add_argument("--lang", default="en")
     ap.add_argument("--no-debug", action="store_true")
-
-    # ✅ peers filter gate
     ap.add_argument("--peer-ret-min", type=float, default=0.0)
 
     args = ap.parse_args()
@@ -502,11 +465,9 @@ def main() -> int:
     print(f"[IN] ymd={ymd} slot={slot} outdir={outdir}")
     print(f"[IN] repo_root={REPO_ROOT}")
 
-    # aggregate
     agg_payload = in_aggregate(payload)
     universe = pick_universe(agg_payload) or universe0
 
-    # DEBUG
     ret_ge10 = sum(1 for r in universe if _pct(r.get("ret", 0.0)) >= 0.10)
     ret_ge5 = sum(1 for r in universe if _pct(r.get("ret", 0.0)) >= 0.05)
     print(f"[IN][DEBUG] universe={len(universe)} ret>=5%={ret_ge5} ret>=10%={ret_ge10}")
@@ -516,7 +477,7 @@ def main() -> int:
     time_note = build_in_time_note(agg_payload)
 
     # -------------------------------------------------------------------------
-    # 0) Overview first + capture overview sector order
+    # 0) Overview
     # -------------------------------------------------------------------------
     overview_sector_keys: List[str] = []
     if not args.no_overview:
@@ -543,7 +504,6 @@ def main() -> int:
                 metric=om,
             )
             overview_sector_keys = extract_overview_sector_order(payload_for_overview)
-
             print("[IN] overview done. sector_order_n=", len(overview_sector_keys))
         except Exception as e:
             print(f"[IN] overview failed (continue): {e}")
@@ -594,7 +554,6 @@ def main() -> int:
         width, height = 1080, 1920
         rows_top = max(1, int(args.rows_per_box))
         rows_peer = rows_top + 1
-        CAP_PAGES = max(1, int(args.cap_pages))
 
         for sector in ordered_sectors:
             L_total = (limitup or {}).get(sector, []) or []
@@ -603,23 +562,25 @@ def main() -> int:
             sector_fn = _sanitize_filename(sector)
 
             # ----------------------------
-            # CASE A: has top display items
+            # CASE A: 上框有資料
+            # 規則：
+            # - 以上框頁數為主
+            # - 總頁數 = 上框頁數 + 1
+            # - 但如果 peer 不夠，就不用硬湊
+            # - 不再 hard cap 5 頁
             # ----------------------------
             if L_total:
-                max_limitup_show = CAP_PAGES * rows_top
-                L_show = L_total[:max_limitup_show]
-                L_pages = chunk(L_show, rows_top) if L_show else [[]]
+                L_pages = chunk(L_total, rows_top) if L_total else [[]]
                 P_pages = chunk(P_total, rows_peer) if P_total else [[]]
 
                 limitup_pages = len(L_pages)
-                peer_pages = len(P_pages)
+                peer_pages_raw = len(P_pages)
 
-                total_pages = max(1, limitup_pages, peer_pages)
-                if total_pages > CAP_PAGES:
-                    total_pages = CAP_PAGES
+                total_pages_target = limitup_pages + 1
+                total_pages = max(limitup_pages, min(peer_pages_raw, total_pages_target))
 
                 hit_total, touch_total, big_total = count_hit_touch_big(L_total)
-                hit_shown, touch_shown, big_shown = count_hit_touch_big(L_show)
+                hit_shown, touch_shown, big_shown = count_hit_touch_big(L_total)
 
                 sector_all_total = int(sector_total_map.get(sector, 0) or 0)
                 sector_shown_total = int(hit_total + touch_total + big_total)
@@ -630,8 +591,8 @@ def main() -> int:
 
                 for i in range(total_pages):
                     limitup_rows = L_pages[i] if i < limitup_pages else []
-                    peer_rows = P_pages[i] if i < peer_pages else []
-                    has_more_peers = (peer_pages > total_pages) and (i == total_pages - 1)
+                    peer_rows = P_pages[i] if i < peer_pages_raw else []
+                    has_more_peers = (peer_pages_raw > total_pages) and (i == total_pages - 1)
 
                     out_path = outdir / f"in_{sector_fn}_p{i+1}.png"
                     draw_block_table(
@@ -666,12 +627,12 @@ def main() -> int:
                     print(f"[IN] wrote {out_path.name}")
 
             # ----------------------------
-            # CASE B: peers-only sector
+            # CASE B: 上框完全沒資料（peers-only）
+            # 這種才用原本自己的 pages
             # ----------------------------
             elif P_total:
                 page_pack = rows_top + rows_peer
                 total_pages = max(1, (len(P_total) + page_pack - 1) // page_pack)
-                total_pages = min(total_pages, CAP_PAGES)
 
                 hit_total = touch_total = big_total = 0
                 hit_shown = touch_shown = big_shown = 0
