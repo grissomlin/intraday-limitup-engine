@@ -229,10 +229,6 @@ def _is_big10_in(
     if is_locked is None:
         is_locked = _bool(r.get("is_limitup_locked", False))
 
-    status = _safe_str(r.get("today_status") or r.get("limitup_status")).lower()
-    if status == "big":
-        return True
-
     flag10 = (
         _bool(r.get("is_surge_ge10", False))
         or _bool(r.get("is_bigup10", False))
@@ -281,14 +277,13 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
     out: Dict[str, List[Dict[str, Any]]] = {}
 
     for r in universe:
-        today_status = _safe_str(r.get("today_status") or r.get("limitup_status")).lower()
-        is_locked = _bool(r.get("is_limitup_locked", False)) or (today_status == "hit")
-        touch_any = _touch_any_in(r) or (today_status == "touch")
-        touch_only = _bombed_in(r) or (today_status == "touch")
+        is_locked = _bool(r.get("is_limitup_locked", False))
+        touch_any = _touch_any_in(r)
+        touch_only = _bombed_in(r)
         ret = _pct(r.get("ret", 0.0))
-        big10 = _is_big10_in(r, ret=ret, touch_any=touch_any, is_locked=is_locked) or (today_status == "big")
 
-        # final gate: must be true event row
+        big10 = _is_big10_in(r, ret=ret, touch_any=touch_any, is_locked=is_locked)
+
         if not (is_locked or touch_only or big10):
             continue
 
@@ -352,12 +347,11 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]], *, peer_ret_min: fl
     out: Dict[str, List[Dict[str, Any]]] = {}
 
     for r in universe:
-        today_status = _safe_str(r.get("today_status") or r.get("limitup_status")).lower()
-        is_locked = _bool(r.get("is_limitup_locked", False)) or (today_status == "hit")
-        touch_any = _touch_any_in(r) or (today_status == "touch")
-        touch_only = _bombed_in(r) or (today_status == "touch")
+        is_locked = _bool(r.get("is_limitup_locked", False))
+        touch_any = _touch_any_in(r)
+        touch_only = _bombed_in(r)
         ret = _pct(r.get("ret", 0.0))
-        big10 = _is_big10_in(r, ret=ret, touch_any=touch_any, is_locked=is_locked) or (today_status == "big")
+        big10 = _is_big10_in(r, ret=ret, touch_any=touch_any, is_locked=is_locked)
 
         if is_locked or touch_only or big10 or touch_any:
             continue
@@ -435,7 +429,6 @@ def main() -> int:
     ap.add_argument("--layout", default="us")
     ap.add_argument("--rows-per-box", type=int, default=6)
 
-    # compatibility only
     ap.add_argument("--cap-pages", type=int, default=5)
 
     ap.add_argument("--no-overview", action="store_true")
@@ -564,22 +557,21 @@ def main() -> int:
         for sector in ordered_sectors:
             L_total = (limitup or {}).get(sector, []) or []
             P_total = (peers or {}).get(sector, []) or []
+
             sector_fn = _sanitize_filename(sector)
 
-            # CASE A: top exists
+            # ----------------------------
+            # CASE A: 上框有真事件資料
+            # ----------------------------
             if L_total:
-                L_pages = chunk(L_total, rows_top)
-                P_pages = chunk(P_total, rows_peer) if P_total else []
+                L_pages = chunk(L_total, rows_top) if L_total else [[]]
+                P_pages = chunk(P_total, rows_peer) if P_total else [[]]
 
                 limitup_pages = len(L_pages)
                 peer_pages_raw = len(P_pages)
 
-                # total pages = top pages + at most 1 extra peer page
-                total_pages = limitup_pages
-                if peer_pages_raw > limitup_pages:
-                    total_pages = limitup_pages + 1
-                else:
-                    total_pages = max(limitup_pages, peer_pages_raw)
+                total_pages_target = limitup_pages + 1
+                total_pages = max(limitup_pages, min(peer_pages_raw, total_pages_target))
 
                 hit_total, touch_total, big_total = count_hit_touch_big(L_total)
                 hit_shown, touch_shown, big_shown = count_hit_touch_big(L_total)
@@ -625,10 +617,13 @@ def main() -> int:
                         has_more_peers=has_more_peers,
                         lang=str(args.lang or "en"),
                         market="IN",
+                        top_rows_kind="events",
                     )
                     print(f"[IN] wrote {out_path.name}")
 
-            # CASE B: peers only
+            # ----------------------------
+            # CASE B: 上框沒有真事件資料，整頁其實都是 peers
+            # ----------------------------
             elif P_total:
                 page_pack = rows_top + rows_peer
                 total_pages = max(1, (len(P_total) + page_pack - 1) // page_pack)
@@ -677,6 +672,7 @@ def main() -> int:
                         market="IN",
                         top_box_title="Top movers (<10%)",
                         bot_box_title="Peers (same sector)",
+                        top_rows_kind="peers",
                     )
                     print(f"[IN] wrote {out_path.name}")
 
