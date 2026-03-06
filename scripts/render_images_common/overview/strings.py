@@ -91,11 +91,11 @@ def title_for_metric(metric: str, market: str, lang: str) -> str:
         if m == "bigmove10":
             return f"{prefix}Secteurs les plus forts\n(mouvements 10%+)"
         if m == "locked":
-            return f"{prefix}Nombre de titres au plafond (par secteur)"
+            return f"{prefix}Nombre de titres au plafond\n(par secteur)"
         if m == "touched":
-            return f"{prefix}Nombre de titres ayant touché le plafond (par secteur)"
+            return f"{prefix}Nombre de titres ayant touché le plafond\n(par secteur)"
         if m in ("locked+touched", "locked_plus_touched"):
-            return f"{prefix}Titres au plafond (par secteur)\n(au plafond + touché)"
+            return f"{prefix}Titres au plafond par secteur\n(plafond + touché)"
         if m == "mix":
             return f"{prefix}Dynamique par secteur\n(10%+ / plafond / touché)"
         return f"{prefix}Nombre par secteur"
@@ -416,7 +416,7 @@ def disclaimer_one_line(lang: str) -> str:
     if lang == "th":
         return "คำเตือน: เพื่อการเรียนรู้ ไม่ใช่คำแนะนำการลงทุน"
     if lang == "fr":
-        return "Avertissement : à titre informatif uniquement. Pas un conseil en investissement."
+        return "À titre informatif uniquement. Pas un conseil en investissement."
     if lang == "zh-cn":
         return "免责声明：仅供学习交流，不构成投资建议"
     if lang == "zh-tw":
