@@ -117,6 +117,42 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 # =============================================================================
+# Text fitting helpers
+# =============================================================================
+def _fit_fontsize_to_px(
+    fig,
+    renderer,
+    text: str,
+    fp: FontProperties,
+    *,
+    start_size: float,
+    min_size: float,
+    max_width_px: float,
+) -> float:
+    """
+    Shrink fontsize until text width fits max_width_px.
+    Works for one-line or multi-line text.
+    """
+    if not text:
+        return float(start_size)
+
+    fs = float(start_size)
+    min_size = float(min_size)
+    max_width_px = float(max_width_px)
+
+    while fs > min_size:
+        try:
+            w = text_px(fig, renderer, text, fp, fs)
+        except Exception:
+            w = 0.0
+        if w <= max_width_px:
+            return fs
+        fs -= 1.0
+
+    return float(min_size)
+
+
+# =============================================================================
 # ✅ NEW: export overview sector sort order back to payload
 # =============================================================================
 def _export_overview_sector_order(
@@ -173,7 +209,7 @@ def _sector_label_color(market: str) -> str:
         return "#A8D8FF"
     if m in {"AU"}:
         return "#B6FFB0"
-    if m in {"UK", "EU"}:
+    if m in {"UK", "EU", "FR"}:
         return "#D8B6FF"
     return "white"
 
@@ -390,7 +426,7 @@ def _render_one_page(
     # ---- badges ----
     fs_count = 46
     fs_pct = 28
-    if (market or "").upper() in {"US", "CA", "AU", "UK", "EU"}:
+    if (market or "").upper() in {"US", "CA", "AU", "UK", "EU", "FR"}:
         fs_pct = 32
 
     pad_in_px = 18.0
@@ -470,7 +506,7 @@ def _render_one_page(
             pct_ha = "right"
 
         m_up = (market or "").upper()
-        stroke_w = 4 if m_up in {"US", "CA", "AU", "UK", "EU"} else 3
+        stroke_w = 4 if m_up in {"US", "CA", "AU", "UK", "EU", "FR"} else 3
 
         ax_bar.text(
             pct_x,
@@ -494,14 +530,25 @@ def _render_one_page(
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
 
+    max_title_px = width * 0.92
+
     if "\n" in title:
+        title_fs = _fit_fontsize_to_px(
+            fig,
+            renderer,
+            title,
+            title_fp,
+            start_size=44,
+            min_size=30,
+            max_width_px=max_title_px,
+        )
         fig.text(
             0.5,
             0.965,
             title,
             ha="center",
             va="top",
-            fontsize=44,
+            fontsize=title_fs,
             color="white",
             weight="bold",
             linespacing=1.1,
@@ -509,48 +556,46 @@ def _render_one_page(
         )
         subtitle_y = 0.885
     else:
-        title_fs = 56
-        max_title_px = width * 0.92
-        if text_px(fig, renderer, title, title_fp, title_fs) <= max_title_px:
-            fig.text(
-                0.5,
-                0.965,
-                title,
-                ha="center",
-                va="top",
-                fontsize=title_fs,
-                color="white",
-                weight="bold",
-                fontproperties=title_fp,
-            )
-            subtitle_y = 0.91
-        else:
-            cut = max(10, min(14, len(title) // 2))
-            title2 = title[:cut] + "\n" + title[cut:]
-            title2_fp = fontprops_for_text(title2, market=market, payload=payload, weight="bold")
-            fig.text(
-                0.5,
-                0.965,
-                title2,
-                ha="center",
-                va="top",
-                fontsize=48,
-                color="white",
-                weight="bold",
-                linespacing=1.1,
-                fontproperties=title2_fp,
-            )
-            subtitle_y = 0.885
+        title_fs = _fit_fontsize_to_px(
+            fig,
+            renderer,
+            title,
+            title_fp,
+            start_size=56,
+            min_size=32,
+            max_width_px=max_title_px,
+        )
+        fig.text(
+            0.5,
+            0.965,
+            title,
+            ha="center",
+            va="top",
+            fontsize=title_fs,
+            color="white",
+            weight="bold",
+            fontproperties=title_fp,
+        )
+        subtitle_y = 0.91 if title_fs >= 48 else 0.895
 
     if subtitle:
         subtitle_fp = fontprops_for_text(subtitle, market=market, payload=payload, weight="regular")
+        subtitle_fs = _fit_fontsize_to_px(
+            fig,
+            renderer,
+            subtitle,
+            subtitle_fp,
+            start_size=32,
+            min_size=24,
+            max_width_px=width * 0.88,
+        )
         fig.text(
             0.5,
             subtitle_y,
             subtitle,
             ha="center",
             va="top",
-            fontsize=32,
+            fontsize=subtitle_fs,
             color="#aaa",
             style="italic",
             linespacing=1.25,
@@ -629,13 +674,22 @@ def _render_one_page(
             fontproperties=footer_fp,
         )
     if footer_center4:
+        footer_disc_fs = _fit_fontsize_to_px(
+            fig,
+            renderer,
+            footer_center4,
+            footer_disc_fp,
+            start_size=float(fs_disc_env),
+            min_size=14,
+            max_width_px=width * 0.94,
+        )
         fig.text(
             0.5,
             y4,
             footer_center4,
             ha="center",
             va="center",
-            fontsize=fs_disc_env,
+            fontsize=footer_disc_fs,
             color="#FFD54A",
             alpha=0.65,
             fontproperties=footer_disc_fp,
