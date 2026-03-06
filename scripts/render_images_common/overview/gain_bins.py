@@ -90,33 +90,35 @@ def get_snapshot_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _resolve_lang(payload: Dict[str, Any]) -> str:
     """
-    gain_bins 只需要粗略語系（ja/ko/zh-tw/zh-cn/th/en）
+    gain_bins 只需要粗略語系（ja/ko/zh-tw/zh-cn/th/fr/en）
     """
     market = str(payload.get("market", "") or "").strip().upper()
     lang = str((payload.get("lang") or (payload.get("meta") or {}).get("lang") or "")).strip().lower()
 
-    if lang not in {"en", "zh-tw", "zh-cn", "ja", "ko", "th"}:
+    if lang not in {"en", "fr", "zh-tw", "zh-cn", "ja", "ko", "th"}:
         if market in {"JP", "JPX", "JPN"}:
             lang = "ja"
         elif market in {"KR", "KOR"}:
             lang = "ko"
         elif market in {"TH", "THA", "SET"}:
             lang = "th"
+        elif market in {"FR", "FRA", "PARIS", "EURONEXT PARIS"}:
+            lang = "fr"
         else:
             lang = "en"
     return lang
 
 
 def _band_label(lang: str, lo: int, hi: int) -> str:
-    if lang in {"ko", "ja"}:
-        return f"{lo}–{hi}%"
+    if lang in {"ko", "ja", "fr"}:
+        return f"{lo}-{hi}%"
     if lang.startswith("zh") or lang == "th":
-        return f"{lo}–{hi}%"
+        return f"{lo}-{hi}%"
     return f"{lo}-{hi}%"
 
 
 def _over_label(lang: str) -> str:
-    if lang in {"ko", "ja", "th"}:
+    if lang in {"ko", "ja", "th", "fr"}:
         return "100%+"
     if lang.startswith("zh"):
         return "100%+"
@@ -153,6 +155,16 @@ def _tagline(lang: str, *, band: str) -> str:
             "40-50": "폭등",
             "50-100": "대폭등",
             "100+": "초급등",
+        }.get(band, "")
+
+    if lang == "fr":
+        return {
+            "10-20": "Hausse",
+            "20-30": "Forte hausse",
+            "30-40": "Pic",
+            "40-50": "Envol",
+            "50-100": "Fusée",
+            "100+": "Doublement",
         }.get(band, "")
 
     if lang == "zh-cn":
@@ -392,6 +404,9 @@ def gainbins_footer_center_lines(payload: Dict[str, Any], lang: str) -> Tuple[st
     elif lang == "en":
         line1 = f"{pos_cnt} / {universe_total} ({pct}) are 10%+ gainers"
         line2 = "※ 10%+ = return ≥ +10% (incl. limit-up/touched)"
+    elif lang == "fr":
+        line1 = f"{pos_cnt} sur {universe_total} valeurs ({pct}) gagnent 10%+"
+        line2 = "※ 10%+ = hausse ≥ 10% (hors plafond / touché)"
     elif lang == "ko":
         line1 = f"{universe_total}개 중 {pos_cnt}개（{pct}）"
         line2 = "※ 10%+ = 상승률 10% 이상 (상한가/터치 포함)"
