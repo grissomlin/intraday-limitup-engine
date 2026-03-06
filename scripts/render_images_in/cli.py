@@ -239,6 +239,29 @@ def _is_big10_in(
     return bool((ret >= 0.10 or flag10) and (not touch_any) and (not is_locked))
 
 
+def _pick_band_pct(r: Dict[str, Any]) -> Optional[float]:
+    """
+    normalized band ratio, e.g. 0.05 / 0.10 / 0.20
+    """
+    for k in ("band_pct", "limit_rate", "limit_pct"):
+        if k not in r:
+            continue
+        v = r.get(k)
+        if v is None:
+            continue
+        try:
+            fv = float(v)
+            if fv <= 0:
+                continue
+            # if already like 5 / 10 / 20, normalize to ratio
+            if fv > 1.0:
+                fv = fv / 100.0
+            return fv
+        except Exception:
+            continue
+    return None
+
+
 def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     out: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -257,19 +280,14 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
         sym = _safe_str(r.get("symbol") or "")
         name = _safe_str(r.get("name") or sym)
 
-        limit_rate = r.get("limit_rate", None)
-        if limit_rate is None:
-            limit_rate = r.get("band_pct", None)
+        band_pct = _pick_band_pct(r)
 
         if big10:
             status = "big"
-            line2 = "Big Move 10%+"
         elif touch_only:
             status = "touch"
-            line2 = "Touched upper band (not locked)"
         else:
             status = "hit"
-            line2 = "Locked at upper band"
 
         out.setdefault(sector, []).append(
             {
@@ -279,9 +297,21 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
                 "ret": ret,
                 "ret_pct": ret * 100.0,
                 "line1": f"{sym}  {name}",
-                "line2": line2,
-                "limitup_status": status,  # hit/touch/big
-                "limit_rate": limit_rate,
+                "line2": "",  # ✅ let draw_mpl auto compose today/prev status line
+                "limitup_status": status,
+
+                # ✅ critical for 2nd line fallback
+                "today_status": r.get("today_status") or status,
+                "prev_status": r.get("prev_status") or "",
+                "streak_today": int(r.get("streak_today") or r.get("streak") or 0),
+                "streak_prev": int(r.get("streak_prev") or 0),
+
+                # ✅ critical for band pill
+                "band_pct": band_pct,
+                "limit_rate_pct": (band_pct * 100.0) if band_pct is not None else None,
+
+                # keep old raw fields for safety/debug
+                "market_detail": r.get("market_detail"),
             }
         )
 
@@ -291,21 +321,25 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
     return out
 
 
-def _get_prev_ret(r: Dict[str, Any]) -> Optional[float]:
-    for k in ("ret_prev", "ret_prev1", "prev_ret", "ret_1d", "ret_prev_session", "ret_prev_day"):
+def _get_prev_ret_pct(r: Dict[str, Any]) -> Optional[float]:
+    """
+    Return percent value for display, e.g. +5.23 not 0.0523
+    """
+    for k in ("prev_ret_pct",):
         if k in r and r.get(k) is not None:
             try:
                 return float(r.get(k))
             except Exception:
+                pass
+
+    for k in ("ret_prev", "ret_prev1", "prev_ret", "ret_1d", "ret_prev_session", "ret_prev_day"):
+        if k in r and r.get(k) is not None:
+            try:
+                v = float(r.get(k))
+                return v * 100.0 if abs(v) < 1.5 else v
+            except Exception:
                 continue
     return None
-
-
-def _fmt_prev_line(prev_ret: Optional[float]) -> str:
-    if prev_ret is None:
-        return ""
-    pct = prev_ret * 100.0 if abs(prev_ret) < 1.5 else prev_ret
-    return f"Prev session {pct:+.2f}%"
 
 
 def build_peers_by_sector_in(universe: List[Dict[str, Any]], *, peer_ret_min: float = 0.0) -> Dict[str, List[Dict[str, Any]]]:
@@ -329,12 +363,8 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]], *, peer_ret_min: fl
         sym = _safe_str(r.get("symbol") or "")
         name = _safe_str(r.get("name") or sym)
 
-        limit_rate = r.get("limit_rate", None)
-        if limit_rate is None:
-            limit_rate = r.get("band_pct", None)
-
-        prev_ret = _get_prev_ret(r)
-        line2 = _fmt_prev_line(prev_ret)
+        band_pct = _pick_band_pct(r)
+        prev_ret_pct = _get_prev_ret_pct(r)
 
         out.setdefault(sector, []).append(
             {
@@ -344,8 +374,22 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]], *, peer_ret_min: fl
                 "ret": ret,
                 "ret_pct": ret * 100.0,
                 "line1": f"{sym}  {name}",
-                "line2": line2,
-                "limit_rate": limit_rate,
+                "line2": "",  # ✅ let draw_mpl auto compose prev session / prev status
+
+                # ✅ critical for peer line2 fallback
+                "prev_ret_pct": prev_ret_pct,
+                "prev_status": r.get("prev_status") or "",
+                "streak_prev": int(r.get("streak_prev") or 0),
+
+                # optional if you also want same structure
+                "today_status": r.get("today_status") or "",
+                "streak_today": int(r.get("streak_today") or r.get("streak") or 0),
+
+                # ✅ critical for band pill
+                "band_pct": band_pct,
+                "limit_rate_pct": (band_pct * 100.0) if band_pct is not None else None,
+
+                "market_detail": r.get("market_detail"),
             }
         )
 
@@ -487,12 +531,10 @@ def main() -> int:
 
     print(f"[IN][DEBUG] sectors(limitup)={len(limitup)} sectors(peers)={len(peers)}")
 
-    # sectors = union
     sectors_raw = sorted(set((limitup or {}).keys()) | set((peers or {}).keys()))
     if not sectors_raw:
         print("[IN][WARN] No sectors to render (limitup empty & peers empty). Only overview will exist.")
     else:
-        # build normalized key mapping
         norm_to_sector: Dict[str, str] = {}
         existing_norm_keys: List[str] = []
         for sec in sectors_raw:
@@ -527,9 +569,6 @@ def main() -> int:
 
             sector_fn = _sanitize_filename(sector)
 
-            # ----------------------------
-            # CASE A: normal (has locked/touch/big10)
-            # ----------------------------
             if L_total:
                 max_limitup_show = CAP_PAGES * rows_top
                 L_show = L_total[:max_limitup_show]
@@ -539,8 +578,6 @@ def main() -> int:
                 limitup_pages = len(L_pages)
                 peer_pages = len(P_pages)
 
-                # ✅ IMPORTANT FIX:
-                # Do NOT do (limitup_pages + 1). Use max pages instead.
                 total_pages = max(1, limitup_pages, peer_pages)
                 if total_pages > CAP_PAGES:
                     total_pages = CAP_PAGES
@@ -592,12 +629,8 @@ def main() -> int:
                     )
                     print(f"[IN] wrote {out_path.name}")
 
-            # ----------------------------
-            # CASE B: peers-only sector (NO locked/touch/big10)
-            # ✅ Put peers into TOP box so page-1 top is never empty.
-            # ----------------------------
             elif P_total:
-                page_pack = rows_top + rows_peer  # top chunk + bottom chunk per page
+                page_pack = rows_top + rows_peer
                 total_pages = max(1, (len(P_total) + page_pack - 1) // page_pack)
                 total_pages = min(total_pages, CAP_PAGES)
 
@@ -631,7 +664,7 @@ def main() -> int:
                         big_total=big_total,
                         sector_shown_total=sector_shown_total,
                         sector_all_total=sector_all_total,
-                        limitup_rows=top_rows,   # ✅ peers moved to TOP
+                        limitup_rows=top_rows,
                         peer_rows=bot_rows,
                         page_idx=i + 1,
                         page_total=total_pages,
@@ -643,20 +676,14 @@ def main() -> int:
                         has_more_peers=has_more_peers,
                         lang=str(args.lang or "en"),
                         market="IN",
-
-                        # Optional titles for peers-only
                         top_box_title="Top movers (<10%)",
                         bot_box_title="Peers (same sector)",
                     )
                     print(f"[IN] wrote {out_path.name}")
 
             else:
-                # nothing to show
                 continue
 
-    # -------------------------------------------------------------------------
-    # 2) list.txt (CRITICAL for render_video)
-    # -------------------------------------------------------------------------
     try:
         list_path = write_list_txt(outdir, ext="png", overview_prefix="overview_sectors_", filename="list.txt")
         print(f"[IN] wrote {list_path}")
