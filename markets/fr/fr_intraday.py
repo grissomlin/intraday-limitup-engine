@@ -59,6 +59,13 @@ def _ceil_div(a: int, b: int) -> int:
     return (a + b - 1) // b if b > 0 else 0
 
 
+def _clean_sector_text(x: Any) -> str:
+    s = ("" if x is None else str(x)).strip()
+    if (not s) or s.lower() in {"nan", "none", "-", "—", "--"}:
+        return "Unknown"
+    return s
+
+
 def _compute_streaks(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -150,9 +157,9 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path_override: Optional[Path
             "meta": {"db_path": str(dbp), "ymd_effective": ymd_effective, "time": time_meta},
         }
 
-    df["name"] = df["name"].fillna("Unknown")
-    df["sector"] = df["sector"].fillna("Unknown").replace("", "Unknown")
-    df["market_detail"] = df["market_detail"].fillna("Unknown")
+    df["name"] = df["name"].fillna("Unknown").astype(str).str.strip().replace({"": "Unknown", "nan": "Unknown", "None": "Unknown"})
+    df["sector"] = df["sector"].apply(_clean_sector_text)
+    df["market_detail"] = df["market_detail"].fillna("Unknown").astype(str).str.strip().replace({"": "Unknown", "nan": "Unknown", "None": "Unknown"})
 
     for col in ("prev_close", "open", "high", "low", "close"):
         if col in df.columns:
