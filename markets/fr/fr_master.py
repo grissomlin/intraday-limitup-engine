@@ -146,8 +146,25 @@ def _coerce_symbol(x: Any) -> str:
 
 
 def _coerce_text(x: Any, default: str = "") -> str:
-    s = ("" if x is None else str(x)).strip()
-    return s if s else default
+    """
+    Normalize blankish / NaN-like values to default.
+
+    IMPORTANT:
+    pandas NaN -> str(x) == "nan", so we must explicitly filter that out.
+    """
+    if x is None:
+        return default
+
+    try:
+        if pd.isna(x):
+            return default
+    except Exception:
+        pass
+
+    s = str(x).strip()
+    if (not s) or s.lower() in {"nan", "none", "-", "—", "--"}:
+        return default
+    return s
 
 
 def refresh_stock_info_from_master(db_path: str, refresh_list: bool = True) -> List[Tuple[str, str]]:
