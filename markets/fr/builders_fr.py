@@ -26,12 +26,24 @@ def _one_tick_10pct_price_ceiling(tick: float) -> float:
     return t / 0.10
 
 
+def _clean_sector_series(s: pd.Series) -> pd.Series:
+    return (
+        s.fillna("")
+        .astype(str)
+        .str.strip()
+        .replace({"": "Unknown", "nan": "Unknown", "None": "Unknown", "-": "Unknown", "—": "Unknown", "--": "Unknown"})
+    )
+
+
 def build_open_limit_watchlist_fr(snapshot_open_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     FR open_limit_watchlist:
-    - filter: ret >= threshold
+    - include close >= threshold OR intraday touch >= threshold
     - keep streak/move_band/move_key/badge/status fields
     - apply noise filters (min price/volume, exclude one-tick 10% tiny-price)
+
+    IMPORTANT:
+    This makes FR overview closer to sector pages by including touched-only rows too.
     """
     if not snapshot_open_rows:
         return []
@@ -41,13 +53,29 @@ def build_open_limit_watchlist_fr(snapshot_open_rows: List[Dict[str, Any]]) -> L
         return []
 
     df["ret"] = pd.to_numeric(df.get("ret", 0.0), errors="coerce").fillna(0.0)
+    df["touch_ret"] = pd.to_numeric(df.get("touch_ret", 0.0), errors="coerce").fillna(0.0)
     df["close"] = pd.to_numeric(df.get("close", 0.0), errors="coerce").fillna(0.0)
     df["volume"] = pd.to_numeric(df.get("volume", 0), errors="coerce").fillna(0).astype(int)
 
-    # basic mover filter
-    df = df[df["ret"] >= float(FR_OPEN_WATCHLIST_RET_TH)].sort_values("ret", ascending=False)
+    if "touched_only" not in df.columns:
+        df["touched_only"] = False
+    df["touched_only"] = df["touched_only"].fillna(False).astype(bool)
+
+    # basic mover filter:
+    # - close >= 10%
+    # - OR intraday touch >= 10%
+    df = df[
+        (df["ret"] >= float(FR_OPEN_WATCHLIST_RET_TH)) |
+        (df["touch_ret"] >= float(FR_OPEN_WATCHLIST_RET_TH))
+    ].copy()
+
     if df.empty:
         return []
+
+    # sort:
+    # close 10%+ first, then touched-only by touch_ret
+    df["is_close_hit"] = (df["ret"] >= float(FR_OPEN_WATCHLIST_RET_TH)).astype(int)
+    df = df.sort_values(["is_close_hit", "ret", "touch_ret"], ascending=[False, False, False])
 
     # noise filters
     if FR_MIN_PRICE > 0:
@@ -94,6 +122,15 @@ def build_open_limit_watchlist_fr(snapshot_open_rows: List[Dict[str, Any]]) -> L
     ]:
         if c not in df.columns:
             df[c] = dv
+
+    df["sector"] = _clean_sector_series(df.get("sector", pd.Series(["Unknown"] * len(df))))
+    df["name"] = (
+        df.get("name", pd.Series(["Unknown"] * len(df)))
+        .fillna("Unknown")
+        .astype(str)
+        .str.strip()
+        .replace({"": "Unknown", "nan": "Unknown", "None": "Unknown"})
+    )
 
     keep = [
         "symbol",
@@ -148,12 +185,18 @@ def build_sector_summary_open_limit_fr(rows: List[Dict[str, Any]]) -> List[Dict[
     if df.empty:
         return []
 
-    df["sector"] = df.get("sector", "").fillna("").replace("", "Unknown")
+    df["sector"] = _clean_sector_series(df.get("sector", pd.Series(["Unknown"] * len(df))))
     df["ret"] = pd.to_numeric(df.get("ret", 0.0), errors="coerce").fillna(0.0)
+    df["touch_ret"] = pd.to_numeric(df.get("touch_ret", 0.0), errors="coerce").fillna(0.0)
 
     agg = (
         df.groupby("sector", as_index=False)
-        .agg(count=("symbol", "count"), avg_ret=("ret", "mean"), max_ret=("ret", "max"))
-        .sort_values(["count", "avg_ret"], ascending=False)
+        .agg(
+            count=("symbol", "count"),
+            avg_ret=("ret", "mean"),
+            max_ret=("ret", "max"),
+            max_touch_ret=("touch_ret", "max"),
+        )
+        .sort_values(["count", "avg_ret", "max_touch_ret"], ascending=False)
     )
     return agg.to_dict(orient="records")
