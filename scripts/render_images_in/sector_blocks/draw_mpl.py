@@ -102,9 +102,6 @@ def _ellipsize_px(
     fontsize: int,
     weight: str = "bold",
 ) -> str:
-    """
-    Ellipsize by pixel width. Much more stable than char-count.
-    """
     s = _safe_str(s)
     if not s:
         return ""
@@ -143,9 +140,6 @@ def _fit_text_fs(
     fs_min: int,
     weight: str = "bold",
 ) -> Tuple[str, int]:
-    """
-    Prefer shrinking font size to fit, only ellipsize as last resort.
-    """
     s = _safe_str(s)
     if not s:
         return "", fs_start
@@ -168,9 +162,6 @@ def _fit_text_fs(
 
 
 def _normalize_status(x: Any) -> str:
-    """
-    Normalize any status field into: hit / touch / big / ""
-    """
     s = _safe_str(x).lower()
     if s in {"hit", "limit_hit", "locked"}:
         return "hit"
@@ -182,10 +173,6 @@ def _normalize_status(x: Any) -> str:
 
 
 def _status_from_row(r: Dict[str, Any]) -> str:
-    """
-    Prefer authoritative fields:
-      - limitup_status / today_status
-    """
     st = _normalize_status(r.get("limitup_status"))
     if st:
         return st
@@ -194,7 +181,6 @@ def _status_from_row(r: Dict[str, Any]) -> str:
     if st:
         return st
 
-    # fallback (older payloads)
     if _safe_bool(r.get("is_limitup_locked")):
         return "hit"
     if _safe_bool(r.get("is_limitup_touch")) or _safe_bool(r.get("is_limitup_touch_any")):
@@ -218,18 +204,12 @@ def _count_status(rows: List[Dict[str, Any]]) -> Tuple[int, int, int]:
 
 
 def _status_badge_for_top_row(r: Dict[str, Any], theme: str) -> Tuple[str, str, str]:
-    """
-    Decide TOP-RIGHT badge for TOP rows:
-    - big   -> Big 10%+
-    - touch -> Touched
-    - hit   -> Limit Hit
-    """
     theme = (theme or "dark").lower()
     is_dark = theme == "dark"
 
-    c_orange = "#f59f00" if is_dark else "#f08c00"  # hit
-    c_blue = "#4dabf7" if is_dark else "#1c7ed6"    # touch
-    c_pink = "#ff6b6b" if is_dark else "#d9480f"    # big
+    c_orange = "#f59f00" if is_dark else "#f08c00"
+    c_blue = "#4dabf7" if is_dark else "#1c7ed6"
+    c_pink = "#ff6b6b" if is_dark else "#d9480f"
 
     st = _status_from_row(r)
     if st == "big":
@@ -240,13 +220,6 @@ def _status_badge_for_top_row(r: Dict[str, Any], theme: str) -> Tuple[str, str, 
 
 
 def _limit_pct_optional(r: Dict[str, Any]) -> Optional[float]:
-    """
-    Show Limit X% pill ONLY when band exists.
-    Accept:
-      - limit_rate_pct (5 / 10 / 20)
-      - limit_rate     (5 / 10 / 20 or 0.05 / 0.10 / 0.20)
-      - band_pct       (0.05 / 0.10 / 0.20)
-    """
     v = r.get("limit_rate_pct", None)
     if v is not None:
         try:
@@ -289,11 +262,11 @@ def _status_label_short(st: str) -> str:
 
 
 def _default_line2_top(r: Dict[str, Any]) -> str:
-    """
-    TOP line2:
-    當日狀態 + 前日狀態
-    """
-    today = _status_label_short(r.get("today_status") or r.get("limitup_status"))
+    today = _status_label_short(
+        r.get("today_status") or
+        r.get("limitup_status") or
+        _status_from_row(r)
+    )
     prev = _status_label_short(r.get("prev_status") or r.get("prev_limitup_status"))
 
     st_today = _safe_int(r.get("streak_today"), 0)
@@ -302,17 +275,16 @@ def _default_line2_top(r: Dict[str, Any]) -> str:
     parts: List[str] = []
     if today:
         parts.append(f"Today: {today}" + (f" ({st_today})" if st_today > 0 else ""))
+    else:
+        parts.append("Today: Event")
+
     if prev:
         parts.append(f"Prev: {prev}" + (f" ({st_prev})" if st_prev > 0 else ""))
 
-    return " | ".join(parts) if parts else ""
+    return " | ".join(parts)
 
 
 def _default_line2_peer(r: Dict[str, Any]) -> str:
-    """
-    PEER line2:
-    以前日狀態為主，若有 prev_ret_pct 再附加。
-    """
     prev = _status_label_short(r.get("prev_status") or r.get("prev_limitup_status"))
     st_prev = _safe_int(r.get("streak_prev"), 0)
 
@@ -334,7 +306,17 @@ def _default_line2_peer(r: Dict[str, Any]) -> str:
         return prev_head
     if prev_ret_str:
         return prev_ret_str
-    return ""
+    return "Prev session —"
+
+
+def _pill_reserve_px(ax, fig, pct: Optional[float], fontsize: int) -> float:
+    if pct is None:
+        return 0.0
+    txt = limit_label(pct)
+    try:
+        return float(text_width_px(ax, fig, txt, x=0, y=0, fontsize=fontsize, weight="bold") + 34.0)
+    except Exception:
+        return 120.0
 
 
 # =============================================================================
@@ -512,8 +494,13 @@ def draw_block_table(
     # Rows layout
     # -------------------------------
     two_line = True
-    y_start_top, row_h_top = calc_rows_layout(top_y0 - 0.055, top_y1, int(rows_per_page), two_line=two_line)
-    y_start_bot, row_h_bot = calc_rows_layout(bot_y0 - 0.055, bot_y1, int(rows_per_page) + 1, two_line=two_line)
+
+    top_content_y0 = top_y0 - 0.042
+    bot_content_y0 = bot_y0 - 0.042
+    bot_content_y1 = bot_y1 + (0.030 if has_more_peers else 0.0)
+
+    y_start_top, row_h_top = calc_rows_layout(top_content_y0, top_y1, int(rows_per_page), two_line=two_line)
+    y_start_bot, row_h_bot = calc_rows_layout(bot_content_y0, bot_content_y1, int(rows_per_page) + 1, two_line=two_line)
 
     x_name = 0.08
     x_tag = 0.94
@@ -543,7 +530,6 @@ def draw_block_table(
 
             line1 = _safe_str(r.get("line1") or "")
             line2 = _safe_str(r.get("line2") or "")
-
             if not line2:
                 line2 = _default_line2_top(r)
 
@@ -553,7 +539,10 @@ def draw_block_table(
             badge_pad_px = 26 + 18
             x_status_left = x_tag - px_to_data_dx(ax, badge_w_px + badge_pad_px, y_data=y1)
 
-            safe_right = max(x_name + 0.10, x_status_left - 0.01)
+            pct = _limit_pct_optional(r)
+            pill_reserve_px = _pill_reserve_px(ax, fig, pct, row_tag_fs)
+            safe_right = x_status_left - px_to_data_dx(ax, pill_reserve_px + 10.0, y_data=y1)
+            safe_right = max(x_name + 0.10, safe_right)
 
             line1_fit = _ellipsize_px(
                 ax, fig, line1,
@@ -577,7 +566,6 @@ def draw_block_table(
                     alpha=0.95
                 )
 
-            pct = _limit_pct_optional(r)
             if pct is not None:
                 pill_text = limit_label(pct)
                 pill_bg, pill_fg = limit_colors(pct, theme)
@@ -607,21 +595,20 @@ def draw_block_table(
             )
 
             ret = _safe_float(r.get("ret"), 0.0)
-            if abs(ret) > 1e-12:
-                ret_text = _fmt_ret_pct(ret)
-                ax.text(
-                    x_tag, y2, ret_text,
-                    ha="right", va="center",
-                    fontsize=row_tag_fs,
-                    color="#0b0d10" if is_dark else "#ffffff",
-                    weight="bold",
-                    bbox=dict(
-                        boxstyle="round,pad=0.30",
-                        facecolor=get_ret_color(ret, theme),
-                        edgecolor="none",
-                        alpha=0.95
-                    )
+            ret_text = _fmt_ret_pct(ret)
+            ax.text(
+                x_tag, y2, ret_text,
+                ha="right", va="center",
+                fontsize=row_tag_fs,
+                color="#0b0d10" if is_dark else "#ffffff",
+                weight="bold",
+                bbox=dict(
+                    boxstyle="round,pad=0.30",
+                    facecolor=get_ret_color(ret, theme),
+                    edgecolor="none",
+                    alpha=0.95
                 )
+            )
 
             if i < min(len(L), int(rows_per_page)) - 1:
                 ax.plot(
@@ -641,7 +628,6 @@ def draw_block_table(
 
             line1 = _safe_str(r.get("line1") or "")
             line2 = _safe_str(r.get("line2") or "")
-
             if not line2:
                 line2 = _default_line2_peer(r)
 
@@ -720,11 +706,11 @@ def draw_block_table(
 
         if has_more_peers:
             ax.text(
-                0.5, bot_y1 + 0.02,
+                0.5, bot_y1 + 0.010,
                 "(More items not shown)",
                 ha="center", va="bottom",
-                fontsize=max(20, row_line2_fs),
-                color=sub, alpha=0.85,
+                fontsize=max(18, row_line2_fs - 1),
+                color=sub, alpha=0.88,
                 weight="bold"
             )
 
