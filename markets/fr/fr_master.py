@@ -74,12 +74,9 @@ def maybe_fetch_master_csv_from_drive(local_path: str) -> bool:
         return False
 
     token_b64, token_key = _get_first_env("GDRIVE_TOKEN_B64", "GDRIVE_TOKEN_JSON_B64", "GDRIVE_TOKEN")
-
-    # Folder ID priority:
-    # 1) GDRIVE_FOLDER_ID (generic)
-    # 2) FR_STOCKLIST (your secret folder id)
-    # 3) GDRIVE_ROOT_FOLDER_ID / GDRIVE_PARENT_ID (fallbacks)
-    folder_id, folder_key = _get_first_env("GDRIVE_FOLDER_ID", "FR_STOCKLIST", "GDRIVE_ROOT_FOLDER_ID", "GDRIVE_PARENT_ID")
+    folder_id, folder_key = _get_first_env(
+        "GDRIVE_FOLDER_ID", "FR_STOCKLIST", "GDRIVE_ROOT_FOLDER_ID", "GDRIVE_PARENT_ID"
+    )
 
     if not token_b64 or not folder_id:
         miss = []
@@ -93,7 +90,10 @@ def maybe_fetch_master_csv_from_drive(local_path: str) -> bool:
     drive_name = (os.getenv("FR_MASTER_CSV_DRIVE_NAME") or "FR_Stock_Master_Data.csv").strip() or "FR_Stock_Master_Data.csv"
 
     try:
-        log(f"☁️ master CSV missing; try fetch from Drive | folder={folder_id}({folder_key}) name={drive_name} | token={token_key}")
+        log(
+            f"☁️ master CSV missing; try fetch from Drive | "
+            f"folder={folder_id}({folder_key}) name={drive_name} | token={token_key}"
+        )
         svc = _get_drive_service_from_token_b64(token_b64)
 
         file_id = _find_file_id_in_folder(svc, folder_id, drive_name)
@@ -148,9 +148,6 @@ def _coerce_symbol(x: Any) -> str:
 def _coerce_text(x: Any, default: str = "") -> str:
     """
     Normalize blankish / NaN-like values to default.
-
-    IMPORTANT:
-    pandas NaN -> str(x) == "nan", so we must explicitly filter that out.
     """
     if x is None:
         return default
@@ -162,7 +159,7 @@ def _coerce_text(x: Any, default: str = "") -> str:
         pass
 
     s = str(x).strip()
-    if (not s) or s.lower() in {"nan", "none", "-", "—", "--"}:
+    if (not s) or s.lower() in {"nan", "none", "null", "-", "—", "--", "n/a", "na"}:
         return default
     return s
 
