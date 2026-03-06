@@ -77,6 +77,13 @@ def _safe_str(x: Any) -> str:
     return str(x).strip() if x is not None else ""
 
 
+def _safe_int(x: Any, default: int = 0) -> int:
+    try:
+        return int(float(x))
+    except Exception:
+        return default
+
+
 def _sanitize_filename(s: str) -> str:
     s = _safe_str(s)
     if not s:
@@ -243,7 +250,7 @@ def _pick_band_pct(r: Dict[str, Any]) -> Optional[float]:
     """
     normalized band ratio, e.g. 0.05 / 0.10 / 0.20
     """
-    for k in ("band_pct", "limit_rate", "limit_pct"):
+    for k in ("band_pct", "limit_rate_pct", "limit_rate", "limit_pct"):
         if k not in r:
             continue
         v = r.get(k)
@@ -253,13 +260,37 @@ def _pick_band_pct(r: Dict[str, Any]) -> Optional[float]:
             fv = float(v)
             if fv <= 0:
                 continue
-            # if already like 5 / 10 / 20, normalize to ratio
-            if fv > 1.0:
+            # pct form like 5 / 10 / 20 -> convert to ratio
+            if fv > 1.5:
                 fv = fv / 100.0
             return fv
         except Exception:
             continue
     return None
+
+
+def _row_prev_status(r: Dict[str, Any]) -> str:
+    return _safe_str(
+        r.get("prev_status")
+        or r.get("prev_limitup_status")
+        or ""
+    )
+
+
+def _row_today_status(r: Dict[str, Any]) -> str:
+    return _safe_str(
+        r.get("today_status")
+        or r.get("limitup_status")
+        or ""
+    )
+
+
+def _row_streak_today(r: Dict[str, Any]) -> int:
+    return _safe_int(r.get("streak_today"), _safe_int(r.get("streak"), 0))
+
+
+def _row_streak_prev(r: Dict[str, Any]) -> int:
+    return _safe_int(r.get("streak_prev"), 0)
 
 
 def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
@@ -279,7 +310,6 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
         sector = _norm_sector_name(_safe_str(r.get("sector") or "Unclassified"))
         sym = _safe_str(r.get("symbol") or "")
         name = _safe_str(r.get("name") or sym)
-
         band_pct = _pick_band_pct(r)
 
         if big10:
@@ -297,20 +327,21 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
                 "ret": ret,
                 "ret_pct": ret * 100.0,
                 "line1": f"{sym}  {name}",
-                "line2": "",  # ✅ let draw_mpl auto compose today/prev status line
+                "line2": "",
+
+                # status / streak fields for top 2nd line
                 "limitup_status": status,
+                "today_status": _row_today_status(r) or status,
+                "prev_status": _row_prev_status(r),
+                "streak_today": _row_streak_today(r),
+                "streak_prev": _row_streak_prev(r),
 
-                # ✅ critical for 2nd line fallback
-                "today_status": r.get("today_status") or status,
-                "prev_status": r.get("prev_status") or "",
-                "streak_today": int(r.get("streak_today") or r.get("streak") or 0),
-                "streak_prev": int(r.get("streak_prev") or 0),
-
-                # ✅ critical for band pill
+                # band fields for Limit X% pill
                 "band_pct": band_pct,
+                "limit_rate": (band_pct * 100.0) if band_pct is not None else None,
                 "limit_rate_pct": (band_pct * 100.0) if band_pct is not None else None,
 
-                # keep old raw fields for safety/debug
+                # keep raw helpers
                 "market_detail": r.get("market_detail"),
             }
         )
@@ -325,12 +356,11 @@ def _get_prev_ret_pct(r: Dict[str, Any]) -> Optional[float]:
     """
     Return percent value for display, e.g. +5.23 not 0.0523
     """
-    for k in ("prev_ret_pct",):
-        if k in r and r.get(k) is not None:
-            try:
-                return float(r.get(k))
-            except Exception:
-                pass
+    if "prev_ret_pct" in r and r.get("prev_ret_pct") is not None:
+        try:
+            return float(r.get("prev_ret_pct"))
+        except Exception:
+            pass
 
     for k in ("ret_prev", "ret_prev1", "prev_ret", "ret_1d", "ret_prev_session", "ret_prev_day"):
         if k in r and r.get(k) is not None:
@@ -362,7 +392,6 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]], *, peer_ret_min: fl
         sector = _norm_sector_name(_safe_str(r.get("sector") or "Unclassified"))
         sym = _safe_str(r.get("symbol") or "")
         name = _safe_str(r.get("name") or sym)
-
         band_pct = _pick_band_pct(r)
         prev_ret_pct = _get_prev_ret_pct(r)
 
@@ -374,19 +403,20 @@ def build_peers_by_sector_in(universe: List[Dict[str, Any]], *, peer_ret_min: fl
                 "ret": ret,
                 "ret_pct": ret * 100.0,
                 "line1": f"{sym}  {name}",
-                "line2": "",  # ✅ let draw_mpl auto compose prev session / prev status
+                "line2": "",
 
-                # ✅ critical for peer line2 fallback
+                # peer 2nd line fields
                 "prev_ret_pct": prev_ret_pct,
-                "prev_status": r.get("prev_status") or "",
-                "streak_prev": int(r.get("streak_prev") or 0),
+                "prev_status": _row_prev_status(r),
+                "streak_prev": _row_streak_prev(r),
 
-                # optional if you also want same structure
-                "today_status": r.get("today_status") or "",
-                "streak_today": int(r.get("streak_today") or r.get("streak") or 0),
+                # optional keep today too
+                "today_status": _row_today_status(r),
+                "streak_today": _row_streak_today(r),
 
-                # ✅ critical for band pill
+                # band fields for Limit X% pill
                 "band_pct": band_pct,
+                "limit_rate": (band_pct * 100.0) if band_pct is not None else None,
                 "limit_rate_pct": (band_pct * 100.0) if band_pct is not None else None,
 
                 "market_detail": r.get("market_detail"),
@@ -444,7 +474,7 @@ def main() -> int:
     ap.add_argument("--lang", default="en")
     ap.add_argument("--no-debug", action="store_true")
 
-    # ✅ NEW: peers filter gate (avoid meaningless negative rows)
+    # ✅ peers filter gate
     ap.add_argument("--peer-ret-min", type=float, default=0.0)
 
     args = ap.parse_args()
@@ -476,7 +506,7 @@ def main() -> int:
     agg_payload = in_aggregate(payload)
     universe = pick_universe(agg_payload) or universe0
 
-    # DEBUG: verify 10% movers by pure ret
+    # DEBUG
     ret_ge10 = sum(1 for r in universe if _pct(r.get("ret", 0.0)) >= 0.10)
     ret_ge5 = sum(1 for r in universe if _pct(r.get("ret", 0.0)) >= 0.05)
     print(f"[IN][DEBUG] universe={len(universe)} ret>=5%={ret_ge5} ret>=10%={ret_ge10}")
@@ -545,7 +575,10 @@ def main() -> int:
             norm_to_sector.setdefault(k, sec)
 
         if overview_sector_keys:
-            ordered_norm = reorder_keys_by_overview(existing_keys=existing_norm_keys, overview_keys=overview_sector_keys)
+            ordered_norm = reorder_keys_by_overview(
+                existing_keys=existing_norm_keys,
+                overview_keys=overview_sector_keys
+            )
         else:
             ordered_norm = existing_norm_keys
 
@@ -569,6 +602,9 @@ def main() -> int:
 
             sector_fn = _sanitize_filename(sector)
 
+            # ----------------------------
+            # CASE A: has top display items
+            # ----------------------------
             if L_total:
                 max_limitup_show = CAP_PAGES * rows_top
                 L_show = L_total[:max_limitup_show]
@@ -629,6 +665,9 @@ def main() -> int:
                     )
                     print(f"[IN] wrote {out_path.name}")
 
+            # ----------------------------
+            # CASE B: peers-only sector
+            # ----------------------------
             elif P_total:
                 page_pack = rows_top + rows_peer
                 total_pages = max(1, (len(P_total) + page_pack - 1) // page_pack)
@@ -684,8 +723,16 @@ def main() -> int:
             else:
                 continue
 
+    # -------------------------------------------------------------------------
+    # 2) list.txt
+    # -------------------------------------------------------------------------
     try:
-        list_path = write_list_txt(outdir, ext="png", overview_prefix="overview_sectors_", filename="list.txt")
+        list_path = write_list_txt(
+            outdir,
+            ext="png",
+            overview_prefix="overview_sectors_",
+            filename="list.txt",
+        )
         print(f"[IN] wrote {list_path}")
     except Exception as e:
         print(f"[IN] list.txt generation failed (continue): {e}")
