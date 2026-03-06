@@ -8,15 +8,17 @@ import pandas as pd
 
 FR_OPEN_WATCHLIST_RET_TH = float(os.getenv("FR_OPEN_WATCHLIST_RET_TH", "0.10"))
 
-# Noise filters (your request)
+# Noise filters
 FR_MIN_PRICE = float(os.getenv("FR_MIN_PRICE", "0.10"))
 FR_MIN_VOLUME = int(float(os.getenv("FR_MIN_VOLUME", "50000")))
 FR_TICK_EUR = float(os.getenv("FR_TICK_EUR", "0.01"))
-FR_EXCLUDE_ONE_TICK_10PCT = str(os.getenv("FR_EXCLUDE_ONE_TICK_10PCT", "1")).strip().lower() in ("1", "true", "yes", "y", "on")
+FR_EXCLUDE_ONE_TICK_10PCT = str(os.getenv("FR_EXCLUDE_ONE_TICK_10PCT", "1")).strip().lower() in (
+    "1", "true", "yes", "y", "on"
+)
 
 
 def _one_tick_10pct_price_ceiling(tick: float) -> float:
-    # if tick/price >= 0.10  => price <= tick/0.10 = 10*tick
+    # if tick/price >= 0.10 => price <= tick/0.10 = 10*tick
     try:
         t = float(tick)
     except Exception:
@@ -26,13 +28,32 @@ def _one_tick_10pct_price_ceiling(tick: float) -> float:
     return t / 0.10
 
 
-def _clean_sector_series(s: pd.Series) -> pd.Series:
+def _clean_text_series(s: pd.Series, default: str = "Unknown") -> pd.Series:
     return (
         s.fillna("")
         .astype(str)
         .str.strip()
-        .replace({"": "Unknown", "nan": "Unknown", "None": "Unknown", "-": "Unknown", "—": "Unknown", "--": "Unknown"})
+        .replace(
+            {
+                "": default,
+                "nan": default,
+                "None": default,
+                "none": default,
+                "null": default,
+                "-": default,
+                "—": default,
+                "--": default,
+                "N/A": default,
+                "n/a": default,
+                "NA": default,
+                "na": default,
+            }
+        )
     )
+
+
+def _clean_sector_series(s: pd.Series) -> pd.Series:
+    return _clean_text_series(s, default="Unknown")
 
 
 def build_open_limit_watchlist_fr(snapshot_open_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -61,12 +82,12 @@ def build_open_limit_watchlist_fr(snapshot_open_rows: List[Dict[str, Any]]) -> L
         df["touched_only"] = False
     df["touched_only"] = df["touched_only"].fillna(False).astype(bool)
 
-    # basic mover filter:
+    # mover filter:
     # - close >= 10%
     # - OR intraday touch >= 10%
     df = df[
-        (df["ret"] >= float(FR_OPEN_WATCHLIST_RET_TH)) |
-        (df["touch_ret"] >= float(FR_OPEN_WATCHLIST_RET_TH))
+        (df["ret"] >= float(FR_OPEN_WATCHLIST_RET_TH))
+        | (df["touch_ret"] >= float(FR_OPEN_WATCHLIST_RET_TH))
     ].copy()
 
     if df.empty:
@@ -90,7 +111,7 @@ def build_open_limit_watchlist_fr(snapshot_open_rows: List[Dict[str, Any]]) -> L
     if df.empty:
         return []
 
-    # meta defaults (do not overwrite your computed streak/status)
+    # meta defaults (do not overwrite computed fields)
     if "limit_type" not in df.columns:
         df["limit_type"] = "open_limit"
 
@@ -124,12 +145,12 @@ def build_open_limit_watchlist_fr(snapshot_open_rows: List[Dict[str, Any]]) -> L
             df[c] = dv
 
     df["sector"] = _clean_sector_series(df.get("sector", pd.Series(["Unknown"] * len(df))))
-    df["name"] = (
-        df.get("name", pd.Series(["Unknown"] * len(df)))
-        .fillna("Unknown")
-        .astype(str)
-        .str.strip()
-        .replace({"": "Unknown", "nan": "Unknown", "None": "Unknown"})
+    df["name"] = _clean_text_series(df.get("name", pd.Series(["Unknown"] * len(df))), default="Unknown")
+    df["market_detail"] = _clean_text_series(
+        df.get("market_detail", pd.Series(["Unknown"] * len(df))), default="Unknown"
+    )
+    df["market_label"] = _clean_text_series(
+        df.get("market_label", pd.Series(["Unknown"] * len(df))), default="Unknown"
     )
 
     keep = [
@@ -176,7 +197,7 @@ def build_open_limit_watchlist_fr(snapshot_open_rows: List[Dict[str, Any]]) -> L
 def build_sector_summary_open_limit_fr(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     sector summary (FR open_limit):
-    - sector: count / avg_ret / max_ret
+    - sector: count / avg_ret / max_ret / max_touch_ret
     """
     if not rows:
         return []
