@@ -21,6 +21,10 @@ from .footer_calc import (
 # ✅ No daily limit-up制度的英文市場：footer 不顯示 Limit-Up / Touched，只顯示 10%+
 NO_LIMIT_MARKETS = {"US", "CA", "AU", "UK", "EU"}
 
+# ✅ FR is also open-limit market, but we want a FR-specific footer:
+#    show "10%+" + "Touché 10%" (not Limit-Up)
+FR_OPEN_LIMIT_MARKETS = {"FR"}
+
 # =============================================================================
 # Env helpers
 # =============================================================================
@@ -268,10 +272,19 @@ def _note_lines(market: str, lang: str, *, note_mode: str = "exclusive") -> List
     if m in NO_LIMIT_MARKETS:
         if lng == "fr":
             note = "※ 10%+ = Clôture ≥ +10%"
-            disclaimer = "Avertissement : à titre informatif uniquement. Pas un conseil en investissement."
+            disclaimer = "À titre informatif uniquement. Pas un conseil en investissement."
         else:
             note = "※ 10%+ = Close ≥ +10%"
             disclaimer = "Disclaimer: For learning only. Not financial advice."
+        return [note, "", disclaimer]
+
+    # ✅ FR special open-limit note
+    if m in FR_OPEN_LIMIT_MARKETS:
+        if mode == "inclusive":
+            note = "※ 10%+ = hausse ≥ 10% (incl. touché 10%)"
+        else:
+            note = "※ 10%+ = clôture ≥ 10% (hors touché 10%)"
+        disclaimer = "À titre informatif uniquement. Pas un conseil en investissement."
         return [note, "", disclaimer]
 
     if m == "TH":
@@ -403,6 +416,40 @@ def build_footer_center_lines(
         return _pack_4(lines)
 
     # ------------------------------------------------------------------
+    # ✅ FR special open-limit footer:
+    # show Market | 10%+ | Touché 10%
+    # (not Limit-Up)
+    # ------------------------------------------------------------------
+    if mkt in FR_OPEN_LIMIT_MARKETS:
+        parts = [
+            f"{_market_word(lng, mkt)} {int(m_total_calc)}",
+            f"10%+:{int(big10_ex)}",
+            f"Touché 10%:{int(touched)}",
+        ]
+        lines: List[str] = [" | ".join(parts)]
+        lines.extend(_note_lines(mkt, lng, note_mode=nm))
+
+        if _debug_any("OVERVIEW_DEBUG_FOOTER"):
+            _dbg("[OVERVIEW_DEBUG_FOOTER]")
+            _dbg(f"  market={mkt} lang={lng} metric={met} note_mode={nm} [FR special open-limit]")
+            _dbg(f"  picked market_total={int(m_total_calc)} (source={m_total_src})")
+            _dbg(f"  picked big10_ex={int(big10_ex)} (source={big10_ex_src}) [shown]")
+            _dbg(f"  picked touched={int(touched)} (source={touched_src}) [shown as Touché 10%]")
+            _dbg(f"  picked big10_total={int(big10_total)} (source={big10_total_src}) [debug]")
+            _dbg(f"  picked locked={int(locked)} (source={locked_src}) [hidden]")
+            _dbg(f"  picked mix={int(mix)} (source={mix_src}) [debug]")
+            _dbg(f"  extra_kwargs={sorted(list(kwargs.keys()))}")
+            _dbg("")
+            if _debug_any("OVERVIEW_DEBUG_FOOTER_SHOW"):
+                _dbg(
+                    f"[FOOTER_SHOW] big10_ex={int(big10_ex)}({big10_ex_src}) | "
+                    f"touched={int(touched)}({touched_src}) | "
+                    f"market_total={int(m_total_calc)}({m_total_src})"
+                )
+
+        return _pack_4(lines)
+
+    # ------------------------------------------------------------------
     # Other markets (incl. CN): always show Market | locked | touched | 10%+
     # ✅ CN change: if touched doesn't exist in sector rows, replace it by ST封板 on line1
     # ------------------------------------------------------------------
@@ -482,10 +529,15 @@ def build_footer_right_text(payload: Dict[str, Any], *, market: Optional[str] = 
     # ✅ NO-LIMIT markets: EN or FR
     if mkt in NO_LIMIT_MARKETS:
         if lng == "fr":
-            disclaimer = "Avertissement : à titre informatif uniquement. Pas un conseil en investissement."
+            disclaimer = "À titre informatif uniquement. Pas un conseil en investissement."
             return f"Données : {src} | {disclaimer}" if src else disclaimer
         disclaimer = "Disclaimer: For learning only. Not financial advice."
         return f"Data: {src} | {disclaimer}" if src else disclaimer
+
+    # ✅ FR special
+    if mkt in FR_OPEN_LIMIT_MARKETS:
+        disclaimer = "À titre informatif uniquement. Pas un conseil en investissement."
+        return f"Données : {src} | {disclaimer}" if src else disclaimer
 
     # ✅ CN 一律简体
     if mkt == "CN" or _is_zh_cn(lng, mkt):
@@ -498,7 +550,7 @@ def build_footer_right_text(payload: Dict[str, Any], *, market: Optional[str] = 
 
     # ✅ FR (non-no-limit markets) also supported
     if lng == "fr":
-        disclaimer = "Avertissement : à titre informatif uniquement. Pas un conseil en investissement."
+        disclaimer = "À titre informatif uniquement. Pas un conseil en investissement."
         return f"Données : {src} | {disclaimer}" if src else disclaimer
 
     disclaimer = "Disclaimer: For learning only. Not financial advice."
