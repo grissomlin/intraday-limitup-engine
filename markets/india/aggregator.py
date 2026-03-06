@@ -34,6 +34,14 @@ PEERS_BY_SECTOR_CAP = int(os.getenv("INDIA_PEERS_BY_SECTOR_CAP", "50"))
 # =============================================================================
 # Helpers
 # =============================================================================
+def _is_valid_num(x: Any) -> bool:
+    try:
+        v = float(x)
+        return not (math.isnan(v) or math.isinf(v))
+    except Exception:
+        return False
+
+
 def _to_float(x: Any, default: float = 0.0) -> float:
     try:
         if x is None:
@@ -81,6 +89,7 @@ def _parse_band_pct_from_market_detail(md: Any) -> Optional[float]:
     s = ("" if md is None else str(md)).strip()
     if not s:
         return None
+
     parts = s.split("|")
     band_raw = None
     for p in parts:
@@ -96,21 +105,36 @@ def _parse_band_pct_from_market_detail(md: Any) -> Optional[float]:
 
     try:
         v = float(br)
-        if v <= 0:
+        if math.isnan(v) or math.isinf(v) or v <= 0:
             return None
         return v / 100.0
     except Exception:
         return None
 
 
-def _round_to_tick(x: float, tick: float) -> float:
-    if tick <= 0:
+def _round_to_tick(x: float, tick: float) -> Optional[float]:
+    if not _is_valid_num(x):
+        return None
+    if not _is_valid_num(tick):
         return float(x)
-    return round(round(float(x) / tick) * tick, 6)
+
+    tick_f = float(tick)
+    if tick_f <= 0:
+        return float(x)
+
+    return round(round(float(x) / tick_f) * tick_f, 6)
 
 
-def _limit_price(last_close: float, limit_pct: float) -> float:
-    raw = float(last_close) * (1.0 + float(limit_pct))
+def _limit_price(last_close: float, limit_pct: float) -> Optional[float]:
+    if not _is_valid_num(last_close) or not _is_valid_num(limit_pct):
+        return None
+
+    lc = float(last_close)
+    lpct = float(limit_pct)
+    if lc <= 0 or lpct <= 0:
+        return None
+
+    raw = lc * (1.0 + lpct)
     return _round_to_tick(raw, INDIA_TICK_SIZE)
 
 
@@ -152,18 +176,24 @@ def _status_from_row(
     band_pct: Optional[float],
     ret: float,
 ) -> Dict[str, Any]:
+    close_f = _to_float(close, 0.0)
+    high_f = _to_float(high, 0.0)
+    last_close_f = _to_float(last_close, 0.0)
+    ret_f = _to_float(ret, 0.0)
+
     limit_price = None
     is_touch = False
     is_locked = False
 
-    if band_pct is not None and last_close > 0:
-        lp = _limit_price(last_close, float(band_pct))
-        limit_price = float(lp)
-        is_touch = bool((high > 0) and (high >= lp - EPS))
-        is_locked = bool((close > 0) and (close >= lp - EPS))
+    if band_pct is not None and _is_valid_num(band_pct) and last_close_f > 0:
+        lp = _limit_price(last_close_f, float(band_pct))
+        if lp is not None and _is_valid_num(lp):
+            limit_price = float(lp)
+            is_touch = bool((high_f > 0) and (high_f >= limit_price - EPS))
+            is_locked = bool((close_f > 0) and (close_f >= limit_price - EPS))
 
     is_opened = bool(is_touch and not is_locked)
-    is_surge_ge10 = bool(float(ret) >= float(INDIA_SURGE_RET))
+    is_surge_ge10 = bool(ret_f >= float(INDIA_SURGE_RET))
 
     if is_locked:
         today_status = "hit"
@@ -209,7 +239,7 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     for c in [
         "symbol", "name", "sector", "open", "high", "low", "close",
         "last_close", "market_detail", "today_status", "prev_status",
-        "streak_today", "streak_prev", "prev_limitup_status"
+        "streak_today", "streak_prev", "prev_limitup_status", "band_pct"
     ]:
         if c not in df.columns:
             df[c] = None
@@ -222,32 +252,28 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     df["sector"] = df["sector"].apply(_norm_sector)
 
     for col in ["open", "high", "low", "close", "last_close"]:
-        df[col] = df[col].apply(_to_float)
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = _add_ret_fields(df)
 
-    # parse / unify band pct
-    if "band_pct" not in df.columns:
-        df["band_pct"] = None
-    m_missing_bp = df["band_pct"].isna()
-    df.loc[m_missing_bp, "band_pct"] = df.loc[m_missing_bp, "market_detail"].apply(_parse_band_pct_from_market_detail)
+    # -----------------------------------------------------------------------------
+    # band_pct: avoid assigning None array into float64 column via masked loc
+    # -----------------------------------------------------------------------------
+    band_existing = pd.to_numeric(df["band_pct"], errors="coerce")
+    band_from_detail = df["market_detail"].apply(_parse_band_pct_from_market_detail)
+    band_from_detail = pd.to_numeric(band_from_detail, errors="coerce")
+    df["band_pct"] = band_existing.where(band_existing.notna(), band_from_detail)
 
     df["limit_rate"] = df["band_pct"]
-    df["limit_rate_pct"] = None
-    m_lr = df["limit_rate"].notna()
-    df.loc[m_lr, "limit_rate_pct"] = pd.to_numeric(df.loc[m_lr, "limit_rate"], errors="coerce") * 100.0
+    df["limit_rate_pct"] = pd.to_numeric(df["limit_rate"], errors="coerce") * 100.0
 
-    # preserve previous snapshot-provided prev/today status if present, but we recompute today_status
+    # preserve previous snapshot-provided prev/today status if present, but recompute today_status
     df["prev_status"] = df["prev_status"].apply(_normalize_status)
-    if "prev_limitup_status" not in df.columns:
-        df["prev_limitup_status"] = ""
     df["prev_limitup_status"] = df["prev_limitup_status"].apply(_normalize_status)
-    df.loc[df["prev_limitup_status"] == "", "prev_limitup_status"] = df.loc[df["prev_limitup_status"] == "", "prev_status"]
+    df.loc[df["prev_limitup_status"] == "", "prev_limitup_status"] = df.loc[
+        df["prev_limitup_status"] == "", "prev_status"
+    ]
 
-    if "streak_today" not in df.columns:
-        df["streak_today"] = 0
-    if "streak_prev" not in df.columns:
-        df["streak_prev"] = 0
     df["streak_today"] = pd.to_numeric(df["streak_today"], errors="coerce").fillna(0).astype(int)
     df["streak_prev"] = pd.to_numeric(df["streak_prev"], errors="coerce").fillna(0).astype(int)
 
@@ -256,11 +282,11 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     for _, r in df.iterrows():
         calc_rows.append(
             _status_from_row(
-                close=float(r.get("close") or 0.0),
-                high=float(r.get("high") or 0.0),
-                last_close=float(r.get("last_close") or 0.0),
-                band_pct=r.get("band_pct"),
-                ret=float(r.get("ret") or 0.0),
+                close=_to_float(r.get("close"), 0.0),
+                high=_to_float(r.get("high"), 0.0),
+                last_close=_to_float(r.get("last_close"), 0.0),
+                band_pct=(None if pd.isna(r.get("band_pct")) else r.get("band_pct")),
+                ret=_to_float(r.get("ret"), 0.0),
             )
         )
 
@@ -268,7 +294,6 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     for c in dcalc.columns:
         df[c] = dcalc[c]
 
-    # normalize status columns
     df["today_status"] = df["today_status"].apply(_normalize_status)
     df["limitup_status"] = df["limitup_status"].apply(_normalize_status)
     df["prev_status"] = df["prev_status"].apply(_normalize_status)
@@ -288,12 +313,13 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
             <= float(INDIA_TICK_DANGER_MAX_TICKS)
         )
 
-    # optional abs-move gate only for BIG 10%+, not for band touch/hit
+    # abs-move
     df["abs_move"] = (
         pd.to_numeric(df["close"], errors="coerce").fillna(0.0)
         - pd.to_numeric(df["last_close"], errors="coerce").fillna(0.0)
     ).abs().astype(float)
 
+    # optional abs-move gate only for BIG 10%+, not for true touch/hit
     if float(INDIA_ABS_MOVE_GATE) > 0:
         gate_mask = df["today_status"] == "big"
         keep_big = gate_mask & (df["abs_move"] >= float(INDIA_ABS_MOVE_GATE))
@@ -303,7 +329,7 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
         df.loc[gate_mask & (~keep_big), "is_bigmove10_ex_locked"] = False
         df.loc[gate_mask & (~keep_big), "is_surge_ge10"] = False
 
-    # tick-danger filter only removes BIG10 display, not true touch/hit
+    # tick-danger filter only removes BIG10 display, not touch/hit
     if INDIA_FILTER_TICK_DANGER:
         danger_mask = (df["is_tick_danger"] == True) & (df["today_status"] == "big")
         df.loc[danger_mask, "today_status"] = ""
@@ -312,7 +338,7 @@ def aggregate(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
         df.loc[danger_mask, "is_bigmove10_ex_locked"] = False
         df.loc[danger_mask, "is_surge_ge10"] = False
 
-    # final clean display logic = only rows with actual normalized today_status
+    # final display logic
     df["is_display_limitup"] = df["today_status"].apply(lambda x: bool(_normalize_status(x)))
     df["limitup_status"] = df["today_status"]
     df["is_bigmove10_ex_locked"] = df["today_status"] == "big"
