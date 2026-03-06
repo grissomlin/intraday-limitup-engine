@@ -398,6 +398,15 @@ def main() -> int:
         payload.setdefault("market", MARKET)
         payload.setdefault("asof", payload.get("asof") or payload.get("slot") or "")
 
+        # ✅ FR default:
+        # auto -> bigmove10
+        # Reason:
+        #   sector pages are primarily driven by close >= 10% movers;
+        #   touched-only sectors should not dominate overview page 1 by default.
+        overview_metric = str(args.overview_metric or "auto").strip().lower()
+        if overview_metric == "auto":
+            overview_metric = "bigmove10"
+
         try:
             from scripts.render_images_common.overview_mpl import render_overview_png  # noqa: E402
 
@@ -407,8 +416,10 @@ def main() -> int:
                 width=1080,
                 height=1920,
                 page_size=int(args.overview_page_size),
-                metric=str(args.overview_metric),
+                metric=overview_metric,
             ) or []
+
+            print(f"[FR] overview_metric_effective={overview_metric}")
 
             for p in overview_paths:
                 pp = Path(p)
