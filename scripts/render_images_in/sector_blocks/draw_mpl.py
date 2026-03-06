@@ -176,16 +176,15 @@ def _status_from_row(r: Dict[str, Any]) -> str:
     st = _normalize_status(r.get("limitup_status"))
     if st:
         return st
-
     st = _normalize_status(r.get("today_status"))
     if st:
         return st
 
     if _safe_bool(r.get("is_limitup_locked")):
         return "hit"
-    if _safe_bool(r.get("is_limitup_touch")) or _safe_bool(r.get("is_limitup_touch_any")):
+    if _safe_bool(r.get("is_limitup_touch")):
         return "touch"
-    if _safe_bool(r.get("is_surge_ge10")) or _safe_bool(r.get("is_bigup10")) or _safe_bool(r.get("is_bigmove10")):
+    if _safe_bool(r.get("is_surge_ge10")):
         return "big"
     return ""
 
@@ -229,15 +228,6 @@ def _limit_pct_optional(r: Dict[str, Any]) -> Optional[float]:
         except Exception:
             pass
 
-    v = r.get("limit_rate", None)
-    if v is not None:
-        try:
-            fv = float(v)
-            if fv > 0:
-                return fv * 100.0 if fv <= 1.5 else fv
-        except Exception:
-            pass
-
     bp = r.get("band_pct", None)
     if bp is not None:
         try:
@@ -262,11 +252,7 @@ def _status_label_short(st: str) -> str:
 
 
 def _default_line2_top(r: Dict[str, Any]) -> str:
-    today = _status_label_short(
-        r.get("today_status") or
-        r.get("limitup_status") or
-        _status_from_row(r)
-    )
+    today = _status_label_short(r.get("today_status") or r.get("limitup_status"))
     prev = _status_label_short(r.get("prev_status") or r.get("prev_limitup_status"))
 
     st_today = _safe_int(r.get("streak_today"), 0)
@@ -275,23 +261,24 @@ def _default_line2_top(r: Dict[str, Any]) -> str:
     parts: List[str] = []
     if today:
         parts.append(f"Today: {today}" + (f" ({st_today})" if st_today > 0 else ""))
-    else:
-        parts.append("Today: Event")
-
     if prev:
         parts.append(f"Prev: {prev}" + (f" ({st_prev})" if st_prev > 0 else ""))
 
-    return " | ".join(parts)
+    if parts:
+        return " | ".join(parts)
+
+    # fallback: 不要再只顯示 Today: Event
+    st = _status_from_row(r)
+    if st == "hit":
+        return "Today: Limit Hit"
+    if st == "touch":
+        return "Today: Touched"
+    if st == "big":
+        return "Today: Big 10%+"
+    return "Today: Event"
 
 
 def _default_line2_peer(r: Dict[str, Any]) -> str:
-    prev = _status_label_short(r.get("prev_status") or r.get("prev_limitup_status"))
-    st_prev = _safe_int(r.get("streak_prev"), 0)
-
-    prev_head = ""
-    if prev:
-        prev_head = f"Prev: {prev}" + (f" ({st_prev})" if st_prev > 0 else "")
-
     prev_ret_pct = r.get("prev_ret_pct", None)
     prev_ret_str = ""
     if prev_ret_pct is not None:
@@ -300,23 +287,46 @@ def _default_line2_peer(r: Dict[str, Any]) -> str:
         except Exception:
             prev_ret_str = ""
 
-    if prev_head and prev_ret_str:
-        return f"{prev_head} | {prev_ret_str}"
-    if prev_head:
-        return prev_head
+    prev = _status_label_short(r.get("prev_status") or r.get("prev_limitup_status"))
+    st_prev = _safe_int(r.get("streak_prev"), 0)
+
+    tail = ""
+    if prev:
+        tail = f"Prev: {prev}" + (f" ({st_prev})" if st_prev > 0 else "")
+
+    if prev_ret_str and tail:
+        return f"{tail} | {prev_ret_str}"
+    if tail:
+        return tail
     if prev_ret_str:
         return prev_ret_str
-    return "Prev session —"
+    return ""
 
 
-def _pill_reserve_px(ax, fig, pct: Optional[float], fontsize: int) -> float:
-    if pct is None:
-        return 0.0
-    txt = limit_label(pct)
-    try:
-        return float(text_width_px(ax, fig, txt, x=0, y=0, fontsize=fontsize, weight="bold") + 34.0)
-    except Exception:
-        return 120.0
+def _top_row_ret_display(r: Dict[str, Any]) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    Return (text, bg_color, fg_color) for top-row bottom-right value badge.
+
+    Rules:
+    - big: show true return
+    - hit/touch:
+        * if ret is near zero -> show "At limit"
+        * else show true return
+    """
+    st = _status_from_row(r)
+    ret = _safe_float(r.get("ret"), 0.0)
+
+    if st in {"hit", "touch"}:
+        if abs(ret) < 0.0005:
+            return ("At limit", None, None)
+        return (_fmt_ret_pct(ret), None, None)
+
+    if st == "big":
+        return (_fmt_ret_pct(ret), None, None)
+
+    if abs(ret) > 1e-12:
+        return (_fmt_ret_pct(ret), None, None)
+    return ("", None, None)
 
 
 # =============================================================================
@@ -374,9 +384,6 @@ def draw_block_table(
     fig.patch.set_facecolor(bg)
     ax.set_facecolor(bg)
 
-    # -------------------------------
-    # Header
-    # -------------------------------
     title_fs = int(getattr(layout, "title_fs", 62))
     subtitle_fs = int(getattr(layout, "subtitle_fs", 30))
 
@@ -416,9 +423,6 @@ def draw_block_table(
 
     ensure_renderer(fig)
 
-    # -------------------------------
-    # Layout geometry
-    # -------------------------------
     reserve_top = 0.86 if len(header_lines) > 1 else 0.88
 
     top_y0 = float(getattr(layout, "top_box_y0", 0.84))
@@ -431,9 +435,6 @@ def draw_block_table(
     ax.add_patch(plt.Rectangle((0.05, top_y1), 0.90, top_y0 - top_y1, facecolor=box, edgecolor=line, linewidth=2))
     ax.add_patch(plt.Rectangle((0.05, bot_y1), 0.90, bot_y0 - bot_y1, facecolor=box, edgecolor=line, linewidth=2))
 
-    # -------------------------------
-    # Box titles
-    # -------------------------------
     box_title_fs = int(getattr(layout, "box_title_fs", 30))
     top_title_y = top_y0 - 0.025
     bot_title_y = bot_y0 - 0.025
@@ -490,17 +491,9 @@ def draw_block_table(
     ax.text(0.08, top_title_y, top_t, ha="left", va="center", fontsize=top_fs, color=fg, weight="bold")
     ax.text(0.08, bot_title_y, bot_t, ha="left", va="center", fontsize=bot_fs, color=fg, weight="bold")
 
-    # -------------------------------
-    # Rows layout
-    # -------------------------------
     two_line = True
-
-    top_content_y0 = top_y0 - 0.042
-    bot_content_y0 = bot_y0 - 0.042
-    bot_content_y1 = bot_y1 + (0.030 if has_more_peers else 0.0)
-
-    y_start_top, row_h_top = calc_rows_layout(top_content_y0, top_y1, int(rows_per_page), two_line=two_line)
-    y_start_bot, row_h_bot = calc_rows_layout(bot_content_y0, bot_content_y1, int(rows_per_page) + 1, two_line=two_line)
+    y_start_top, row_h_top = calc_rows_layout(top_y0 - 0.055, top_y1, int(rows_per_page), two_line=two_line)
+    y_start_bot, row_h_bot = calc_rows_layout(bot_y0 - 0.055, bot_y1, int(rows_per_page) + 1, two_line=two_line)
 
     x_name = 0.08
     x_tag = 0.94
@@ -530,6 +523,7 @@ def draw_block_table(
 
             line1 = _safe_str(r.get("line1") or "")
             line2 = _safe_str(r.get("line2") or "")
+
             if not line2:
                 line2 = _default_line2_top(r)
 
@@ -539,21 +533,10 @@ def draw_block_table(
             badge_pad_px = 26 + 18
             x_status_left = x_tag - px_to_data_dx(ax, badge_w_px + badge_pad_px, y_data=y1)
 
-            pct = _limit_pct_optional(r)
-            pill_reserve_px = _pill_reserve_px(ax, fig, pct, row_tag_fs)
-            safe_right = x_status_left - px_to_data_dx(ax, pill_reserve_px + 10.0, y_data=y1)
-            safe_right = max(x_name + 0.10, safe_right)
+            safe_right = max(x_name + 0.10, x_status_left - 0.01)
 
-            line1_fit = _ellipsize_px(
-                ax, fig, line1,
-                x_left=x_name, x_right=safe_right, y=y1,
-                fontsize=row_name_fs, weight="bold"
-            )
-            line2_fit = _ellipsize_px(
-                ax, fig, line2,
-                x_left=x_name, x_right=x_tag - 0.08, y=y2,
-                fontsize=row_line2_fs, weight="regular"
-            )
+            line1_fit = _ellipsize_px(ax, fig, line1, x_left=x_name, x_right=safe_right, y=y1, fontsize=row_name_fs, weight="bold")
+            line2_fit = _ellipsize_px(ax, fig, line2, x_left=x_name, x_right=x_tag - 0.08, y=y2, fontsize=row_line2_fs, weight="regular")
 
             ax.text(x_name, y1, line1_fit, ha="left", va="center", fontsize=row_name_fs, color=fg, weight="bold")
             if line2_fit:
@@ -566,6 +549,7 @@ def draw_block_table(
                     alpha=0.95
                 )
 
+            pct = _limit_pct_optional(r)
             if pct is not None:
                 pill_text = limit_label(pct)
                 pill_bg, pill_fg = limit_colors(pct, theme)
@@ -583,7 +567,6 @@ def draw_block_table(
                     gap_px=10,
                     measure_text_width_px_fn=text_width_px,
                     px_to_data_dx_fn=px_to_data_dx,
-                    fallback_y=y2,
                 )
 
             ax.text(
@@ -594,21 +577,31 @@ def draw_block_table(
                 bbox=dict(boxstyle="round,pad=0.35", facecolor=status_bg, edgecolor="none", alpha=0.95)
             )
 
-            ret = _safe_float(r.get("ret"), 0.0)
-            ret_text = _fmt_ret_pct(ret)
-            ax.text(
-                x_tag, y2, ret_text,
-                ha="right", va="center",
-                fontsize=row_tag_fs,
-                color="#0b0d10" if is_dark else "#ffffff",
-                weight="bold",
-                bbox=dict(
-                    boxstyle="round,pad=0.30",
-                    facecolor=get_ret_color(ret, theme),
-                    edgecolor="none",
-                    alpha=0.95
+            ret_text, _, _ = _top_row_ret_display(r)
+            if ret_text:
+                st = _status_from_row(r)
+                ret = _safe_float(r.get("ret"), 0.0)
+
+                if ret_text == "At limit":
+                    badge_bg = "#868e96" if is_dark else "#ced4da"
+                    badge_fg = "#0b0d10" if is_dark else "#111111"
+                else:
+                    badge_bg = get_ret_color(ret, theme)
+                    badge_fg = "#0b0d10" if is_dark else "#ffffff"
+
+                # touched with negative return should still look blue-ish when numeric
+                if st == "touch" and ret_text != "At limit" and ret < 0:
+                    badge_bg = "#4dabf7" if is_dark else "#1c7ed6"
+                    badge_fg = "#0b0d10" if is_dark else "#ffffff"
+
+                ax.text(
+                    x_tag, y2, ret_text,
+                    ha="right", va="center",
+                    fontsize=row_tag_fs,
+                    color=badge_fg,
+                    weight="bold",
+                    bbox=dict(boxstyle="round,pad=0.30", facecolor=badge_bg, edgecolor="none", alpha=0.95)
                 )
-            )
 
             if i < min(len(L), int(rows_per_page)) - 1:
                 ax.plot(
@@ -628,6 +621,7 @@ def draw_block_table(
 
             line1 = _safe_str(r.get("line1") or "")
             line2 = _safe_str(r.get("line2") or "")
+
             if not line2:
                 line2 = _default_line2_peer(r)
 
@@ -647,16 +641,8 @@ def draw_block_table(
             safe_right = x_tag - px_to_data_dx(ax, reserve_px, y_data=y1)
             safe_right = max(x_name + 0.10, safe_right)
 
-            line1_fit = _ellipsize_px(
-                ax, fig, line1,
-                x_left=x_name, x_right=safe_right, y=y1,
-                fontsize=row_name_fs, weight="bold"
-            )
-            line2_fit = _ellipsize_px(
-                ax, fig, line2,
-                x_left=x_name, x_right=x_tag - 0.08, y=y2,
-                fontsize=row_line2_fs, weight="regular"
-            )
+            line1_fit = _ellipsize_px(ax, fig, line1, x_left=x_name, x_right=safe_right, y=y1, fontsize=row_name_fs, weight="bold")
+            line2_fit = _ellipsize_px(ax, fig, line2, x_left=x_name, x_right=x_tag - 0.08, y=y2, fontsize=row_line2_fs, weight="regular")
 
             ax.text(x_name, y1, line1_fit, ha="left", va="center", fontsize=row_name_fs, color=fg, weight="bold")
             if line2_fit:
@@ -694,7 +680,6 @@ def draw_block_table(
                     gap_px=10,
                     measure_text_width_px_fn=text_width_px,
                     px_to_data_dx_fn=px_to_data_dx,
-                    fallback_y=y2,
                 )
 
             if i < min(len(P), int(rows_per_page) + 1) - 1:
@@ -706,11 +691,11 @@ def draw_block_table(
 
         if has_more_peers:
             ax.text(
-                0.5, bot_y1 + 0.010,
+                0.5, bot_y1 + 0.02,
                 "(More items not shown)",
                 ha="center", va="bottom",
-                fontsize=max(18, row_line2_fs - 1),
-                color=sub, alpha=0.88,
+                fontsize=max(20, row_line2_fs),
+                color=sub, alpha=0.85,
                 weight="bold"
             )
 
