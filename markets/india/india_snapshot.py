@@ -148,8 +148,13 @@ def run_intraday(*, slot: str, asof: str, ymd: str) -> Dict[str, Any]:
             AND close IS NOT NULL
         )
         SELECT
-          p.symbol, p.date AS ymd,
-          p.open, p.high, p.low, p.close, p.volume,
+          p.symbol,
+          p.date AS ymd,
+          p.open,
+          p.high,
+          p.low,
+          p.close,
+          p.volume,
           p.last_close,
           i.local_symbol,
           i.name,
@@ -160,7 +165,7 @@ def run_intraday(*, slot: str, asof: str, ymd: str) -> Dict[str, Any]:
         FROM p
         LEFT JOIN stock_info i ON i.symbol = p.symbol
         WHERE p.rn <= {int(N_DAYS)}
-        ORDER BY p.symbol, p.ymd DESC
+        ORDER BY p.symbol, p.date DESC
         """
         dfh = pd.read_sql_query(sql_hist, conn, params=(ymd_effective,))
         if dfh.empty:
@@ -206,7 +211,7 @@ def run_intraday(*, slot: str, asof: str, ymd: str) -> Dict[str, Any]:
                 # So map: prev_ret_pct = dfh[ymd_prev].ret_pct
                 prev_ret_pct_map: Dict[str, float] = {}
                 prev_close_map: Dict[str, float] = {}
-                # pick prev row per symbol (rn==2 in DESC)
+                # pick prev row per symbol (2nd latest row in DESC)
                 for sym, g in dfh.groupby("symbol", sort=False):
                     g2 = g.sort_values("ymd", ascending=False, kind="mergesort")
                     if len(g2) >= 2:
@@ -243,13 +248,11 @@ def run_intraday(*, slot: str, asof: str, ymd: str) -> Dict[str, Any]:
                         "market",
                         "market_detail",
                         "band_pct",
-
                         # ✅ new fields
                         "today_status",
                         "prev_status",
                         "streak_today",
                         "streak_prev",
-
                         # ✅ prev session display helpers
                         "prev_ret_pct",
                         "prev_close",
