@@ -18,6 +18,24 @@ INDIA_SURGE_RET = float(os.getenv("INDIA_SURGE_RET", "0.10"))  # >=10%
 INDIA_TICK_SIZE = float(os.getenv("INDIA_TICK_SIZE", "0.01"))  # conservative default
 
 
+def _is_valid_num(x: Any) -> bool:
+    try:
+        v = float(x)
+        return not (math.isnan(v) or math.isinf(v))
+    except Exception:
+        return False
+
+
+def _to_num(x: Any, default: float = 0.0) -> float:
+    try:
+        v = float(x)
+        if math.isnan(v) or math.isinf(v):
+            return default
+        return v
+    except Exception:
+        return default
+
+
 def _pick_latest_leq(conn: sqlite3.Connection, ymd: str) -> Optional[str]:
     row = conn.execute(
         "SELECT MAX(date) FROM stock_prices WHERE date <= ? AND close IS NOT NULL",
@@ -47,25 +65,40 @@ def _parse_band_pct_from_market_detail(md: Any) -> Optional[float]:
 
     try:
         v = float(br)
-        if v <= 0:
+        if math.isnan(v) or math.isinf(v) or v <= 0:
             return None
         return v / 100.0
     except Exception:
         return None
 
 
-def _round_to_tick(x: float, tick: float = INDIA_TICK_SIZE) -> float:
-    if tick <= 0:
+def _round_to_tick(x: float, tick: float = INDIA_TICK_SIZE) -> Optional[float]:
+    if not _is_valid_num(x):
+        return None
+    if not _is_valid_num(tick):
         return float(x)
-    return round(round(float(x) / tick) * tick, 6)
+
+    tick_f = float(tick)
+    if tick_f <= 0:
+        return float(x)
+
+    return round(round(float(x) / tick_f) * tick_f, 6)
 
 
-def _limit_price(last_close: float, band_pct: float) -> float:
+def _limit_price(last_close: float, band_pct: float) -> Optional[float]:
     """
     Use rounded circuit price instead of raw theoretical value.
     This greatly reduces false negatives like 4.98% on 5% band names.
     """
-    raw = float(last_close) * (1.0 + float(band_pct))
+    if not _is_valid_num(last_close) or not _is_valid_num(band_pct):
+        return None
+
+    lc = float(last_close)
+    bp = float(band_pct)
+    if lc <= 0 or bp <= 0:
+        return None
+
+    raw = lc * (1.0 + bp)
     return _round_to_tick(raw, INDIA_TICK_SIZE)
 
 
@@ -76,7 +109,11 @@ def _touch_locked_flags(
     last_close: float,
     band_pct: Optional[float],
 ) -> Dict[str, Any]:
-    if band_pct is None or last_close <= 0:
+    close_f = _to_num(close, 0.0)
+    high_f = _to_num(high, 0.0)
+    last_close_f = _to_num(last_close, 0.0)
+
+    if (band_pct is None) or (not _is_valid_num(band_pct)) or (last_close_f <= 0):
         return {
             "limit_price": None,
             "is_limitup_touch": False,
@@ -84,9 +121,17 @@ def _touch_locked_flags(
             "is_limitup_opened": False,
         }
 
-    lp = _limit_price(last_close, float(band_pct))
-    touch = (high > 0) and (high >= lp - EPS)
-    locked = (close > 0) and (close >= lp - EPS)
+    lp = _limit_price(last_close_f, float(band_pct))
+    if lp is None or not _is_valid_num(lp):
+        return {
+            "limit_price": None,
+            "is_limitup_touch": False,
+            "is_limitup_locked": False,
+            "is_limitup_opened": False,
+        }
+
+    touch = (high_f > 0) and (high_f >= float(lp) - EPS)
+    locked = (close_f > 0) and (close_f >= float(lp) - EPS)
 
     return {
         "limit_price": float(lp),
@@ -121,8 +166,8 @@ def _day_status(
     if flags["is_limitup_touch"]:
         return "touch"
 
-    # big10 (exclude touch/hit already handled above)
-    if ret >= float(surge_ret):
+    ret_f = _to_num(ret, 0.0)
+    if ret_f >= float(surge_ret):
         return "big"
     return ""
 
@@ -137,11 +182,11 @@ def _compute_streaks_for_symbol(rows_desc: List[Dict[str, Any]]) -> Dict[str, An
 
     for r in rows_desc:
         st = _day_status(
-            close=float(r.get("close") or 0.0),
-            high=float(r.get("high") or 0.0),
-            last_close=float(r.get("last_close") or 0.0),
+            close=_to_num(r.get("close"), 0.0),
+            high=_to_num(r.get("high"), 0.0),
+            last_close=_to_num(r.get("last_close"), 0.0),
             band_pct=r.get("band_pct"),
-            ret=float(r.get("ret") or 0.0),
+            ret=_to_num(r.get("ret"), 0.0),
             surge_ret=INDIA_SURGE_RET,
         )
         statuses.append(st)
@@ -234,13 +279,13 @@ def run_intraday(*, slot: str, asof: str, ymd: str) -> Dict[str, Any]:
             dfh.loc[m, "ret"] = (dfh.loc[m, "close"] / dfh.loc[m, "last_close"]) - 1.0
             dfh["ret_pct"] = dfh["ret"] * 100.0
 
-            # today's row-level limit flags
+            # row-level limit flags
             flag_rows: List[Dict[str, Any]] = []
             for _, r in dfh.iterrows():
                 flags = _touch_locked_flags(
-                    close=float(r.get("close") or 0.0),
-                    high=float(r.get("high") or 0.0),
-                    last_close=float(r.get("last_close") or 0.0),
+                    close=_to_num(r.get("close"), 0.0),
+                    high=_to_num(r.get("high"), 0.0),
+                    last_close=_to_num(r.get("last_close"), 0.0),
                     band_pct=r.get("band_pct"),
                 )
                 flag_rows.append(flags)
@@ -252,7 +297,7 @@ def run_intraday(*, slot: str, asof: str, ymd: str) -> Dict[str, Any]:
             # normalized limit labels
             dfh["limit_rate"] = dfh["band_pct"]
             dfh["limit_rate_pct"] = dfh["band_pct"].apply(
-                lambda x: (float(x) * 100.0) if pd.notna(x) else None
+                lambda x: (float(x) * 100.0) if pd.notna(x) and _is_valid_num(x) else None
             )
 
             # per-symbol compute today/prev status + streak
@@ -278,14 +323,14 @@ def run_intraday(*, slot: str, asof: str, ymd: str) -> Dict[str, Any]:
                     g2 = g.sort_values("ymd", ascending=False, kind="mergesort")
                     if len(g2) >= 2:
                         prev_row = g2.iloc[1]
-                        prev_ret_pct_map[sym] = float(prev_row.get("ret_pct") or 0.0)
-                        prev_close_map[sym] = float(prev_row.get("close") or 0.0)
+                        prev_ret_pct_map[sym] = _to_num(prev_row.get("ret_pct"), 0.0)
+                        prev_close_map[sym] = _to_num(prev_row.get("close"), float("nan"))
                         prev_status_map[sym] = _day_status(
-                            close=float(prev_row.get("close") or 0.0),
-                            high=float(prev_row.get("high") or 0.0),
-                            last_close=float(prev_row.get("last_close") or 0.0),
+                            close=_to_num(prev_row.get("close"), 0.0),
+                            high=_to_num(prev_row.get("high"), 0.0),
+                            last_close=_to_num(prev_row.get("last_close"), 0.0),
                             band_pct=prev_row.get("band_pct"),
-                            ret=float(prev_row.get("ret") or 0.0),
+                            ret=_to_num(prev_row.get("ret"), 0.0),
                             surge_ret=INDIA_SURGE_RET,
                         )
                     else:
@@ -299,10 +344,10 @@ def run_intraday(*, slot: str, asof: str, ymd: str) -> Dict[str, Any]:
 
                 dft["limitup_status"] = dft["today_status"]
                 dft["is_display_limitup"] = dft["limitup_status"].apply(lambda x: bool(str(x).strip()))
-                dft["is_surge_ge10"] = dft["ret"].apply(lambda x: bool(float(x) >= INDIA_SURGE_RET))
+                dft["is_surge_ge10"] = dft["ret"].apply(lambda x: bool(_to_num(x, 0.0) >= INDIA_SURGE_RET))
                 dft["is_bigmove10_ex_locked"] = dft.apply(
                     lambda r: bool(
-                        float(r.get("ret") or 0.0) >= INDIA_SURGE_RET
+                        _to_num(r.get("ret"), 0.0) >= INDIA_SURGE_RET
                         and not bool(r.get("is_limitup_locked"))
                     ),
                     axis=1,
@@ -314,9 +359,9 @@ def run_intraday(*, slot: str, asof: str, ymd: str) -> Dict[str, Any]:
                 dft["ret_high_pct"] = dft["ret_high"] * 100.0
 
                 dft["abs_move"] = (dft["close"] - dft["last_close"]).abs()
-                dft["is_penny_20inr"] = dft["last_close"].apply(lambda x: bool(pd.notna(x) and float(x) < 20.0))
+                dft["is_penny_20inr"] = dft["last_close"].apply(lambda x: bool(pd.notna(x) and _is_valid_num(x) and float(x) < 20.0))
                 dft["ticks_needed_for_10pct"] = dft["last_close"].apply(
-                    lambda x: (float(x) * 0.10 / INDIA_TICK_SIZE) if pd.notna(x) and INDIA_TICK_SIZE > 0 else None
+                    lambda x: (float(x) * 0.10 / INDIA_TICK_SIZE) if pd.notna(x) and _is_valid_num(x) and INDIA_TICK_SIZE > 0 else None
                 )
                 dft["is_tick_danger"] = False
                 dft["streak"] = dft["streak_today"]
