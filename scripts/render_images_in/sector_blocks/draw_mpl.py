@@ -267,7 +267,6 @@ def _default_line2_top(r: Dict[str, Any]) -> str:
     if parts:
         return " | ".join(parts)
 
-    # fallback: 不要再只顯示 Today: Event
     st = _status_from_row(r)
     if st == "hit":
         return "Today: Limit Hit"
@@ -304,15 +303,6 @@ def _default_line2_peer(r: Dict[str, Any]) -> str:
 
 
 def _top_row_ret_display(r: Dict[str, Any]) -> Tuple[str, Optional[str], Optional[str]]:
-    """
-    Return (text, bg_color, fg_color) for top-row bottom-right value badge.
-
-    Rules:
-    - big: show true return
-    - hit/touch:
-        * if ret is near zero -> show "At limit"
-        * else show true return
-    """
     st = _status_from_row(r)
     ret = _safe_float(r.get("ret"), 0.0)
 
@@ -528,15 +518,34 @@ def draw_block_table(
                 line2 = _default_line2_top(r)
 
             status_txt, status_bg, status_fg = _status_badge_for_top_row(r, theme)
+            pct = _limit_pct_optional(r)
+            pill_text = limit_label(pct) if pct is not None else ""
 
-            badge_w_px = text_width_px(ax, fig, status_txt, x=x_tag, y=y1, fontsize=row_tag_fs, weight="bold")
-            badge_pad_px = 26 + 18
-            x_status_left = x_tag - px_to_data_dx(ax, badge_w_px + badge_pad_px, y_data=y1)
+            # --- reserve width for status badge first
+            status_w_px = text_width_px(ax, fig, status_txt, x=x_tag, y=y1, fontsize=row_tag_fs, weight="bold")
+            status_pad_px = 26 + 18
+            status_total_px = status_w_px + status_pad_px
 
-            safe_right = max(x_name + 0.10, x_status_left - 0.01)
+            # --- reserve width for limit pill too
+            pill_total_px = 0.0
+            if pill_text:
+                pill_w_px = text_width_px(ax, fig, pill_text, x=x_tag, y=y1, fontsize=row_tag_fs, weight="bold")
+                pill_total_px = pill_w_px + 26 + 18 + 10  # pill box + gap
 
-            line1_fit = _ellipsize_px(ax, fig, line1, x_left=x_name, x_right=safe_right, y=y1, fontsize=row_name_fs, weight="bold")
-            line2_fit = _ellipsize_px(ax, fig, line2, x_left=x_name, x_right=x_tag - 0.08, y=y2, fontsize=row_line2_fs, weight="regular")
+            total_reserve_px = status_total_px + pill_total_px + 8
+            x_text_right = x_tag - px_to_data_dx(ax, total_reserve_px, y_data=y1)
+            x_text_right = max(x_name + 0.10, x_text_right)
+
+            line1_fit = _ellipsize_px(
+                ax, fig, line1,
+                x_left=x_name, x_right=x_text_right,
+                y=y1, fontsize=row_name_fs, weight="bold"
+            )
+            line2_fit = _ellipsize_px(
+                ax, fig, line2,
+                x_left=x_name, x_right=x_tag - 0.08,
+                y=y2, fontsize=row_line2_fs, weight="regular"
+            )
 
             ax.text(x_name, y1, line1_fit, ha="left", va="center", fontsize=row_name_fs, color=fg, weight="bold")
             if line2_fit:
@@ -549,10 +558,21 @@ def draw_block_table(
                     alpha=0.95
                 )
 
-            pct = _limit_pct_optional(r)
+            # status badge fixed at right
+            ax.text(
+                x_tag, y1, status_txt,
+                ha="right", va="center",
+                fontsize=row_tag_fs,
+                color=status_fg, weight="bold",
+                bbox=dict(boxstyle="round,pad=0.35", facecolor=status_bg, edgecolor="none", alpha=0.95)
+            )
+
+            # draw left-side limit pill with guaranteed reserved room
             if pct is not None:
-                pill_text = limit_label(pct)
                 pill_bg, pill_fg = limit_colors(pct, theme)
+
+                status_left = x_tag - px_to_data_dx(ax, status_total_px, y_data=y1)
+
                 draw_pill_after_text(
                     ax, fig,
                     text_x=x_name,
@@ -563,19 +583,11 @@ def draw_block_table(
                     pill_fontsize=row_tag_fs,
                     pill_fg=pill_fg,
                     pill_bg=pill_bg,
-                    x_right_limit=x_status_left,
+                    x_right_limit=status_left - 0.004,
                     gap_px=10,
                     measure_text_width_px_fn=text_width_px,
                     px_to_data_dx_fn=px_to_data_dx,
                 )
-
-            ax.text(
-                x_tag, y1, status_txt,
-                ha="right", va="center",
-                fontsize=row_tag_fs,
-                color=status_fg, weight="bold",
-                bbox=dict(boxstyle="round,pad=0.35", facecolor=status_bg, edgecolor="none", alpha=0.95)
-            )
 
             ret_text, _, _ = _top_row_ret_display(r)
             if ret_text:
@@ -589,7 +601,6 @@ def draw_block_table(
                     badge_bg = get_ret_color(ret, theme)
                     badge_fg = "#0b0d10" if is_dark else "#ffffff"
 
-                # touched with negative return should still look blue-ish when numeric
                 if st == "touch" and ret_text != "At limit" and ret < 0:
                     badge_bg = "#4dabf7" if is_dark else "#1c7ed6"
                     badge_fg = "#0b0d10" if is_dark else "#ffffff"
