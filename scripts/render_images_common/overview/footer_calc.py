@@ -55,6 +55,8 @@ def _stats_of(payload: Dict[str, Any]) -> Dict[str, Any]:
 # Market groups (no daily limit-up制度：open_limit / 英文市場)
 # =============================================================================
 NO_LIMIT_MARKETS = {"US", "CA", "AU", "UK", "EU"}
+FR_OPEN_LIMIT_MARKETS = {"FR"}
+ALL_OPEN_LIMIT_MARKETS = NO_LIMIT_MARKETS | FR_OPEN_LIMIT_MARKETS
 
 
 # =============================================================================
@@ -100,7 +102,7 @@ def _sum_sector_summary(payload: Dict[str, Any], key: str) -> int:
 
 def _fallback_open_limit_bigmove10(payload: Dict[str, Any]) -> Tuple[int, str]:
     """
-    For no-limit markets (US/CA/AU/UK/EU), pipeline commonly provides counts in:
+    For open-limit markets (US/CA/AU/UK/EU/FR), pipeline commonly provides counts in:
       1) stats.open_limit_watchlist_count
       2) sum(sector_summary.bigmove10_cnt)
     """
@@ -113,6 +115,17 @@ def _fallback_open_limit_bigmove10(payload: Dict[str, Any]) -> Tuple[int, str]:
     if s > 0:
         return s, "fallback:sum(sector_summary.bigmove10_cnt)"
 
+    return 0, "missing"
+
+
+def _fallback_open_limit_touched(payload: Dict[str, Any]) -> Tuple[int, str]:
+    """
+    For FR special footer:
+      touched = sum(sector_summary.touched_cnt)
+    """
+    s = _sum_sector_summary(payload, "touched_cnt")
+    if s > 0:
+        return s, "fallback:sum(sector_summary.touched_cnt)"
     return 0, "missing"
 
 
@@ -143,7 +156,7 @@ def get_market_total(payload: Dict[str, Any]) -> int:
             if v > 0:
                 return v
 
-    # ✅ open_limit / english markets often store total in filters.<mkt>_sync
+    # ✅ open_limit markets often store total in filters.<mkt>_sync
     f = _filters_of(payload)
     mkt = _market_of(payload).lower()
     if mkt:
@@ -193,10 +206,20 @@ def pick_touched_total(payload: Dict[str, Any]) -> Tuple[int, str]:
     Convention:
       touched_total = touch-only (exclude locked)
     (Your TW aggregator is already doing that.)
+
+    FR special:
+      fallback to sum(sector_summary.touched_cnt)
     """
     v, src = _pick_key(payload, ("touched_total", "touch_only_total", "touched_only_total"))
     if src != "missing":
         return v, src
+
+    # FR / open-limit special fallback
+    mkt = _market_of(payload)
+    if mkt in FR_OPEN_LIMIT_MARKETS:
+        fb, fb_src = _fallback_open_limit_touched(payload)
+        if fb_src != "missing":
+            return fb, fb_src
 
     # fallback legacy (may include locked) — try not to use
     v2, src2 = _pick_key(payload, ("touch_total", "touched_cnt_total"))
@@ -294,14 +317,15 @@ def pick_bigmove10_ex(payload: Dict[str, Any]) -> Tuple[int, str]:
         - 把興櫃也算在 10%+ 桶（用你定義的 theme/watchlist pool）
         - 仍排除主板 touch/locked（由 base_ex 保證）
 
-    NO_LIMIT_MARKETS:
+    OPEN-LIMIT MARKETS:
       If missing, fallback to stats.open_limit_watchlist_count / sector_summary.bigmove10_cnt
     """
     mkt = _market_of(payload)
     base_ex, base_src = _pick_base_big10_ex(payload)
 
-    # ✅ No-limit markets: they don't have locked/touched semantics; 10%+ often comes from watchlist/sector_summary.
-    if mkt in NO_LIMIT_MARKETS:
+    # ✅ Open-limit markets: they don't have locked/touched semantics in the same way;
+    # 10%+ often comes from watchlist/sector_summary.
+    if mkt in ALL_OPEN_LIMIT_MARKETS:
         if base_src != "missing" and base_ex > 0:
             return int(base_ex), base_src
         fb, fb_src = _fallback_open_limit_bigmove10(payload)
@@ -326,7 +350,7 @@ def pick_bigmove10_inclusive(payload: Dict[str, Any]) -> Tuple[int, str]:
     ✅ INCLUSIVE 10%+ (gain-bins style union).
     Prefer explicit inclusive keys if provided by aggregator.
 
-    NO_LIMIT_MARKETS:
+    OPEN-LIMIT MARKETS:
       If missing, fallback to stats.open_limit_watchlist_count / sector_summary.bigmove10_cnt
       (inclusive == exclusive for these markets in your current definition)
     """
@@ -341,7 +365,7 @@ def pick_bigmove10_inclusive(payload: Dict[str, Any]) -> Tuple[int, str]:
     if src2 != "missing":
         return v2, src2
 
-    if mkt in NO_LIMIT_MARKETS:
+    if mkt in ALL_OPEN_LIMIT_MARKETS:
         fb, fb_src = _fallback_open_limit_bigmove10(payload)
         if fb_src != "missing":
             return int(fb), fb_src
