@@ -220,7 +220,7 @@ def _is_big10_in(
     *,
     ret: Optional[float] = None,
     touch_any: Optional[bool] = None,
-    is_locked: Optional[bool] = None
+    is_locked: Optional[bool] = None,
 ) -> bool:
     if ret is None:
         ret = _pct(r.get("ret", 0.0))
@@ -254,6 +254,23 @@ def _pick_band_pct(r: Dict[str, Any]) -> Optional[float]:
             return fv
         except Exception:
             continue
+
+    md = _safe_str(r.get("market_detail") or "")
+    if md:
+        for part in md.split("|"):
+            part = part.strip()
+            if not part.startswith("band="):
+                continue
+            raw = part.split("=", 1)[1].strip()
+            if not raw or raw.lower() in {"-", "no band", "none", "nan"}:
+                return None
+            try:
+                fv = float(raw)
+                if fv <= 0:
+                    return None
+                return fv / 100.0
+            except Exception:
+                return None
     return None
 
 
@@ -281,7 +298,6 @@ def build_limitup_by_sector_in(universe: List[Dict[str, Any]]) -> Dict[str, List
         touch_any = _touch_any_in(r)
         touch_only = _bombed_in(r)
         ret = _pct(r.get("ret", 0.0))
-
         big10 = _is_big10_in(r, ret=ret, touch_any=touch_any, is_locked=is_locked)
 
         if not (is_locked or touch_only or big10):
@@ -429,6 +445,7 @@ def main() -> int:
     ap.add_argument("--layout", default="us")
     ap.add_argument("--rows-per-box", type=int, default=6)
 
+    # 保留相容，但不再拿來當 hard cap
     ap.add_argument("--cap-pages", type=int, default=5)
 
     ap.add_argument("--no-overview", action="store_true")
@@ -491,7 +508,7 @@ def main() -> int:
             payload_for_overview.setdefault("market", "IN")
             payload_for_overview.setdefault(
                 "asof",
-                payload_for_overview.get("asof") or payload_for_overview.get("slot") or ""
+                payload_for_overview.get("asof") or payload_for_overview.get("slot") or "",
             )
 
             render_overview_png(
@@ -536,7 +553,7 @@ def main() -> int:
         if overview_sector_keys:
             ordered_norm = reorder_keys_by_overview(
                 existing_keys=existing_norm_keys,
-                overview_keys=overview_sector_keys
+                overview_keys=overview_sector_keys,
             )
         else:
             ordered_norm = existing_norm_keys
@@ -562,6 +579,9 @@ def main() -> int:
 
             # ----------------------------
             # CASE A: 上框有真事件資料
+            # 規則：
+            # - 總頁數 = 上框頁數 + 1
+            # - 但如果 peer 不夠，就不用硬湊
             # ----------------------------
             if L_total:
                 L_pages = chunk(L_total, rows_top) if L_total else [[]]
@@ -622,11 +642,16 @@ def main() -> int:
                     print(f"[IN] wrote {out_path.name}")
 
             # ----------------------------
-            # CASE B: 上框沒有真事件資料，整頁其實都是 peers
+            # CASE B: 上框沒有事件資料
+            # 規則：
+            # - 上框永遠維持空白
+            # - 下框顯示 peers
+            # - 不要再顯示 Top movers (<10%)
+            # - 不要把 peers 塞到上框
             # ----------------------------
             elif P_total:
-                page_pack = rows_top + rows_peer
-                total_pages = max(1, (len(P_total) + page_pack - 1) // page_pack)
+                P_pages = chunk(P_total, rows_peer) if P_total else [[]]
+                total_pages = max(1, len(P_pages))
 
                 hit_total = touch_total = big_total = 0
                 hit_shown = touch_shown = big_shown = 0
@@ -636,10 +661,8 @@ def main() -> int:
                 locked_cnt = touch_cnt = theme_cnt = 0
 
                 for i in range(total_pages):
-                    start = i * page_pack
-                    top_rows = P_total[start: start + rows_top]
-                    bot_rows = P_total[start + rows_top: start + rows_top + rows_peer]
-                    has_more_peers = (start + page_pack) < len(P_total) and (i == total_pages - 1)
+                    peer_rows = P_pages[i] if i < len(P_pages) else []
+                    has_more_peers = (i < total_pages - 1)
 
                     out_path = outdir / f"in_{sector_fn}_p{i+1}.png"
                     draw_block_table(
@@ -658,8 +681,8 @@ def main() -> int:
                         big_total=big_total,
                         sector_shown_total=sector_shown_total,
                         sector_all_total=sector_all_total,
-                        limitup_rows=top_rows,
-                        peer_rows=bot_rows,
+                        limitup_rows=[],
+                        peer_rows=peer_rows,
                         page_idx=i + 1,
                         page_total=total_pages,
                         width=width,
@@ -670,9 +693,7 @@ def main() -> int:
                         has_more_peers=has_more_peers,
                         lang=str(args.lang or "en"),
                         market="IN",
-                        top_box_title="Top movers (<10%)",
-                        bot_box_title="Peers (same sector)",
-                        top_rows_kind="peers",
+                        top_rows_kind="events",
                     )
                     print(f"[IN] wrote {out_path.name}")
 
