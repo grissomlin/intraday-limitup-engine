@@ -80,7 +80,7 @@ def _build_meta_time_by_tz(
     if dt_utc.tzinfo is None:
         dt_utc = dt_utc.replace(tzinfo=timezone.utc)
 
-    # 1) ZoneInfo (best)
+    # 1) ZoneInfo (best; DST-aware)
     if ZoneInfo is not None:
         try:
             tzinfo = ZoneInfo(tz_name)
@@ -128,7 +128,7 @@ def _build_meta_time_by_tz(
 
 
 # -----------------------------------------------------------------------------
-# Public builders (what your snapshots should call)
+# Public builders
 # -----------------------------------------------------------------------------
 def build_meta_time_america(
     dt_utc: datetime,
@@ -158,5 +158,37 @@ def build_meta_time_asia(
       - "Asia/Tokyo"
       - "Asia/Seoul"
       - "Asia/Bangkok"
+    """
+    return _build_meta_time_by_tz(dt_utc, tz_name=tz_name, fallback_offset=fallback_offset)
+
+
+def build_meta_time_europe(
+    dt_utc: datetime,
+    *,
+    tz_name: str,
+    fallback_offset: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Europe unified builder.
+    Examples:
+      - "Europe/Paris"
+      - "Europe/London"
+      - "Europe/Berlin"
+
+    For France:
+      tz_name="Europe/Paris"
+      fallback_offset="+01:00"  # DST will be auto-corrected by ZoneInfo if available
+    """
+    return _build_meta_time_by_tz(dt_utc, tz_name=tz_name, fallback_offset=fallback_offset)
+
+
+def build_meta_time_generic(
+    dt_utc: datetime,
+    *,
+    tz_name: str,
+    fallback_offset: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Generic public wrapper for any region.
     """
     return _build_meta_time_by_tz(dt_utc, tz_name=tz_name, fallback_offset=fallback_offset)
