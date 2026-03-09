@@ -148,14 +148,29 @@ def build_in_time_note(payload: Dict[str, Any]) -> str:
         tmeta = {}
 
     hm = _safe_str(tmeta.get("market_finished_hm") or "")
-    if not hm:
+    tz = _safe_str(
+        tmeta.get("market_tz_offset")
+        or tmeta.get("tz_offset")
+        or tmeta.get("utc_offset")
+        or ""
+    )
+
+    if not hm or not tz:
         try:
-            _, _, _, hhmm = get_market_time_info(payload, market="IN")
-            hm = _safe_str(hhmm)
+            _, _, tz_out, hhmm = get_market_time_info(payload, market="IN")
+            if not hm:
+                hm = _safe_str(hhmm)
+            if not tz:
+                tz = _safe_str(tz_out)
         except Exception:
-            hm = ""
+            pass
+
+    if tz and not tz.upper().startswith("UTC"):
+        tz = f"UTC{tz}"
 
     line1 = f"India Trading Day {trade_ymd}"
+    if hm and tz:
+        return f"{line1}\nUpdated {trade_ymd} {hm} ({tz})"
     if hm:
         return f"{line1}\nUpdated {trade_ymd} {hm}"
     return line1
@@ -532,14 +547,21 @@ def main() -> int:
         s = _norm_sector_name(_safe_str(r.get("sector") or "Unclassified"))
         sector_total_map[s] = sector_total_map.get(s, 0) + 1
 
+    # limitup 這裡其實包含：
+    # - hit  : 漲停鎖死
+    # - touch: 漲停觸及後打開
+    # - big  : 10%+ 但不是 touched/locked
     limitup = build_limitup_by_sector_in(universe)
     peers = build_peers_by_sector_in(universe, peer_ret_min=float(args.peer_ret_min))
 
-    print(f"[IN][DEBUG] sectors(limitup)={len(limitup)} sectors(peers)={len(peers)}")
+    print(f"[IN][DEBUG] sectors(limitup/events)={len(limitup)} sectors(peers)={len(peers)}")
 
-    sectors_raw = sorted(set((limitup or {}).keys()) | set((peers or {}).keys()))
+    # ✅ 只渲染有事件的 sector
+    # 不再因為「只有 peers」就生出一頁空的 top box
+    sectors_raw = sorted(set((limitup or {}).keys()))
+
     if not sectors_raw:
-        print("[IN][WARN] No sectors to render (limitup empty & peers empty). Only overview will exist.")
+        print("[IN][WARN] No event sectors to render. Only overview will exist.")
     else:
         norm_to_sector: Dict[str, str] = {}
         existing_norm_keys: List[str] = []
@@ -577,128 +599,66 @@ def main() -> int:
 
             sector_fn = _sanitize_filename(sector)
 
-            # ----------------------------
-            # CASE A: 上框有真事件資料
+            # 只要進到這裡，代表該 sector 一定有 hit/touch/big 事件
+            L_pages = chunk(L_total, rows_top) if L_total else [[]]
+            P_pages = chunk(P_total, rows_peer) if P_total else [[]]
+
+            limitup_pages = len(L_pages)
+            peer_pages_raw = len(P_pages)
+
             # 規則：
-            # - 總頁數 = 上框頁數 + 1
-            # - 但如果 peer 不夠，就不用硬湊
-            # ----------------------------
-            if L_total:
-                L_pages = chunk(L_total, rows_top) if L_total else [[]]
-                P_pages = chunk(P_total, rows_peer) if P_total else [[]]
+            # - 至少把事件頁全部畫完
+            # - peers 最多額外延伸 1 頁，不要無限長
+            total_pages_target = limitup_pages + 1
+            total_pages = max(limitup_pages, min(peer_pages_raw, total_pages_target))
 
-                limitup_pages = len(L_pages)
-                peer_pages_raw = len(P_pages)
+            hit_total, touch_total, big_total = count_hit_touch_big(L_total)
+            hit_shown, touch_shown, big_shown = count_hit_touch_big(L_total)
 
-                total_pages_target = limitup_pages + 1
-                total_pages = max(limitup_pages, min(peer_pages_raw, total_pages_target))
+            sector_all_total = int(sector_total_map.get(sector, 0) or 0)
+            sector_shown_total = int(hit_total + touch_total + big_total)
 
-                hit_total, touch_total, big_total = count_hit_touch_big(L_total)
-                hit_shown, touch_shown, big_shown = count_hit_touch_big(L_total)
+            locked_cnt = hit_total
+            touch_cnt = touch_total
+            theme_cnt = 0
 
-                sector_all_total = int(sector_total_map.get(sector, 0) or 0)
-                sector_shown_total = int(hit_total + touch_total + big_total)
+            for i in range(total_pages):
+                limitup_rows = L_pages[i] if i < limitup_pages else []
+                peer_rows = P_pages[i] if i < peer_pages_raw else []
+                has_more_peers = (peer_pages_raw > total_pages) and (i == total_pages - 1)
 
-                locked_cnt = hit_total
-                touch_cnt = touch_total
-                theme_cnt = 0
-
-                for i in range(total_pages):
-                    limitup_rows = L_pages[i] if i < limitup_pages else []
-                    peer_rows = P_pages[i] if i < peer_pages_raw else []
-                    has_more_peers = (peer_pages_raw > total_pages) and (i == total_pages - 1)
-
-                    out_path = outdir / f"in_{sector_fn}_p{i+1}.png"
-                    draw_block_table(
-                        out_path=out_path,
-                        layout=layout,
-                        sector=sector,
-                        cutoff=cutoff,
-                        locked_cnt=locked_cnt,
-                        touch_cnt=touch_cnt,
-                        theme_cnt=theme_cnt,
-                        hit_shown=hit_shown,
-                        hit_total=hit_total,
-                        touch_shown=touch_shown,
-                        touch_total=touch_total,
-                        big_shown=big_shown,
-                        big_total=big_total,
-                        sector_shown_total=sector_shown_total,
-                        sector_all_total=sector_all_total,
-                        limitup_rows=limitup_rows,
-                        peer_rows=peer_rows,
-                        page_idx=i + 1,
-                        page_total=total_pages,
-                        width=width,
-                        height=height,
-                        rows_per_page=rows_top,
-                        theme=args.theme,
-                        time_note=time_note,
-                        has_more_peers=has_more_peers,
-                        lang=str(args.lang or "en"),
-                        market="IN",
-                        top_rows_kind="events",
-                    )
-                    print(f"[IN] wrote {out_path.name}")
-
-            # ----------------------------
-            # CASE B: 上框沒有事件資料
-            # 規則：
-            # - 上框永遠維持空白
-            # - 下框顯示 peers
-            # - 不要再顯示 Top movers (<10%)
-            # - 不要把 peers 塞到上框
-            # ----------------------------
-            elif P_total:
-                P_pages = chunk(P_total, rows_peer) if P_total else [[]]
-                total_pages = max(1, len(P_pages))
-
-                hit_total = touch_total = big_total = 0
-                hit_shown = touch_shown = big_shown = 0
-
-                sector_all_total = int(sector_total_map.get(sector, 0) or 0)
-                sector_shown_total = 0
-                locked_cnt = touch_cnt = theme_cnt = 0
-
-                for i in range(total_pages):
-                    peer_rows = P_pages[i] if i < len(P_pages) else []
-                    has_more_peers = (i < total_pages - 1)
-
-                    out_path = outdir / f"in_{sector_fn}_p{i+1}.png"
-                    draw_block_table(
-                        out_path=out_path,
-                        layout=layout,
-                        sector=sector,
-                        cutoff=cutoff,
-                        locked_cnt=locked_cnt,
-                        touch_cnt=touch_cnt,
-                        theme_cnt=theme_cnt,
-                        hit_shown=hit_shown,
-                        hit_total=hit_total,
-                        touch_shown=touch_shown,
-                        touch_total=touch_total,
-                        big_shown=big_shown,
-                        big_total=big_total,
-                        sector_shown_total=sector_shown_total,
-                        sector_all_total=sector_all_total,
-                        limitup_rows=[],
-                        peer_rows=peer_rows,
-                        page_idx=i + 1,
-                        page_total=total_pages,
-                        width=width,
-                        height=height,
-                        rows_per_page=rows_top,
-                        theme=args.theme,
-                        time_note=time_note,
-                        has_more_peers=has_more_peers,
-                        lang=str(args.lang or "en"),
-                        market="IN",
-                        top_rows_kind="events",
-                    )
-                    print(f"[IN] wrote {out_path.name}")
-
-            else:
-                continue
+                out_path = outdir / f"in_{sector_fn}_p{i+1}.png"
+                draw_block_table(
+                    out_path=out_path,
+                    layout=layout,
+                    sector=sector,
+                    cutoff=cutoff,
+                    locked_cnt=locked_cnt,
+                    touch_cnt=touch_cnt,
+                    theme_cnt=theme_cnt,
+                    hit_shown=hit_shown,
+                    hit_total=hit_total,
+                    touch_shown=touch_shown,
+                    touch_total=touch_total,
+                    big_shown=big_shown,
+                    big_total=big_total,
+                    sector_shown_total=sector_shown_total,
+                    sector_all_total=sector_all_total,
+                    limitup_rows=limitup_rows,
+                    peer_rows=peer_rows,
+                    page_idx=i + 1,
+                    page_total=total_pages,
+                    width=width,
+                    height=height,
+                    rows_per_page=rows_top,
+                    theme=args.theme,
+                    time_note=time_note,
+                    has_more_peers=has_more_peers,
+                    lang=str(args.lang or "en"),
+                    market="IN",
+                    top_rows_kind="events",
+                )
+                print(f"[IN] wrote {out_path.name}")
 
     # -------------------------------------------------------------------------
     # 2) list.txt
