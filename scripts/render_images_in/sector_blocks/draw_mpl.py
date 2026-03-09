@@ -411,12 +411,16 @@ def draw_block_table(
     top_y0 = float(getattr(layout, "top_box_y0", 0.84))
     top_y1 = float(getattr(layout, "top_box_y1", 0.485))
     bot_y0 = float(getattr(layout, "bot_box_y0", 0.465))
-    bot_y1 = float(getattr(layout, "bot_box_y1", 0.070))  # ✅ 下框加高：原本 0.085
+    bot_y1 = float(getattr(layout, "bot_box_y1", 0.060))
 
     top_y0 = min(top_y0, reserve_top)
 
-    ax.add_patch(plt.Rectangle((0.05, top_y1), 0.90, top_y0 - top_y1, facecolor=box, edgecolor=line, linewidth=2))
-    ax.add_patch(plt.Rectangle((0.05, bot_y1), 0.90, bot_y0 - bot_y1, facecolor=box, edgecolor=line, linewidth=2))
+    ax.add_patch(
+        plt.Rectangle((0.05, top_y1), 0.90, top_y0 - top_y1, facecolor=box, edgecolor=line, linewidth=2)
+    )
+    ax.add_patch(
+        plt.Rectangle((0.05, bot_y1), 0.90, bot_y0 - bot_y1, facecolor=box, edgecolor=line, linewidth=2)
+    )
 
     top_rows_kind = (_safe_str(top_rows_kind).lower() or "events")
 
@@ -451,11 +455,26 @@ def draw_block_table(
             return _safe_str(bot_box_title)
         return "(non-limit-up / below 10%+)"
 
-    ax.text(0.08, top_y0 - 0.025, top_title(), ha="left", va="center", fontsize=box_title_fs, color=fg, weight="bold")
-    ax.text(0.08, bot_y0 - 0.025, bot_title(), ha="left", va="center", fontsize=box_title_fs, color=fg, weight="bold")
+    ax.text(
+        0.08, top_y0 - 0.025, top_title(),
+        ha="left", va="center", fontsize=box_title_fs, color=fg, weight="bold"
+    )
+    ax.text(
+        0.08, bot_y0 - 0.025, bot_title(),
+        ha="left", va="center", fontsize=box_title_fs, color=fg, weight="bold"
+    )
 
-    y_start_top, row_h_top = calc_rows_layout(top_y0 - 0.055, top_y1, int(rows_per_page), two_line=True)
-    y_start_bot, row_h_bot = calc_rows_layout(bot_y0 - 0.022, bot_y1, int(rows_per_page) + 1, two_line=True)
+    y_start_top, row_h_top = calc_rows_layout(
+        top_y0 - 0.055, top_y1, int(rows_per_page), two_line=True
+    )
+
+    footer_reserved = 0.040 if has_more_peers else 0.0
+    y_start_bot, row_h_bot = calc_rows_layout(
+        bot_y0 - 0.022,
+        bot_y1 + footer_reserved,
+        int(rows_per_page) + 1,
+        two_line=True,
+    )
 
     x_name = 0.08
     x_tag = 0.94
@@ -499,8 +518,16 @@ def draw_block_table(
         safe_right = x_tag - px_to_data_dx(ax, reserve_px, y_data=y1)
         safe_right = max(x_name + 0.10, safe_right)
 
-        line1_fit = _ellipsize_px(ax, fig, line1, x_left=x_name, x_right=safe_right, y=y1, fontsize=row_name_fs, weight="bold")
-        line2_fit = _ellipsize_px(ax, fig, line2, x_left=x_name, x_right=x_tag - 0.08, y=y2, fontsize=row_line2_fs, weight="regular")
+        line1_fit = _ellipsize_px(
+            ax, fig, line1,
+            x_left=x_name, x_right=safe_right, y=y1,
+            fontsize=row_name_fs, weight="bold"
+        )
+        line2_fit = _ellipsize_px(
+            ax, fig, line2,
+            x_left=x_name, x_right=x_tag - 0.08, y=y2,
+            fontsize=row_line2_fs, weight="regular"
+        )
 
         ax.text(x_name, y1, line1_fit, ha="left", va="center", fontsize=row_name_fs, color=fg, weight="bold")
         if line2_fit:
@@ -567,8 +594,16 @@ def draw_block_table(
         x_text_right = x_tag - px_to_data_dx(ax, total_reserve_px, y_data=y1)
         x_text_right = max(x_name + 0.10, x_text_right)
 
-        line1_fit = _ellipsize_px(ax, fig, line1, x_left=x_name, x_right=x_text_right, y=y1, fontsize=row_name_fs, weight="bold")
-        line2_fit = _ellipsize_px(ax, fig, line2, x_left=x_name, x_right=x_tag - 0.08, y=y2, fontsize=row_line2_fs, weight="regular")
+        line1_fit = _ellipsize_px(
+            ax, fig, line1,
+            x_left=x_name, x_right=x_text_right, y=y1,
+            fontsize=row_name_fs, weight="bold"
+        )
+        line2_fit = _ellipsize_px(
+            ax, fig, line2,
+            x_left=x_name, x_right=x_tag - 0.08, y=y2,
+            fontsize=row_line2_fs, weight="regular"
+        )
 
         ax.text(x_name, y1, line1_fit, ha="left", va="center", fontsize=row_name_fs, color=fg, weight="bold")
         if line2_fit:
@@ -669,13 +704,14 @@ def draw_block_table(
                 )
 
         if has_more_peers:
+            footer_center_y = bot_y1 + footer_reserved * 0.45
             ax.text(
-                0.5, bot_y1 + 0.006,
+                0.5, footer_center_y,
                 "(More items not shown)",
-                ha="center", va="bottom",
-                fontsize=max(16, row_line2_fs - 4),
+                ha="center", va="center",
+                fontsize=max(17, row_line2_fs - 3),
                 color=sub,
-                alpha=0.78,
+                alpha=0.82,
                 weight="bold"
             )
 
