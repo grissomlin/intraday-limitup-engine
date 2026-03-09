@@ -667,15 +667,14 @@ def draw_block_table(
                     [y_center - row_h_bot * 0.44, y_center - row_h_bot * 0.44],
                     color=line, lw=1, alpha=0.6
                 )
-
         if has_more_peers:
             ax.text(
-                0.5, bot_y1 + 0.012,
+                0.5, bot_y1 + 0.004,
                 "(More items not shown)",
                 ha="center", va="bottom",
-                fontsize=max(17, row_line2_fs - 3),
+                fontsize=max(16, row_line2_fs - 4),
                 color=sub,
-                alpha=0.80,
+                alpha=0.78,
                 weight="bold"
             )
 
