@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -111,6 +111,17 @@ def _now_paris_iso() -> str:
     except Exception:
         pass
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _now_utc_iso() -> str:
+    """
+    Return timezone-aware ISO datetime in UTC with trailing Z, e.g.
+      2026-03-09T11:46:00Z
+    """
+    try:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    except Exception:
+        return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _compute_streaks(df: pd.DataFrame) -> pd.DataFrame:
@@ -322,7 +333,10 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path_override: Optional[Path
         pass
 
     # write timezone-aware Paris timestamp into payload
-    time_meta["market_finished_at"] = _now_paris_iso()
+    now_paris_iso = _now_paris_iso()
+    time_meta["market_finished_at"] = now_paris_iso
+    time_meta["market_finished_at_iso"] = now_paris_iso
+    time_meta["market_finished_at_utc"] = _now_utc_iso()
 
     snapshot_open: List[Dict[str, Any]] = []
     for _, r in df_day.iterrows():
