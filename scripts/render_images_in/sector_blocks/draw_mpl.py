@@ -449,13 +449,13 @@ def draw_block_table(
     def bot_title() -> str:
         if _safe_str(bot_box_title):
             return _safe_str(bot_box_title)
-        return "Same-sector peers (non-limit-up / below 10%+)"
+        return "(non-limit-up / below 10%+)"
 
     ax.text(0.08, top_y0 - 0.025, top_title(), ha="left", va="center", fontsize=box_title_fs, color=fg, weight="bold")
     ax.text(0.08, bot_y0 - 0.025, bot_title(), ha="left", va="center", fontsize=box_title_fs, color=fg, weight="bold")
 
     y_start_top, row_h_top = calc_rows_layout(top_y0 - 0.055, top_y1, int(rows_per_page), two_line=True)
-    y_start_bot, row_h_bot = calc_rows_layout(bot_y0 - 0.055, bot_y1, int(rows_per_page) + 1, two_line=True)
+    y_start_bot, row_h_bot = calc_rows_layout(bot_y0 - 0.040, bot_y1, int(rows_per_page) + 1, two_line=True)
 
     x_name = 0.08
     x_tag = 0.94
@@ -669,14 +669,13 @@ def draw_block_table(
                 )
 
         if has_more_peers:
-            more_y = bot_y1 + max(0.035, row_h_bot * 0.28)
             ax.text(
-                0.5, more_y,
+                0.5, bot_y1 + 0.012,
                 "(More items not shown)",
                 ha="center", va="bottom",
-                fontsize=max(18, row_line2_fs - 2),
+                fontsize=max(17, row_line2_fs - 3),
                 color=sub,
-                alpha=0.85,
+                alpha=0.80,
                 weight="bold"
             )
 
