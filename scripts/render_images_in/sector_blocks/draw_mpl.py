@@ -411,7 +411,7 @@ def draw_block_table(
     top_y0 = float(getattr(layout, "top_box_y0", 0.84))
     top_y1 = float(getattr(layout, "top_box_y1", 0.485))
     bot_y0 = float(getattr(layout, "bot_box_y0", 0.465))
-    bot_y1 = float(getattr(layout, "bot_box_y1", 0.085))
+    bot_y1 = float(getattr(layout, "bot_box_y1", 0.070))  # ✅ 下框加高：原本 0.085
 
     top_y0 = min(top_y0, reserve_top)
 
@@ -667,9 +667,10 @@ def draw_block_table(
                     [y_center - row_h_bot * 0.44, y_center - row_h_bot * 0.44],
                     color=line, lw=1, alpha=0.6
                 )
+
         if has_more_peers:
             ax.text(
-                0.5, bot_y1 + 0.004,
+                0.5, bot_y1 + 0.006,
                 "(More items not shown)",
                 ha="center", va="bottom",
                 fontsize=max(16, row_line2_fs - 4),
