@@ -32,6 +32,7 @@ DEFAULT_MARKET_TZ: Dict[str, str] = {
     "US": "America/New_York",
     "CA": "America/Toronto",
     "UK": "Europe/London",
+    "FR": "Europe/Paris",
     "AU": "Australia/Sydney",
     "TW": "Asia/Taipei",
     "CN": "Asia/Shanghai",
@@ -47,6 +48,7 @@ DEFAULT_TZ_OFFSETS: Dict[str, float] = {
     "US": -5.0,   # Eastern (DST handled by ZoneInfo if available)
     "CA": -5.0,   # Toronto
     "UK": 0.0,    # London
+    "FR": +1.0,   # Paris (DST handled by ZoneInfo if available)
     "AU": +10.0,  # Sydney (DST handled by ZoneInfo if available)
     "TW": +8.0,
     "CN": +8.0,
@@ -71,7 +73,11 @@ def _norm_market(market: str) -> str:
         "INDIA": "IN",
         "NSE": "IN",
         "BSE": "IN",
-        # (Optional) keep future-proof aliases here
+        "FRA": "FR",
+        "FRANCE": "FR",
+        "PARIS": "FR",
+        "EURONEXT_PARIS": "FR",
+        "EURONEXT PARIS": "FR",
     }
     return alias.get(m, m)
 
