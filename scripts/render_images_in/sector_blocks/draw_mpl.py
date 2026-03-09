@@ -455,7 +455,7 @@ def draw_block_table(
     ax.text(0.08, bot_y0 - 0.025, bot_title(), ha="left", va="center", fontsize=box_title_fs, color=fg, weight="bold")
 
     y_start_top, row_h_top = calc_rows_layout(top_y0 - 0.055, top_y1, int(rows_per_page), two_line=True)
-    y_start_bot, row_h_bot = calc_rows_layout(bot_y0 - 0.040, bot_y1, int(rows_per_page) + 1, two_line=True)
+    y_start_bot, row_h_bot = calc_rows_layout(bot_y0 - 0.022, bot_y1, int(rows_per_page) + 1, two_line=True)
 
     x_name = 0.08
     x_tag = 0.94
