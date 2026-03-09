@@ -157,7 +157,11 @@ def _fit_text_fs(
             return s, fs
         fs -= 1
 
-    s2 = _ellipsize_px(ax, fig, s, x_left=x_left, x_right=x_right, y=y, fontsize=fs_min, weight=weight)
+    s2 = _ellipsize_px(
+        ax, fig, s,
+        x_left=x_left, x_right=x_right, y=y,
+        fontsize=fs_min, weight=weight
+    )
     return s2, fs_min
 
 
@@ -369,6 +373,8 @@ def draw_block_table(
 
     title_fs = int(getattr(layout, "title_fs", 62))
     subtitle_fs = int(getattr(layout, "subtitle_fs", 30))
+    footer_fs = int(getattr(layout, "footer_fs_2", 16))
+    footer_y = float(getattr(layout, "footer_y2", 0.020))
 
     ax.text(
         0.5, 0.97, _safe_str(sector),
@@ -403,6 +409,18 @@ def draw_block_table(
                 fontsize=max(18, subtitle_fs - 2),
                 color=sub, weight="bold"
             )
+
+    # Footer disclaimer
+    ax.text(
+        0.05,
+        footer_y,
+        "Source: Public market data | For information only. Not financial advice.",
+        ha="left",
+        va="bottom",
+        fontsize=footer_fs,
+        color=sub,
+        alpha=0.85,
+    )
 
     ensure_renderer(fig)
 
