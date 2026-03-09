@@ -345,7 +345,7 @@ def draw_block_table(
     market: str = "IN",
     top_box_title: Optional[str] = None,
     bot_box_title: Optional[str] = None,
-    top_rows_kind: str = "events",   # <-- 新增
+    top_rows_kind: str = "events",
 ):
     setup_font()
 
@@ -449,7 +449,7 @@ def draw_block_table(
     def bot_title() -> str:
         if _safe_str(bot_box_title):
             return _safe_str(bot_box_title)
-        return "Peers (same sector)"
+        return "Same-sector peers (non-limit-up / below 10%+)"
 
     ax.text(0.08, top_y0 - 0.025, top_title(), ha="left", va="center", fontsize=box_title_fs, color=fg, weight="bold")
     ax.text(0.08, bot_y0 - 0.025, bot_title(), ha="left", va="center", fontsize=box_title_fs, color=fg, weight="bold")
@@ -669,12 +669,14 @@ def draw_block_table(
                 )
 
         if has_more_peers:
+            more_y = bot_y1 + max(0.035, row_h_bot * 0.28)
             ax.text(
-                0.5, bot_y1 + 0.02,
+                0.5, more_y,
                 "(More items not shown)",
                 ha="center", va="bottom",
-                fontsize=max(20, row_line2_fs),
-                color=sub, alpha=0.85,
+                fontsize=max(18, row_line2_fs - 2),
+                color=sub,
+                alpha=0.85,
                 weight="bold"
             )
 
