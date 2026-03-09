@@ -1,4 +1,3 @@
-# scripts/render_images_fr/sector_blocks/draw_mpl.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
@@ -10,11 +9,6 @@ import matplotlib.font_manager as fm
 
 # ✅ reuse UK layout primitives to avoid duplicating layout.py in FR
 from scripts.render_images_uk.sector_blocks.layout import LayoutSpec, calc_rows_layout  # type: ignore
-
-try:
-    from scripts.render_images_common.time_note import build_time_note as _build_time_note  # type: ignore
-except Exception:
-    _build_time_note = None  # type: ignore
 
 
 def setup_chinese_font() -> str | None:
@@ -115,20 +109,13 @@ def get_market_time_info(payload: Dict[str, Any]) -> Tuple[str, str]:
     FR sector subtitle: force 2 lines
       line1: Date des données YYYY-MM-DD
       line2: Mis à jour YYYY-MM-DD HH:MM (UTC+XX)
+
+    IMPORTANT:
+    FR should use its own payload/meta.time fields directly,
+    and should NOT delegate to shared build_time_note, because
+    shared logic may normalize to UTC and produce wrong UTC+00 display.
     """
     ymd = parse_cutoff(payload)
-
-    # If shared builder exists and already returns a 2-line note, keep it.
-    if _build_time_note is not None:
-        try:
-            ymd2, note = _build_time_note(payload, market="FR", lang="fr")
-            ymd_eff = (ymd2 or ymd).strip()
-            note = (note or "").strip()
-            if "\n" in note:
-                return ymd_eff, note
-        except Exception:
-            pass
-
     meta = payload.get("meta") or {}
     meta_time = (meta.get("time") or {}) if isinstance(meta, dict) else {}
 
@@ -136,20 +123,35 @@ def get_market_time_info(payload: Dict[str, Any]) -> Tuple[str, str]:
 
     finished_at = _safe_str(meta_time.get("market_finished_at") or "")
     hm = _safe_str(meta_time.get("market_finished_hm") or "")
+
+    # Prefer explicit HH:MM only if present; otherwise parse from finished_at / generated_at
     if not hm:
         updated_market = finished_at or _safe_str(payload.get("generated_at") or "")
         hm = _parse_hhmm_from_iso(updated_market) or _safe_str(payload.get("asof") or "")
 
-    upd_ymd = _split_ymd_from_dt(finished_at) or trade_ymd
+    upd_ymd = _split_ymd_from_dt(finished_at) or _split_ymd_from_dt(_safe_str(payload.get("generated_at") or "")) or trade_ymd
 
     off_raw = _safe_str(
         meta_time.get("market_tz_offset")
         or meta_time.get("tz_offset")
         or meta_time.get("market_utc_offset")
         or meta.get("market_utc_offset")
+        or payload.get("market_utc_offset")
         or ""
     )
+
+    # FR fallback: if not present, infer from generated_at suffix
+    if not off_raw:
+        gen = _safe_str(payload.get("generated_at") or "")
+        if len(gen) >= 6 and (gen[-6] in ["+", "-"]) and gen[-3] == ":":
+            off_raw = gen[-6:]
+
     off_eff = _compact_utc_offset(off_raw)
+
+    # Final FR hard fallback
+    if not off_eff:
+        off_eff = "+01"
+
     tz_part = f" (UTC{off_eff})" if off_eff else ""
 
     line1 = f"Date des données {trade_ymd}".strip()
