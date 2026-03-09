@@ -1,4 +1,3 @@
-# markets/fr/fr_intraday.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
@@ -75,21 +74,43 @@ def _clean_sector_text(x: Any) -> str:
     return _clean_text(x, default="Unknown")
 
 
-def _paris_offset_colon() -> str:
+def _paris_offset_colon_for_date(ymd: Optional[str] = None) -> str:
     """
-    Return Europe/Paris current UTC offset with colon, e.g.:
+    Return Europe/Paris UTC offset for the given date, with colon:
       +01:00
       +02:00
+
+    If ymd is missing or parsing fails, fallback to current Paris offset.
     """
     try:
         if ZoneInfo is not None:
-            now_paris = datetime.now(ZoneInfo("Europe/Paris"))
-            off = now_paris.strftime("%z")  # +0100 / +0200
+            tz = ZoneInfo("Europe/Paris")
+
+            if ymd:
+                # noon avoids edge-case ambiguity around DST switch near midnight
+                dt_paris = datetime.fromisoformat(f"{str(ymd)[:10]}T12:00:00").replace(tzinfo=tz)
+            else:
+                dt_paris = datetime.now(tz)
+
+            off = dt_paris.strftime("%z")  # +0100 / +0200
             if off and len(off) == 5:
                 return f"{off[:3]}:{off[3:]}"
     except Exception:
         pass
     return "+01:00"
+
+
+def _now_paris_iso() -> str:
+    """
+    Return timezone-aware ISO datetime in Europe/Paris, e.g.
+      2026-03-09T12:46:00+01:00
+    """
+    try:
+        if ZoneInfo is not None:
+            return datetime.now(ZoneInfo("Europe/Paris")).isoformat(timespec="seconds")
+    except Exception:
+        pass
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def _compute_streaks(df: pd.DataFrame) -> pd.DataFrame:
@@ -139,7 +160,7 @@ def _base_payload(
         "asof": asof,
         "ymd": ymd,
         "ymd_effective": ymd_effective,
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": _now_paris_iso(),
         "filters": {
             "enable_open_watchlist": True,
             "note": "FR treated as open_limit (no daily limit). Built from local DB.",
@@ -178,16 +199,16 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path_override: Optional[Path
     if not dbp.exists():
         raise FileNotFoundError(f"FR DB not found: {dbp} (set FR_DB_PATH to override)")
 
-    time_meta: Dict[str, Any] = {
-        "market_tz": "Europe/Paris",
-        "market_tz_offset": _paris_offset_colon(),
-    }
-
     conn = sqlite3.connect(str(dbp))
     try:
         ymd_effective = pick_latest_leq(conn, ymd) or ymd
         log(f"🕒 requested ymd={ymd} slot={slot} asof={asof}")
         log(f"📅 ymd_effective = {ymd_effective}")
+
+        time_meta: Dict[str, Any] = {
+            "market_tz": "Europe/Paris",
+            "market_tz_offset": _paris_offset_colon_for_date(ymd_effective),
+        }
 
         sql = """
         WITH base AS (
@@ -299,7 +320,9 @@ def run_intraday(slot: str, asof: str, ymd: str, db_path_override: Optional[Path
             time_meta["market_finished_hm"] = hm[:5]
     except Exception:
         pass
-    time_meta["market_finished_at"] = datetime.now().isoformat(timespec="seconds")
+
+    # write timezone-aware Paris timestamp into payload
+    time_meta["market_finished_at"] = _now_paris_iso()
 
     snapshot_open: List[Dict[str, Any]] = []
     for _, r in df_day.iterrows():
