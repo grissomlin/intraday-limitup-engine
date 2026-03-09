@@ -45,6 +45,7 @@ def normalize_market(m: str) -> str:
         "AUS": "AU", "AUSTRALIA": "AU", "ASX": "AU",
         "GBR": "UK", "GB": "UK", "UNITED KINGDOM": "UK", "LSE": "UK",
         "DEU": "DE", "DE": "DE", "GERMANY": "DE",
+        "FRA": "FR", "FRANCE": "FR", "PARIS": "FR", "EURONEXT PARIS": "FR", "EURONEXT_PARIS": "FR",
         "IND": "IN", "INDIA": "IN", "NSE": "IN", "BSE": "IN",
         "THA": "TH", "THAILAND": "TH", "SET": "TH",
         "PHL": "PH", "PHILIPPINES": "PH",
@@ -60,6 +61,7 @@ def _default_market_tz(market: str) -> str:
         "CA": "America/Toronto",
         "UK": "Europe/London",
         "DE": "Europe/Berlin",
+        "FR": "Europe/Paris",
         "AU": "Australia/Sydney",
         "CN": "Asia/Shanghai",
         "TW": "Asia/Taipei",
@@ -85,6 +87,8 @@ def _market_label(market: str, lang: str) -> str:
         return "UK Time" if is_en else "英國時間"
     if m == "DE":
         return "Germany Time" if is_en else "德國時間"
+    if m == "FR":
+        return "France Time" if is_en else "法國時間"
     if m == "AU":
         return "Australia Time" if is_en else "澳洲時間"
     if m == "CN":
