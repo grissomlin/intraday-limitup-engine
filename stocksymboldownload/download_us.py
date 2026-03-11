@@ -16,7 +16,7 @@ Optional env:
 - US_SEC_META_NAME            default: company_tickers.meta.json
 - US_SEC_CACHE_NAME           default: sec_industry_cache.json
 - US_SEC_CACHE_TTL_DAYS       default: 30
-- US_SEC_MAX_FETCH            default: 5000
+- US_SEC_MAX_FETCH            default: 12000
 - US_SEC_HTTP_TIMEOUT         default: 20
 - US_SEC_SLEEP_SEC            default: 0.12
 - US_SEC_USER_AGENT           default: GrissomQuantLab/1.0 (contact: you@example.com)
@@ -54,7 +54,7 @@ META_NAME = os.environ.get("US_SEC_META_NAME", "company_tickers.meta.json")
 CACHE_NAME = os.environ.get("US_SEC_CACHE_NAME", "sec_industry_cache.json")
 
 TTL_DAYS = int(os.environ.get("US_SEC_CACHE_TTL_DAYS", "30"))
-MAX_FETCH = int(os.environ.get("US_SEC_MAX_FETCH", "5000"))
+MAX_FETCH = int(os.environ.get("US_SEC_MAX_FETCH", "12000"))
 HTTP_TIMEOUT = int(os.environ.get("US_SEC_HTTP_TIMEOUT", "20"))
 SLEEP_SEC = float(os.environ.get("US_SEC_SLEEP_SEC", "0.12"))
 USER_AGENT = os.environ.get(
