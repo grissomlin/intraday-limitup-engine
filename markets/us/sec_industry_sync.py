@@ -4,26 +4,34 @@
 SEC industry (SIC) sync — Local cache first, fetch missing only (complete overwrite)
 
 你要的行為：
-✅ 優先用同資料夾的本地 JSON 快取查產業（不連線）
-✅ 只有「快取找不到該公司」才去 SEC 連線補抓該公司的 SIC / 產業描述
+✅ 優先用本地 JSON 快取查產業（不連線）
+✅ 只有「快取找不到該公司」或 cache 過期時，才去 SEC 連線補抓 SIC / 產業描述
 ✅ 寫回 DB（stock_info.sector），預設「只補缺」不覆蓋既有 sector
-✅ 快取落地到 markets/us/sec_industry_cache.json（下次就不用再連線）
-✅ company_tickers.json 放在 markets/us/company_tickers.json（你已放好）
+✅ 支援從外部目錄（例如 Google Drive 下載後的資料夾）讀 company_tickers.json / sec_industry_cache.json
+✅ 保留舊版環境變數相容：
+   - US_SEC_CACHE_PATH
+   - US_SEC_TICKERS_PATH
 
 注意：
 - SEC 的 company_tickers.json 本身不含產業，只有 ticker/title/cik
 - 產業（SIC）要用 SEC submissions API 以 CIK 查
+- company_tickers.meta.json 只是 metadata，這支 sync 不需要讀它
 
-環境變數：
-- US_SEC_CACHE_PATH                (default: markets/us/sec_industry_cache.json)
-- US_SEC_TICKERS_PATH              (default: markets/us/company_tickers.json)
-- US_SEC_CACHE_TTL_DAYS            (default: 30)  # 快取多久視為過期(可選)
-- US_SEC_ONLY_FILL_MISSING         (default: 1)   # 只補 sector 空值/Unknown，不覆蓋
+建議環境變數：
+- US_SEC_JSON_DIR                  (optional)
+    若設定，預設會從這個資料夾找：
+      {US_SEC_JSON_DIR}/company_tickers.json
+      {US_SEC_JSON_DIR}/sec_industry_cache.json
+
+- US_SEC_CACHE_PATH                (optional, higher priority than US_SEC_JSON_DIR)
+- US_SEC_TICKERS_PATH              (optional, higher priority than US_SEC_JSON_DIR)
+
+- US_SEC_CACHE_TTL_DAYS            (default: 30)
+- US_SEC_ONLY_FILL_MISSING         (default: 1)
 - US_SEC_HTTP_TIMEOUT              (default: 20)
-- US_SEC_SLEEP_SEC                 (default: 0.12)  # 每次打 SEC sleep
-- US_SEC_MAX_FETCH                 (default: 999999)  # 本輪最多連線抓幾家（保護）
+- US_SEC_SLEEP_SEC                 (default: 0.12)
+- US_SEC_MAX_FETCH                 (default: 999999)
 - US_SEC_USER_AGENT                (default: "GrissomQuantLab/1.0 (contact: you@example.com)")
-  ※ 建議你改成真的 email；SEC 會看 User-Agent
 """
 
 from __future__ import annotations
@@ -57,12 +65,43 @@ except Exception:
 HERE = Path(__file__).resolve().parent
 
 
+def _json_dir() -> Optional[Path]:
+    v = os.getenv("US_SEC_JSON_DIR", "").strip()
+    if not v:
+        return None
+    return Path(v)
+
+
 def _cache_path() -> Path:
-    return Path(os.getenv("US_SEC_CACHE_PATH", str(HERE / "sec_industry_cache.json")))
+    # Priority:
+    # 1) US_SEC_CACHE_PATH
+    # 2) US_SEC_JSON_DIR/sec_industry_cache.json
+    # 3) repo default markets/us/sec_industry_cache.json
+    p = os.getenv("US_SEC_CACHE_PATH", "").strip()
+    if p:
+        return Path(p)
+
+    d = _json_dir()
+    if d:
+        return d / "sec_industry_cache.json"
+
+    return HERE / "sec_industry_cache.json"
 
 
 def _tickers_path() -> Path:
-    return Path(os.getenv("US_SEC_TICKERS_PATH", str(HERE / "company_tickers.json")))
+    # Priority:
+    # 1) US_SEC_TICKERS_PATH
+    # 2) US_SEC_JSON_DIR/company_tickers.json
+    # 3) repo default markets/us/company_tickers.json
+    p = os.getenv("US_SEC_TICKERS_PATH", "").strip()
+    if p:
+        return Path(p)
+
+    d = _json_dir()
+    if d:
+        return d / "company_tickers.json"
+
+    return HERE / "company_tickers.json"
 
 
 def _ttl_days() -> int:
@@ -94,7 +133,7 @@ def _user_agent() -> str:
 # -----------------------------------------------------------------------------
 def _norm_symbol(sym: str) -> str:
     s = (sym or "").strip().upper()
-    # 你這邊通常會是 AAPL / BRK-B / BRK.B
+    # 通常會是 AAPL / BRK-B / BRK.B
     s = s.replace("/", "-")
     return s
 
@@ -127,7 +166,6 @@ def _cik10(v: Any) -> Optional[str]:
     s = str(v).strip()
     if not s:
         return None
-    # SEC CIK needs 10 digits, zero-padded
     s = re.sub(r"\D", "", s)
     if not s:
         return None
@@ -147,11 +185,17 @@ class IndustryInfo:
 # -----------------------------------------------------------------------------
 def _load_company_tickers(path: Path) -> Dict[str, Dict[str, Any]]:
     """
-    returns: { "AAPL": {"cik_str": "0000320193", "title": "...", "ticker": "AAPL"} , ... }
+    returns:
+      {
+        "AAPL": {"cik_str": "0000320193", "title": "...", "ticker": "AAPL"},
+        ...
+      }
     """
     if not path.exists():
         raise FileNotFoundError(f"SEC tickers file not found: {path}")
+
     data = json.loads(path.read_text(encoding="utf-8"))
+
     # SEC format: {"0": {"cik_str":..., "ticker":..., "title":...}, "1": {...}}
     out: Dict[str, Dict[str, Any]] = {}
     if isinstance(data, dict):
@@ -171,10 +215,12 @@ def _load_company_tickers(path: Path) -> Dict[str, Dict[str, Any]]:
 def _load_industry_cache(path: Path) -> Dict[str, IndustryInfo]:
     if not path.exists():
         return {}
+
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
     if not isinstance(raw, dict):
         return {}
 
@@ -182,10 +228,12 @@ def _load_industry_cache(path: Path) -> Dict[str, IndustryInfo]:
     for k, v in raw.items():
         if not isinstance(v, dict):
             continue
+
         sym = _norm_symbol(k)
         cik = _cik10(v.get("cik"))
         if not cik:
             continue
+
         out[sym] = IndustryInfo(
             cik=cik,
             sic=str(v.get("sic")) if v.get("sic") not in (None, "") else None,
@@ -197,6 +245,7 @@ def _load_industry_cache(path: Path) -> Dict[str, IndustryInfo]:
 
 def _save_industry_cache(path: Path, cache: Dict[str, IndustryInfo]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
     out: Dict[str, Dict[str, Any]] = {}
     for sym, info in cache.items():
         out[_norm_symbol(sym)] = {
@@ -205,20 +254,23 @@ def _save_industry_cache(path: Path, cache: Dict[str, IndustryInfo]) -> None:
             "sicDescription": info.sic_description,
             "fetched_at": info.fetched_at,
         }
+
     path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _is_cache_fresh(info: IndustryInfo, ttl_days: int) -> bool:
     if ttl_days <= 0:
         return True
+
     t = _parse_iso(info.fetched_at or "")
     if not t:
         return False
+
     return (datetime.utcnow() - t) <= timedelta(days=ttl_days)
 
 
 # -----------------------------------------------------------------------------
-# SEC fetch (missing only)
+# SEC fetch
 # -----------------------------------------------------------------------------
 def _fetch_submissions_sic(cik10: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
@@ -227,20 +279,25 @@ def _fetch_submissions_sic(cik10: str) -> Tuple[Optional[str], Optional[str], Op
     url = f"https://data.sec.gov/submissions/CIK{cik10}.json"
     headers = {
         "User-Agent": _user_agent(),
+        "Accept": "application/json,text/plain,*/*",
         "Accept-Encoding": "gzip, deflate",
         "Host": "data.sec.gov",
+        "Connection": "keep-alive",
     }
+
     try:
         r = requests.get(url, headers=headers, timeout=_timeout())
         if r.status_code != 200:
             return None, None, f"http_{r.status_code}"
+
         j = r.json()
-        # typical keys: "sic", "sicDescription"
         sic = j.get("sic")
         sic_desc = j.get("sicDescription")
+
         sic_s = str(sic) if sic not in (None, "") else None
         sic_desc_s = str(sic_desc) if sic_desc not in (None, "") else None
         return sic_s, sic_desc_s, None
+
     except Exception as e:
         return None, None, f"exception:{e}"
 
@@ -249,7 +306,6 @@ def _fetch_submissions_sic(cik10: str) -> Tuple[Optional[str], Optional[str], Op
 # DB helpers
 # -----------------------------------------------------------------------------
 def _ensure_stock_info_sector_column(conn: sqlite3.Connection) -> None:
-    # 你的 schema 已有 sector，但保險
     cols = [r[1] for r in conn.execute("PRAGMA table_info(stock_info)").fetchall()]
     if "sector" not in cols:
         conn.execute("ALTER TABLE stock_info ADD COLUMN sector TEXT")
@@ -258,19 +314,27 @@ def _ensure_stock_info_sector_column(conn: sqlite3.Connection) -> None:
 
 def _read_symbols(conn: sqlite3.Connection) -> Dict[str, Dict[str, Any]]:
     """
-    returns {symbol: {"name":..., "sector":...}}
+    returns:
+      {symbol: {"name": ..., "sector": ...}}
     """
     _ensure_stock_info_sector_column(conn)
+
     out: Dict[str, Dict[str, Any]] = {}
     for sym, name, sector in conn.execute("SELECT symbol, name, sector FROM stock_info").fetchall():
         if not sym:
             continue
-        out[_norm_symbol(sym)] = {"name": name or "Unknown", "sector": sector}
+        out[_norm_symbol(sym)] = {
+            "name": name or "Unknown",
+            "sector": sector,
+        }
     return out
 
 
 def _update_sector(conn: sqlite3.Connection, symbol: str, sector: str) -> None:
-    conn.execute("UPDATE stock_info SET sector = ? WHERE symbol = ?", (sector, symbol))
+    conn.execute(
+        "UPDATE stock_info SET sector = ? WHERE symbol = ?",
+        (sector, symbol),
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -278,19 +342,26 @@ def _update_sector(conn: sqlite3.Connection, symbol: str, sector: str) -> None:
 # -----------------------------------------------------------------------------
 def sync_sec_industry(db_path: str) -> Dict[str, Any]:
     """
-    主要給 downloader_us.py 呼叫的 API
-    - 讀 markets/us/company_tickers.json（本地）
-    - 讀 markets/us/sec_industry_cache.json（本地）
-    - 對 DB stock_info.symbol 做「本地快取優先」，缺的才連線補
+    主要給 downloader_us.py / daily job 呼叫：
+
+    - 讀本地 company_tickers.json
+    - 讀本地 sec_industry_cache.json
+    - 對 DB stock_info.symbol 做「本地快取優先」
+    - 只有 cache 不存在 / 過期 / 無資料時，才去 SEC 連線補抓
     - 寫回 DB（預設只補缺）
     """
+    tp = _tickers_path()
+    cp = _cache_path()
+    ttl = _ttl_days()
+
     res: Dict[str, Any] = {
         "enabled": True,
         "db_path": db_path,
-        "tickers_path": str(_tickers_path()),
-        "cache_path": str(_cache_path()),
+        "tickers_path": str(tp),
+        "cache_path": str(cp),
+        "json_dir": str(_json_dir()) if _json_dir() else "",
         "only_fill_missing": _only_fill_missing(),
-        "ttl_days": _ttl_days(),
+        "ttl_days": ttl,
         "fetched": 0,
         "cache_hit": 0,
         "cache_stale": 0,
@@ -298,38 +369,38 @@ def sync_sec_industry(db_path: str) -> Dict[str, Any]:
         "failed": 0,
         "skipped_db_already_has_sector": 0,
         "missing_cik": 0,
+        "targets": 0,
         "notes": [],
     }
 
-    tp = _tickers_path()
-    cp = _cache_path()
+    if not os.path.exists(db_path):
+        res["status"] = "db_not_found"
+        res["notes"].append("db_not_found")
+        return res
+
+    if not tp.exists():
+        res["status"] = "tickers_file_not_found"
+        res["notes"].append(f"tickers_file_not_found:{tp}")
+        return res
 
     company = _load_company_tickers(tp)
     cache = _load_industry_cache(cp)
-    ttl = _ttl_days()
-
-    if not os.path.exists(db_path):
-        res["status"] = "db_not_found"
-        res["enabled"] = True
-        res["notes"].append("db_not_found")
-        return res
 
     conn = sqlite3.connect(db_path, timeout=120)
     try:
         symbols = _read_symbols(conn)
-
-        # 要處理的 symbol 數量
         targets = list(symbols.keys())
         res["targets"] = len(targets)
 
-        # 只補缺：若 DB 已有 sector 就直接跳過
-        for sym in targets:
+        for idx, sym in enumerate(targets, 1):
             db_sector = symbols[sym].get("sector")
+
+            # 只補缺：DB 已有 sector 就跳過
             if _only_fill_missing() and not _is_missing_sector(db_sector):
                 res["skipped_db_already_has_sector"] += 1
                 continue
 
-            # 先用本地 industry cache
+            # 1) 先用本地 cache
             info = cache.get(sym)
             if info and _is_cache_fresh(info, ttl) and (info.sic_description or info.sic):
                 res["cache_hit"] += 1
@@ -338,32 +409,32 @@ def sync_sec_industry(db_path: str) -> Dict[str, Any]:
                 res["updated_db"] += 1
                 continue
 
-            # 有 cache 但過期 or 沒資料：算 stale（但仍可能用它避免連線？這裡照你需求：沒有才連線）
+            # 2) cache 有但過期 / 無資料
             if info:
                 res["cache_stale"] += 1
-                # 若你想「過期也先用」可改這裡；目前：過期就視為需要連線補新
-            # 沒有 cache：需要連線（但要先有 CIK）
+
+            # 3) 找 CIK
             row = company.get(sym)
             cik = _cik10(row.get("cik_str") if row else None)
             if not cik:
                 res["missing_cik"] += 1
                 continue
 
-            # 限制本輪連線抓取數
+            # 4) 限制本輪 fetch 數
             if res["fetched"] >= _max_fetch():
                 res["notes"].append(f"max_fetch_reached:{_max_fetch()}")
                 break
 
+            # 5) 打 SEC
             sic, sic_desc, err = _fetch_submissions_sic(cik)
             res["fetched"] += 1
             time.sleep(_sleep_sec())
 
             if err:
                 res["failed"] += 1
-                # 失敗不寫 DB、不污染 cache（也可以寫 error cache，但先保持乾淨）
                 continue
 
-            # 更新 cache
+            # 6) 更新 cache
             cache[sym] = IndustryInfo(
                 cik=cik,
                 sic=sic,
@@ -371,13 +442,22 @@ def sync_sec_industry(db_path: str) -> Dict[str, Any]:
                 fetched_at=_now_iso(),
             )
 
-            # 寫 DB
+            # 7) 寫回 DB
             if sic_desc or sic:
                 sector = sic_desc or f"SIC {sic}"
                 _update_sector(conn, sym, sector)
                 res["updated_db"] += 1
 
+            if idx == 1 or idx % 500 == 0:
+                log(
+                    f"[SEC sync] {idx}/{len(targets)} | "
+                    f"updated_db={res['updated_db']} cache_hit={res['cache_hit']} "
+                    f"fetched={res['fetched']} failed={res['failed']} "
+                    f"stale={res['cache_stale']} missing_cik={res['missing_cik']}"
+                )
+
         conn.commit()
+
     finally:
         conn.close()
 
@@ -389,6 +469,8 @@ def sync_sec_industry(db_path: str) -> Dict[str, Any]:
         res["cache_saved"] = False
         res["notes"].append(f"cache_save_failed:{e}")
 
+    res["cache_size"] = len(cache)
+    res["company_size"] = len(company)
     res["status"] = "ok"
     return res
 
