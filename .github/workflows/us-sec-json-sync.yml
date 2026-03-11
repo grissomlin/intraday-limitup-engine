@@ -34,7 +34,7 @@ jobs:
           US_SEC_META_NAME: company_tickers.meta.json
           US_SEC_CACHE_NAME: sec_industry_cache.json
           US_SEC_CACHE_TTL_DAYS: '30'
-          US_SEC_MAX_FETCH: '5000'
+          US_SEC_MAX_FETCH: '12000'
           US_SEC_HTTP_TIMEOUT: '20'
           US_SEC_SLEEP_SEC: '0.12'
           US_SEC_USER_AGENT: 'GrissomQuantLab/1.0 (contact: your_email@example.com)'
