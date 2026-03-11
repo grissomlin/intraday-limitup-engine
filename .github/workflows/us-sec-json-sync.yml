@@ -1,0 +1,41 @@
+name: US SEC JSON Sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * *'  # 台灣時間 12:00
+
+jobs:
+  download_job:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests google-api-python-client google-auth-oauthlib google-auth-httplib2
+
+      - name: Execute US SEC JSON Updater
+        env:
+          GDRIVE_TOKEN_B64: ${{ secrets.GDRIVE_TOKEN_JSON_B64 }}
+          US_STOCKLIST: ${{ secrets.US_STOCKLIST }}
+
+          # Optional
+          US_SEC_LOCAL_DIR: data/us_sec_json
+          US_SEC_COMPANY_TICKERS_NAME: company_tickers.json
+          US_SEC_META_NAME: company_tickers.meta.json
+          US_SEC_CACHE_NAME: sec_industry_cache.json
+          US_SEC_CACHE_TTL_DAYS: '30'
+          US_SEC_MAX_FETCH: '5000'
+          US_SEC_HTTP_TIMEOUT: '20'
+          US_SEC_SLEEP_SEC: '0.12'
+          US_SEC_USER_AGENT: 'GrissomQuantLab/1.0 (contact: your_email@example.com)'
+        run: python stocksymboldownload/download_us.py
