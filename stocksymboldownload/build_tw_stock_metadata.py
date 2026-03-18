@@ -240,10 +240,10 @@ def upload_or_update_drive_file(service, local_path: Path, folder_id: str):
 
 
 def maybe_upload_to_google_drive():
-    folder_id = os.environ.get("TW_STOCKLIST_FOLDER_ID", "").strip()
+    folder_id = os.environ.get("TW_STOCKLIST", "").strip()
 
     if not folder_id:
-        print("⚠️ 未設定 TW_STOCKLIST_FOLDER_ID，略過 Google Drive 上傳")
+        print("⚠️ 未設定 TW_STOCKLIST，略過 Google Drive 上傳")
         return
 
     if not STOCK_METADATA_PATH.exists():
