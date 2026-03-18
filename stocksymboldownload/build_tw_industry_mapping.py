@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import base64
+import io
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -9,30 +12,34 @@ from typing import Any
 
 import pandas as pd
 import requests
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 
 ROOT = Path(__file__).resolve().parents[1]
+OUT_DIR = ROOT / "stocksymboldownload"
 
-METADATA_PATH = ROOT / "stocksymboldownload" / "stock_metadata.csv"
-MAPPING_PATH = ROOT / "stocksymboldownload" / "industry_mapping_final.csv"
-CANDIDATES_PATH = ROOT / "stocksymboldownload" / "industry_mapping_candidates.csv"
+METADATA_PATH = OUT_DIR / "stock_metadata.csv"
+MAPPING_PATH = OUT_DIR / "industry_mapping_final.csv"
+CANDIDATES_PATH = OUT_DIR / "industry_mapping_candidates.csv"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GDRIVE_TOKEN_B64 = os.environ.get("GDRIVE_TOKEN_B64", "").strip()
+TW_STOCKLIST = os.environ.get("TW_STOCKLIST", "").strip()
 
-# 只對這些大產業做細分；其他直接沿用 industry_l1
+# 第一次建議先縮小到你最常交易的四類
 TARGET_INDUSTRIES = {
     "半導體業",
     "電子零組件業",
     "電腦及週邊設備業",
     "通信網路業",
-    "光電業",
-    "其他電子業",
-    "電子通路業",
-    "資訊服務業",
-    "數位雲端",
 }
 
-# 各大產業可接受的子產業字典，盡量固定、可控
+# 一次送幾檔給 Gemini
+BATCH_SIZE = 30
+
+# 每一大產業允許的子產業
 INDUSTRY_L2_OPTIONS = {
     "半導體業": [
         "晶圓代工", "IC設計", "封測", "矽晶圓", "記憶體",
@@ -50,25 +57,97 @@ INDUSTRY_L2_OPTIONS = {
     "通信網路業": [
         "網通", "光通訊", "電信服務"
     ],
-    "光電業": [
-        "面板", "面板零組件", "偏光板", "鏡頭",
-        "光學元件", "玻璃基板", "感測元件", "LED", "零組件"
-    ],
-    "其他電子業": [
-        "半導體設備", "自動化設備", "設備工程", "設備零組件"
-    ],
-    "電子通路業": [
-        "電子通路"
-    ],
-    "資訊服務業": [
-        "資訊服務", "資安", "軟體服務"
-    ],
-    "數位雲端": [
-        "雲端服務", "資訊服務", "資安", "軟體服務"
-    ],
+}
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; TWIndustryMappingBot/1.0)"
 }
 
 
+# =========================================================
+# Google Drive helpers
+# =========================================================
+def build_drive_service():
+    if not GDRIVE_TOKEN_B64:
+        raise RuntimeError("缺少 GDRIVE_TOKEN_B64")
+
+    token_json = base64.b64decode(GDRIVE_TOKEN_B64).decode("utf-8")
+    token_info = json.loads(token_json)
+
+    creds = Credentials.from_authorized_user_info(token_info)
+    service = build("drive", "v3", credentials=creds, cache_discovery=False)
+    return service
+
+
+def find_drive_file(service, folder_id: str, file_name: str) -> str | None:
+    query = (
+        f"name = '{file_name}' and "
+        f"'{folder_id}' in parents and "
+        f"trashed = false"
+    )
+
+    res = service.files().list(
+        q=query,
+        spaces="drive",
+        fields="files(id,name)",
+        pageSize=10,
+    ).execute()
+
+    files = res.get("files", [])
+    if not files:
+        return None
+    return files[0]["id"]
+
+
+def download_drive_file_if_exists(service, folder_id: str, file_name: str, local_path: Path) -> bool:
+    file_id = find_drive_file(service, folder_id, file_name)
+    if not file_id:
+        print(f"⚠️ Google Drive 上找不到 {file_name}，略過下載")
+        return False
+
+    request = service.files().get_media(fileId=file_id)
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with io.FileIO(local_path, "wb") as fh:
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+    print(f"✅ 已從 Google Drive 下載：{file_name}")
+    return True
+
+
+def upload_or_update_drive_file(service, local_path: Path, folder_id: str):
+    file_name = local_path.name
+    file_id = find_drive_file(service, folder_id, file_name)
+
+    with open(local_path, "rb") as f:
+        media = MediaIoBaseUpload(
+            io.BytesIO(f.read()),
+            mimetype="text/csv",
+            resumable=False,
+        )
+
+    if file_id:
+        updated = service.files().update(
+            fileId=file_id,
+            media_body=media,
+            fields="id,name",
+        ).execute()
+        print(f"✅ 已更新 Google Drive 檔案：{updated['name']} ({updated['id']})")
+    else:
+        created = service.files().create(
+            body={"name": file_name, "parents": [folder_id]},
+            media_body=media,
+            fields="id,name",
+        ).execute()
+        print(f"✅ 已上傳 Google Drive 檔案：{created['name']} ({created['id']})")
+
+
+# =========================================================
+# Data loading
+# =========================================================
 def load_metadata() -> pd.DataFrame:
     if not METADATA_PATH.exists():
         raise RuntimeError(f"找不到 {METADATA_PATH}")
@@ -91,19 +170,134 @@ def load_mapping() -> pd.DataFrame:
         df = pd.read_csv(MAPPING_PATH, dtype=str).fillna("")
     else:
         df = pd.DataFrame(columns=[
-            "stock_id", "stock_name", "industry_l1", "industry_l2",
-            "tags", "source", "confidence", "reason", "last_update"
+            "stock_id",
+            "stock_name",
+            "industry_l1",
+            "industry_l2",
+            "tags",
+            "source",
+            "confidence",
+            "reason",
+            "last_update",
         ])
 
     if "stock_id" in df.columns:
         df["stock_id"] = df["stock_id"].astype(str).str.strip()
+
     return df
 
 
-def should_use_gemini(industry_l1: str) -> bool:
-    return industry_l1 in TARGET_INDUSTRIES
+# =========================================================
+# Gemini batch classification
+# =========================================================
+def chunk_list(items: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
+    return [items[i:i + size] for i in range(0, len(items), size)]
 
 
+def build_batch_prompt(industry_l1: str, batch: list[dict[str, Any]]) -> str:
+    options = INDUSTRY_L2_OPTIONS.get(industry_l1, [])
+    options_text = "、".join(options)
+
+    batch_text = "\n".join(
+        [f'{x["stock_id"]}|{x["stock_name"]}' for x in batch]
+    )
+
+    return f"""
+你是台股供應鏈分類助手。
+
+任務：
+我會給你同一個交易所大產業下的一批台股股票，請你為每一檔判斷主要子產業 industry_l2 與 tags。
+
+規則：
+1. industry_l2 必須從這些候選中擇一：{options_text}
+2. tags 可為 0~5 個，用陣列表示
+3. confidence 為 0~1 浮點數
+4. reason 簡短
+5. 若無法高信心判斷，industry_l2 回傳 {industry_l1}
+6. 只能輸出 JSON 陣列，不要輸出其他文字
+
+輸入大產業：
+{industry_l1}
+
+股票清單：
+{batch_text}
+
+輸出格式：
+[
+  {{
+    "stock_id": "2330",
+    "industry_l2": "晶圓代工",
+    "tags": ["AI", "先進製程"],
+    "confidence": 0.95,
+    "reason": "..."
+  }}
+]
+""".strip()
+
+
+def call_gemini_batch(industry_l1: str, batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not GEMINI_API_KEY:
+        print("⚠️ 缺少 GEMINI_API_KEY，Gemini 細分略過")
+        return []
+
+    prompt = build_batch_prompt(industry_l1, batch)
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    )
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.1,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    r = requests.post(url, headers=HEADERS, json=payload, timeout=90)
+    r.raise_for_status()
+    data = r.json()
+
+    text = data["candidates"][0]["content"]["parts"][0]["text"]
+    obj = json.loads(text)
+
+    if not isinstance(obj, list):
+        raise RuntimeError("Gemini 回傳不是 JSON array")
+
+    allowed = set(INDUSTRY_L2_OPTIONS.get(industry_l1, []))
+    cleaned: list[dict[str, Any]] = []
+
+    for item in obj:
+        sid = str(item.get("stock_id", "")).strip()
+        industry_l2 = str(item.get("industry_l2", industry_l1)).strip() or industry_l1
+        tags = item.get("tags", [])
+        confidence = item.get("confidence", "")
+        reason = str(item.get("reason", "")).strip()
+
+        if industry_l2 not in allowed:
+            industry_l2 = industry_l1
+            reason = f"fallback_invalid_option; {reason}"
+
+        if not isinstance(tags, list):
+            tags = []
+
+        tags = [str(x).strip() for x in tags if str(x).strip()]
+
+        cleaned.append({
+            "stock_id": sid,
+            "industry_l2": industry_l2,
+            "tags": ";".join(tags),
+            "confidence": confidence,
+            "reason": reason,
+        })
+
+    return cleaned
+
+
+# =========================================================
+# Main mapping logic
+# =========================================================
 def default_row(stock_id: str, stock_name: str, industry_l1: str) -> dict[str, Any]:
     return {
         "stock_id": stock_id,
@@ -118,154 +312,95 @@ def default_row(stock_id: str, stock_name: str, industry_l1: str) -> dict[str, A
     }
 
 
-def build_prompt(stock_id: str, stock_name: str, industry_l1: str) -> str:
-    options = INDUSTRY_L2_OPTIONS.get(industry_l1, [])
-    options_text = "、".join(options) if options else "請保守判斷"
-
-    return f"""
-你是台股供應鏈分類助手。請根據股票名稱與交易所大產業，輸出唯一 JSON，不要加任何說明文字。
-
-要求：
-1. industry_l2 必須從這些候選中擇一：{options_text}
-2. tags 可為 0~5 個，用陣列表示
-3. confidence 為 0~1 浮點數
-4. reason 簡短說明判斷依據
-5. 如果無法高信心判斷，industry_l2 直接回 {industry_l1}
-
-輸入：
-stock_id: {stock_id}
-stock_name: {stock_name}
-industry_l1: {industry_l1}
-
-輸出格式：
-{{
-  "industry_l2": "...",
-  "tags": ["...", "..."],
-  "confidence": 0.0,
-  "reason": "..."
-}}
-""".strip()
-
-
-def call_gemini(stock_id: str, stock_name: str, industry_l1: str) -> dict[str, Any]:
-    if not GEMINI_API_KEY:
-        return {
-            "industry_l2": industry_l1,
-            "tags": [],
-            "confidence": "",
-            "reason": "missing_GEMINI_API_KEY",
-        }
-
-    prompt = build_prompt(stock_id, stock_name, industry_l1)
-
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    )
-
-    payload = {
-        "contents": [
-            {"parts": [{"text": prompt}]}
-        ],
-        "generationConfig": {
-            "temperature": 0.1,
-            "responseMimeType": "application/json",
-        },
-    }
-
-    try:
-        r = requests.post(url, json=payload, timeout=45)
-        r.raise_for_status()
-        data = r.json()
-
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-        obj = json.loads(text)
-
-        industry_l2 = str(obj.get("industry_l2", industry_l1)).strip() or industry_l1
-        tags = obj.get("tags", [])
-        confidence = obj.get("confidence", "")
-        reason = str(obj.get("reason", "")).strip()
-
-        allowed = set(INDUSTRY_L2_OPTIONS.get(industry_l1, []))
-        if allowed and industry_l2 not in allowed:
-            industry_l2 = industry_l1
-            reason = f"fallback_invalid_option; {reason}"
-
-        if not isinstance(tags, list):
-            tags = []
-
-        tags = [str(x).strip() for x in tags if str(x).strip()]
-
-        return {
-            "industry_l2": industry_l2,
-            "tags": tags,
-            "confidence": confidence,
-            "reason": reason,
-        }
-
-    except Exception as e:
-        return {
-            "industry_l2": industry_l1,
-            "tags": [],
-            "confidence": "",
-            "reason": f"gemini_error: {e}",
-        }
-
-
 def build_mapping() -> tuple[pd.DataFrame, pd.DataFrame]:
     meta = load_metadata()
     mapping = load_mapping()
 
     existing_ids = set(mapping["stock_id"]) if not mapping.empty else set()
-    mapping_by_id = {row["stock_id"]: row for _, row in mapping.iterrows()} if not mapping.empty else {}
+    mapping_by_id = {row["stock_id"]: row.to_dict() for _, row in mapping.iterrows()} if not mapping.empty else {}
 
     final_rows: list[dict[str, Any]] = []
     candidate_rows: list[dict[str, Any]] = []
 
+    # 先保留舊 mapping / 同步名稱與大產業
     for _, r in meta.iterrows():
         sid = r["stock_id"]
         stock_name = r["stock_name"]
         industry_l1 = r["industry"]
 
-        # 已存在正式 mapping：直接沿用
         if sid in existing_ids:
-            old = mapping_by_id[sid].copy()
-            # 若名稱或大產業變了，順手同步
-            old["stock_name"] = stock_name
-            old["industry_l1"] = industry_l1
-            final_rows.append(old)
-            continue
-
-        # 新增股票：先建立基本列
-        row = default_row(sid, stock_name, industry_l1)
-
-        # 只對科技相關大產業做 Gemini 細分
-        if should_use_gemini(industry_l1):
-            result = call_gemini(sid, stock_name, industry_l1)
-            row["industry_l2"] = result["industry_l2"] or industry_l1
-            row["tags"] = ";".join(result["tags"])
-            row["source"] = "gemini" if result["reason"] != "missing_GEMINI_API_KEY" else "metadata"
-            row["confidence"] = result["confidence"]
-            row["reason"] = result["reason"]
-
-            candidate_rows.append({
-                "stock_id": sid,
-                "stock_name": stock_name,
-                "industry_l1": industry_l1,
-                "suggested_industry_l2": row["industry_l2"],
-                "suggested_tags": row["tags"],
-                "confidence": row["confidence"],
-                "reason": row["reason"],
-            })
-
-            # 避免打太快
-            time.sleep(1.2)
-
-        final_rows.append(row)
+            row = mapping_by_id[sid].copy()
+            row["stock_name"] = stock_name
+            row["industry_l1"] = industry_l1
+            if not row.get("industry_l2"):
+                row["industry_l2"] = industry_l1
+            final_rows.append(row)
+        else:
+            final_rows.append(default_row(sid, stock_name, industry_l1))
 
     final_df = pd.DataFrame(final_rows)
-    final_df = final_df.sort_values("stock_id").reset_index(drop=True)
 
+    # 找出需要 Gemini 的：只有 target industry 且目前仍是 fallback 的股票
+    need_df = final_df[
+        final_df["industry_l1"].isin(TARGET_INDUSTRIES) &
+        (final_df["industry_l2"] == final_df["industry_l1"])
+    ].copy()
+
+    if need_df.empty:
+        print("✅ 沒有需要 Gemini 細分的股票")
+    else:
+        print(f"✅ 需要 Gemini 細分的股票數量：{len(need_df)}")
+
+        for industry_l1 in sorted(need_df["industry_l1"].unique()):
+            sub = need_df[need_df["industry_l1"] == industry_l1].copy()
+
+            batch_items = [
+                {
+                    "stock_id": row["stock_id"],
+                    "stock_name": row["stock_name"],
+                }
+                for _, row in sub.iterrows()
+            ]
+
+            batches = chunk_list(batch_items, BATCH_SIZE)
+            print(f"🔹 {industry_l1}: {len(batch_items)} 檔，分 {len(batches)} 批")
+
+            for i, batch in enumerate(batches, start=1):
+                print(f"   ↳ 第 {i}/{len(batches)} 批，{len(batch)} 檔")
+
+                try:
+                    results = call_gemini_batch(industry_l1, batch)
+                except Exception as e:
+                    print(f"   ❌ Gemini 批次失敗：{e}")
+                    continue
+
+                result_map = {x["stock_id"]: x for x in results}
+
+                for sid, res in result_map.items():
+                    mask = final_df["stock_id"] == sid
+                    if mask.any():
+                        final_df.loc[mask, "industry_l2"] = res["industry_l2"]
+                        final_df.loc[mask, "tags"] = res["tags"]
+                        final_df.loc[mask, "source"] = "gemini"
+                        final_df.loc[mask, "confidence"] = str(res["confidence"])
+                        final_df.loc[mask, "reason"] = res["reason"]
+                        final_df.loc[mask, "last_update"] = pd.Timestamp.now().strftime("%Y-%m-%d")
+
+                        row = final_df.loc[mask].iloc[0]
+                        candidate_rows.append({
+                            "stock_id": row["stock_id"],
+                            "stock_name": row["stock_name"],
+                            "industry_l1": row["industry_l1"],
+                            "suggested_industry_l2": res["industry_l2"],
+                            "suggested_tags": res["tags"],
+                            "confidence": res["confidence"],
+                            "reason": res["reason"],
+                        })
+
+                # 批次間稍微休息，避免太快
+                time.sleep(1.5)
+
+    final_df = final_df.sort_values("stock_id").reset_index(drop=True)
     candidates_df = pd.DataFrame(candidate_rows)
     if not candidates_df.empty:
         candidates_df = candidates_df.sort_values("stock_id").reset_index(drop=True)
@@ -275,14 +410,33 @@ def build_mapping() -> tuple[pd.DataFrame, pd.DataFrame]:
 
     print(f"✅ industry_mapping_final.csv 更新完成：{MAPPING_PATH}")
     print(f"✅ industry_mapping_candidates.csv 更新完成：{CANDIDATES_PATH}")
-    print()
-    print(final_df.head(10).to_string())
 
     return final_df, candidates_df
 
 
 def main():
-    build_mapping()
+    # 先把舊 mapping 從 Drive 拉下來
+    if TW_STOCKLIST:
+        try:
+            service = build_drive_service()
+            download_drive_file_if_exists(service, TW_STOCKLIST, MAPPING_PATH.name, MAPPING_PATH)
+        except Exception as e:
+            print(f"⚠️ 從 Google Drive 下載舊 mapping 失敗：{e}")
+
+    final_df, candidates_df = build_mapping()
+
+    # 再把新結果推回 Drive
+    if TW_STOCKLIST:
+        try:
+            service = build_drive_service()
+            upload_or_update_drive_file(service, MAPPING_PATH, TW_STOCKLIST)
+            upload_or_update_drive_file(service, CANDIDATES_PATH, TW_STOCKLIST)
+        except Exception as e:
+            print(f"❌ 上傳 Google Drive 失敗：{e}")
+            raise
+
+    print()
+    print(final_df.head(10).to_string())
 
 
 if __name__ == "__main__":
