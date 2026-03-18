@@ -4,7 +4,6 @@ from __future__ import annotations
 import base64
 import io
 import json
-import math
 import os
 import time
 from pathlib import Path
@@ -28,18 +27,22 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GDRIVE_TOKEN_B64 = os.environ.get("GDRIVE_TOKEN_B64", "").strip()
 TW_STOCKLIST = os.environ.get("TW_STOCKLIST", "").strip()
 
-# 第一次建議先縮小到你最常交易的四類
+# 第一次先只跑最重要兩類
 TARGET_INDUSTRIES = {
     "半導體業",
     "電子零組件業",
-    "電腦及週邊設備業",
-    "通信網路業",
 }
 
-# 一次送幾檔給 Gemini
-BATCH_SIZE = 30
+# 一次送少一點，省額度也比較不容易 429
+BATCH_SIZE = 10
 
-# 每一大產業允許的子產業
+# 每批之間休息久一點
+BATCH_SLEEP_SEC = 8
+
+# 429 重試參數
+MAX_RETRIES = 5
+INITIAL_RETRY_DELAY = 10
+
 INDUSTRY_L2_OPTIONS = {
     "半導體業": [
         "晶圓代工", "IC設計", "封測", "矽晶圓", "記憶體",
@@ -295,6 +298,29 @@ def call_gemini_batch(industry_l1: str, batch: list[dict[str, Any]]) -> list[dic
     return cleaned
 
 
+def call_gemini_batch_with_retry(industry_l1: str, batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    delay = INITIAL_RETRY_DELAY
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return call_gemini_batch(industry_l1, batch)
+        except requests.HTTPError as e:
+            msg = str(e)
+            if "429" in msg:
+                print(f"   ⚠️ 429 限流，等待 {delay} 秒後重試 ({attempt}/{MAX_RETRIES})")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            print(f"   ❌ HTTP 錯誤：{e}")
+            return []
+        except Exception as e:
+            print(f"   ❌ Gemini 批次失敗：{e}")
+            return []
+
+    print("   ❌ 多次重試後仍失敗，略過此批")
+    return []
+
+
 # =========================================================
 # Main mapping logic
 # =========================================================
@@ -322,7 +348,6 @@ def build_mapping() -> tuple[pd.DataFrame, pd.DataFrame]:
     final_rows: list[dict[str, Any]] = []
     candidate_rows: list[dict[str, Any]] = []
 
-    # 先保留舊 mapping / 同步名稱與大產業
     for _, r in meta.iterrows():
         sid = r["stock_id"]
         stock_name = r["stock_name"]
@@ -340,7 +365,6 @@ def build_mapping() -> tuple[pd.DataFrame, pd.DataFrame]:
 
     final_df = pd.DataFrame(final_rows)
 
-    # 找出需要 Gemini 的：只有 target industry 且目前仍是 fallback 的股票
     need_df = final_df[
         final_df["industry_l1"].isin(TARGET_INDUSTRIES) &
         (final_df["industry_l2"] == final_df["industry_l1"])
@@ -368,10 +392,8 @@ def build_mapping() -> tuple[pd.DataFrame, pd.DataFrame]:
             for i, batch in enumerate(batches, start=1):
                 print(f"   ↳ 第 {i}/{len(batches)} 批，{len(batch)} 檔")
 
-                try:
-                    results = call_gemini_batch(industry_l1, batch)
-                except Exception as e:
-                    print(f"   ❌ Gemini 批次失敗：{e}")
+                results = call_gemini_batch_with_retry(industry_l1, batch)
+                if not results:
                     continue
 
                 result_map = {x["stock_id"]: x for x in results}
@@ -397,8 +419,7 @@ def build_mapping() -> tuple[pd.DataFrame, pd.DataFrame]:
                             "reason": res["reason"],
                         })
 
-                # 批次間稍微休息，避免太快
-                time.sleep(1.5)
+                time.sleep(BATCH_SLEEP_SEC)
 
     final_df = final_df.sort_values("stock_id").reset_index(drop=True)
     candidates_df = pd.DataFrame(candidate_rows)
@@ -415,7 +436,6 @@ def build_mapping() -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def main():
-    # 先把舊 mapping 從 Drive 拉下來
     if TW_STOCKLIST:
         try:
             service = build_drive_service()
@@ -425,7 +445,6 @@ def main():
 
     final_df, candidates_df = build_mapping()
 
-    # 再把新結果推回 Drive
     if TW_STOCKLIST:
         try:
             service = build_drive_service()
