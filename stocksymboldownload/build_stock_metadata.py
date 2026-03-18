@@ -1,21 +1,26 @@
-# stocksymboldownload/build_stock_metadata.py
 # -*- coding: utf-8 -*-
-
 from __future__ import annotations
 
+import base64
+import io
+import json
+import os
 import re
 import time
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import pandas as pd
 import requests
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 
 
 ROOT = Path(__file__).resolve().parents[1]
-STOCK_METADATA_PATH = ROOT / "stocksymboldownload" / "stock_metadata.csv"
-
+OUT_DIR = ROOT / "stocksymboldownload"
+STOCK_METADATA_PATH = OUT_DIR / "stock_metadata.csv"
 
 URL_CONFIGS = [
     {
@@ -55,7 +60,6 @@ URL_CONFIGS = [
         "board": "INNOVATION",
     },
 ]
-
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; TWStockMetadataBot/1.0)"
@@ -127,7 +131,7 @@ def fetch_isin_table(url_config: Dict[str, Any]) -> pd.DataFrame:
 
 
 def build_stock_metadata() -> pd.DataFrame:
-    dfs = []
+    dfs: List[pd.DataFrame] = []
 
     for cfg in URL_CONFIGS:
         df = fetch_isin_table(cfg)
@@ -143,38 +147,123 @@ def build_stock_metadata() -> pd.DataFrame:
     # 同一 ticker 只保留第一筆
     df_all = df_all.drop_duplicates(subset=["ticker"], keep="first").reset_index(drop=True)
 
-    # 清理產業
+    # 清理欄位
     df_all["industry"] = df_all["industry"].fillna("").astype(str).str.strip()
     df_all.loc[df_all["industry"].isin(["nan", "None", ""]), "industry"] = "未分類"
-
-    # 清理名稱
     df_all["stock_name"] = df_all["stock_name"].fillna("").astype(str).str.strip()
 
-    # 欄位命名
+    # 改欄名
     df_all = df_all.rename(columns={"stock_id_raw": "stock_id"})
 
     # 排序
     df_all = df_all.sort_values(["board", "stock_id"]).reset_index(drop=True)
 
-    # 儲存
-    STOCK_METADATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # 輸出
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
     df_all.to_csv(STOCK_METADATA_PATH, index=False, encoding="utf-8-sig")
 
     print(f"✅ stock_metadata.csv 已輸出：{STOCK_METADATA_PATH}")
     print(df_all.head(10).to_string())
     print()
+
     print("✅ 板別分布")
     print(df_all["board"].value_counts(dropna=False).to_string())
     print()
+
     print("✅ 交易所大產業前 20 名")
     print(df_all["industry"].value_counts(dropna=False).head(20).to_string())
 
     return df_all
 
 
+def build_drive_service():
+    token_b64 = os.environ.get("GDRIVE_TOKEN_B64", "").strip()
+    if not token_b64:
+        raise RuntimeError("缺少 GDRIVE_TOKEN_B64")
+
+    token_json = base64.b64decode(token_b64).decode("utf-8")
+    token_info = json.loads(token_json)
+
+    creds = Credentials.from_authorized_user_info(token_info)
+    service = build("drive", "v3", credentials=creds, cache_discovery=False)
+    return service
+
+
+def find_drive_file(service, folder_id: str, file_name: str) -> str | None:
+    query = (
+        f"name = '{file_name}' and "
+        f"'{folder_id}' in parents and "
+        f"trashed = false"
+    )
+
+    res = service.files().list(
+        q=query,
+        spaces="drive",
+        fields="files(id,name)",
+        pageSize=10,
+    ).execute()
+
+    files = res.get("files", [])
+    if not files:
+        return None
+    return files[0]["id"]
+
+
+def upload_or_update_drive_file(service, local_path: Path, folder_id: str):
+    file_name = local_path.name
+    file_id = find_drive_file(service, folder_id, file_name)
+
+    with open(local_path, "rb") as f:
+        media = MediaIoBaseUpload(
+            io.BytesIO(f.read()),
+            mimetype="text/csv",
+            resumable=False,
+        )
+
+    if file_id:
+        updated = service.files().update(
+            fileId=file_id,
+            media_body=media,
+            fields="id,name",
+        ).execute()
+        print(f"✅ 已更新 Google Drive 檔案：{updated['name']} ({updated['id']})")
+    else:
+        created = service.files().create(
+            body={
+                "name": file_name,
+                "parents": [folder_id],
+            },
+            media_body=media,
+            fields="id,name",
+        ).execute()
+        print(f"✅ 已上傳 Google Drive 檔案：{created['name']} ({created['id']})")
+
+
+def maybe_upload_to_google_drive():
+    folder_id = os.environ.get("TW_STOCKLIST_FOLDER_ID", "").strip()
+
+    if not folder_id:
+        print("⚠️ 未設定 TW_STOCKLIST_FOLDER_ID，略過 Google Drive 上傳")
+        return
+
+    if not STOCK_METADATA_PATH.exists():
+        raise RuntimeError(f"找不到要上傳的檔案：{STOCK_METADATA_PATH}")
+
+    service = build_drive_service()
+    upload_or_update_drive_file(service, STOCK_METADATA_PATH, folder_id)
+
+
 def main():
     universe_df = build_stock_metadata()
+    print()
     print(f"📈 總股票數：{len(universe_df)}")
+    print()
+
+    try:
+        maybe_upload_to_google_drive()
+    except Exception as e:
+        print(f"❌ Google Drive 上傳失敗：{e}")
+        raise
 
 
 if __name__ == "__main__":
