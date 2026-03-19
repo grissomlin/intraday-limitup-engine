@@ -5,6 +5,7 @@ import base64
 import io
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,10 @@ BATCH_SLEEP_SEC = 8
 MAX_RETRIES = 5
 INITIAL_RETRY_DELAY = 10
 
+# confidence 門檻
+AUTO_ACCEPT_THRESHOLD = 0.72
+LOW_CONF_THRESHOLD = 0.55
+
 INDUSTRY_L2_OPTIONS = {
     "半導體業": [
         "晶圓代工", "IC設計", "封測", "矽晶圓", "記憶體",
@@ -64,6 +69,109 @@ INDUSTRY_L2_OPTIONS = {
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; TWIndustryMappingBot/1.0)"
+}
+
+# =========================================================
+# Keyword rules：先做規則分類，能省很多 token
+# =========================================================
+KEYWORD_RULES = {
+    "半導體業": {
+        "晶圓代工": [
+            "台積電", "世界先進", "聯電", "力積電", "foundry", "wafer fab", "晶圓代工"
+        ],
+        "IC設計": [
+            "瑞昱", "聯發科", "晶豪科", "世芯", "創意", "智原", "ASIC", "SoC", "IC設計", "design service"
+        ],
+        "封測": [
+            "日月光", "矽格", "京元電子", "力成", "頎邦", "封測", "封裝", "測試", "OSAT"
+        ],
+        "矽晶圓": [
+            "環球晶", "中美晶", "合晶", "嘉晶", "Silicon Wafer", "矽晶圓"
+        ],
+        "記憶體": [
+            "南亞科", "華邦電", "旺宏", "DRAM", "NAND", "NOR", "記憶體"
+        ],
+        "記憶體模組": [
+            "威剛", "十銓", "群聯", "memory module", "記憶體模組"
+        ],
+        "快閃記憶體": [
+            "群聯", "慧榮", "flash", "快閃記憶體", "SSD controller"
+        ],
+        "MCU": [
+            "新唐", "盛群", "凌陽", "義隆", "microcontroller", "MCU"
+        ],
+        "電源管理IC": [
+            "致新", "矽力", "力智", "通嘉", "pmic", "power management"
+        ],
+        "砷化鎵": [
+            "穩懋", "宏捷科", "全新", "砷化鎵", "GaAs"
+        ],
+        "光罩": [
+            "光罩", "photomask", "mask"
+        ],
+        "功率半導體": [
+            "朋程", "富鼎", "杰力", "漢磊", "MOSFET", "IGBT", "SiC", "功率半導體"
+        ],
+        "半導體設備": [
+            "家登", "京鼎", "辛耘", "帆宣", "弘塑", "設備", "equipment"
+        ],
+        "網通IC": [
+            "瑞昱", "聯傑", "網通IC", "ethernet", "wifi chip", "switch ic"
+        ],
+    },
+    "電子零組件業": {
+        "PCB": [
+            "欣興", "健鼎", "金像電", "博智", "瀚宇博", "定穎", "台郡", "華通",
+            "PCB", "印刷電路板", "circuit board"
+        ],
+        "ABF載板": [
+            "南電", "景碩", "欣興", "ABF", "載板", "substrate"
+        ],
+        "連接器": [
+            "貿聯", "嘉澤", "凡甲", "良維", "詮欣", "連接器", "connector", "cable"
+        ],
+        "被動元件": [
+            "國巨", "華新科", "奇力新", "旺詮", "立隆電",
+            "MLCC", "chip resistor", "電容", "電阻", "電感", "被動元件"
+        ],
+        "散熱": [
+            "雙鴻", "奇鋐", "超眾", "建準", "散熱", "thermal", "heatsink", "fan"
+        ],
+        "鍵盤": [
+            "群光", "精元", "達方", "鍵盤", "keyboard"
+        ],
+        "新型零組件": [
+            "軟板", "FPC", "天線", "聲學", "模組", "鏡頭", "感測", "模切"
+        ],
+        "零組件通路": [
+            "至上", "文曄", "大聯大", "益登", "威健", "通路", "代理", "distribution"
+        ],
+    },
+}
+
+# 有些子產業容易同時被多個規則命中，這裡給權重
+RULE_PRIORITY = {
+    "ABF載板": 120,
+    "晶圓代工": 120,
+    "封測": 110,
+    "IC設計": 110,
+    "矽晶圓": 110,
+    "功率半導體": 110,
+    "電源管理IC": 105,
+    "網通IC": 105,
+    "快閃記憶體": 105,
+    "記憶體模組": 100,
+    "記憶體": 95,
+    "MCU": 95,
+    "光罩": 95,
+    "半導體設備": 95,
+    "PCB": 110,
+    "連接器": 100,
+    "被動元件": 100,
+    "散熱": 100,
+    "鍵盤": 90,
+    "零組件通路": 110,
+    "新型零組件": 80,
 }
 
 
@@ -168,6 +276,27 @@ def load_metadata() -> pd.DataFrame:
     return df
 
 
+def _ensure_mapping_columns(df: pd.DataFrame) -> pd.DataFrame:
+    wanted_cols = [
+        "stock_id",
+        "stock_name",
+        "industry_l1",
+        "industry_l2",
+        "tags",
+        "source",
+        "confidence",
+        "review_needed",
+        "reason",
+        "last_update",
+    ]
+    for col in wanted_cols:
+        if col not in df.columns:
+            df[col] = ""
+
+    df = df[wanted_cols].copy()
+    return df
+
+
 def load_mapping() -> pd.DataFrame:
     if MAPPING_PATH.exists():
         df = pd.read_csv(MAPPING_PATH, dtype=str).fillna("")
@@ -180,14 +309,98 @@ def load_mapping() -> pd.DataFrame:
             "tags",
             "source",
             "confidence",
+            "review_needed",
             "reason",
             "last_update",
         ])
 
+    df = _ensure_mapping_columns(df)
+
     if "stock_id" in df.columns:
         df["stock_id"] = df["stock_id"].astype(str).str.strip()
 
+    if "review_needed" in df.columns:
+        df["review_needed"] = df["review_needed"].astype(str).str.strip()
+        df.loc[df["review_needed"] == "", "review_needed"] = "Y"
+
     return df
+
+
+# =========================================================
+# Rule-based classification
+# =========================================================
+def normalize_text(text: str) -> str:
+    text = str(text or "").strip().lower()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def infer_by_keyword(industry_l1: str, stock_name: str) -> dict[str, Any] | None:
+    rules = KEYWORD_RULES.get(industry_l1, {})
+    if not rules:
+        return None
+
+    name_norm = normalize_text(stock_name)
+    best_l2 = None
+    best_score = -1
+    matched_words: list[str] = []
+
+    for l2, keywords in rules.items():
+        local_hits = []
+        score = RULE_PRIORITY.get(l2, 0)
+
+        for kw in keywords:
+            kw_norm = normalize_text(kw)
+            if kw_norm and kw_norm in name_norm:
+                local_hits.append(kw)
+                score += 20
+
+        if local_hits and score > best_score:
+            best_l2 = l2
+            best_score = score
+            matched_words = local_hits
+
+    if not best_l2:
+        return None
+
+    # 有命中規則就先自動接受
+    confidence = 0.96 if len(matched_words) >= 2 else 0.90
+
+    return {
+        "industry_l2": best_l2,
+        "tags": ";".join(matched_words[:5]),
+        "confidence": confidence,
+        "review_needed": "N",
+        "reason": f"keyword_rule_match:{'|'.join(matched_words[:5])}",
+        "source": "rule",
+    }
+
+
+def decide_review_needed(industry_l1: str, industry_l2: str, confidence: Any, source: str) -> str:
+    conf = safe_float(confidence, 0.0)
+
+    if source == "rule":
+        return "N"
+
+    # 如果 Gemini 最後還是只回大產業，幾乎等於沒判斷出來
+    if not industry_l2 or industry_l2 == industry_l1:
+        return "Y"
+
+    if conf >= AUTO_ACCEPT_THRESHOLD:
+        return "N"
+
+    if conf < LOW_CONF_THRESHOLD:
+        return "Y"
+
+    # 中間灰區保守處理
+    return "Y"
 
 
 # =========================================================
@@ -218,6 +431,8 @@ def build_batch_prompt(industry_l1: str, batch: list[dict[str, Any]]) -> str:
 4. reason 簡短
 5. 若無法高信心判斷，industry_l2 回傳 {industry_l1}
 6. 只能輸出 JSON 陣列，不要輸出其他文字
+7. 若只是模糊推測，confidence 不要超過 0.70
+8. 只有在非常明確時，confidence 才能 >= 0.85
 
 輸入大產業：
 {industry_l1}
@@ -286,12 +501,19 @@ def call_gemini_batch(industry_l1: str, batch: list[dict[str, Any]]) -> list[dic
             tags = []
 
         tags = [str(x).strip() for x in tags if str(x).strip()]
+        review_needed = decide_review_needed(
+            industry_l1=industry_l1,
+            industry_l2=industry_l2,
+            confidence=confidence,
+            source="gemini",
+        )
 
         cleaned.append({
             "stock_id": sid,
             "industry_l2": industry_l2,
             "tags": ";".join(tags),
             "confidence": confidence,
+            "review_needed": review_needed,
             "reason": reason,
         })
 
@@ -333,9 +555,41 @@ def default_row(stock_id: str, stock_name: str, industry_l1: str) -> dict[str, A
         "tags": "",
         "source": "metadata",
         "confidence": "",
+        "review_needed": "Y",
         "reason": "default_from_exchange_industry",
         "last_update": pd.Timestamp.now().strftime("%Y-%m-%d"),
     }
+
+
+def apply_rule_based_mapping(final_df: pd.DataFrame) -> pd.DataFrame:
+    updated = 0
+
+    for idx, row in final_df.iterrows():
+        industry_l1 = str(row["industry_l1"]).strip()
+        stock_name = str(row["stock_name"]).strip()
+        industry_l2 = str(row["industry_l2"]).strip()
+
+        # 只處理還沒細分的
+        if industry_l1 not in TARGET_INDUSTRIES:
+            continue
+        if industry_l2 and industry_l2 != industry_l1:
+            continue
+
+        res = infer_by_keyword(industry_l1, stock_name)
+        if not res:
+            continue
+
+        final_df.at[idx, "industry_l2"] = res["industry_l2"]
+        final_df.at[idx, "tags"] = res["tags"]
+        final_df.at[idx, "source"] = res["source"]
+        final_df.at[idx, "confidence"] = str(res["confidence"])
+        final_df.at[idx, "review_needed"] = res["review_needed"]
+        final_df.at[idx, "reason"] = res["reason"]
+        final_df.at[idx, "last_update"] = pd.Timestamp.now().strftime("%Y-%m-%d")
+        updated += 1
+
+    print(f"✅ 規則分類完成：{updated} 筆")
+    return final_df
 
 
 def build_mapping() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -357,13 +611,22 @@ def build_mapping() -> tuple[pd.DataFrame, pd.DataFrame]:
             row = mapping_by_id[sid].copy()
             row["stock_name"] = stock_name
             row["industry_l1"] = industry_l1
+
             if not row.get("industry_l2"):
                 row["industry_l2"] = industry_l1
+
+            if not row.get("review_needed"):
+                row["review_needed"] = "Y"
+
             final_rows.append(row)
         else:
             final_rows.append(default_row(sid, stock_name, industry_l1))
 
     final_df = pd.DataFrame(final_rows)
+    final_df = _ensure_mapping_columns(final_df)
+
+    # 先跑規則，能大量減少 Gemini 數量
+    final_df = apply_rule_based_mapping(final_df)
 
     need_df = final_df[
         final_df["industry_l1"].isin(TARGET_INDUSTRIES) &
@@ -405,6 +668,7 @@ def build_mapping() -> tuple[pd.DataFrame, pd.DataFrame]:
                         final_df.loc[mask, "tags"] = res["tags"]
                         final_df.loc[mask, "source"] = "gemini"
                         final_df.loc[mask, "confidence"] = str(res["confidence"])
+                        final_df.loc[mask, "review_needed"] = res["review_needed"]
                         final_df.loc[mask, "reason"] = res["reason"]
                         final_df.loc[mask, "last_update"] = pd.Timestamp.now().strftime("%Y-%m-%d")
 
@@ -416,10 +680,24 @@ def build_mapping() -> tuple[pd.DataFrame, pd.DataFrame]:
                             "suggested_industry_l2": res["industry_l2"],
                             "suggested_tags": res["tags"],
                             "confidence": res["confidence"],
+                            "review_needed": res["review_needed"],
                             "reason": res["reason"],
                         })
 
                 time.sleep(BATCH_SLEEP_SEC)
+
+    # 最後再統一修正 review_needed，避免舊資料缺漏
+    final_df["review_needed"] = final_df.apply(
+        lambda r: decide_review_needed(
+            industry_l1=str(r["industry_l1"]),
+            industry_l2=str(r["industry_l2"]),
+            confidence=r["confidence"],
+            source=str(r["source"]),
+        ) if str(r["source"]) != "metadata" else (
+            "Y" if str(r["industry_l2"]) == str(r["industry_l1"]) else "N"
+        ),
+        axis=1
+    )
 
     final_df = final_df.sort_values("stock_id").reset_index(drop=True)
     candidates_df = pd.DataFrame(candidate_rows)
@@ -431,6 +709,11 @@ def build_mapping() -> tuple[pd.DataFrame, pd.DataFrame]:
 
     print(f"✅ industry_mapping_final.csv 更新完成：{MAPPING_PATH}")
     print(f"✅ industry_mapping_candidates.csv 更新完成：{CANDIDATES_PATH}")
+
+    if "review_needed" in final_df.columns:
+        print()
+        print("=== review_needed 統計 ===")
+        print(final_df["review_needed"].value_counts(dropna=False).to_string())
 
     return final_df, candidates_df
 
